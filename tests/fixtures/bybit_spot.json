@@ -1,0 +1,17 @@
+{
+  "retCode": 0,
+  "retMsg": "OK",
+  "result": {
+    "category": "spot",
+    "list": [
+      {
+        "symbol": "BTCUSDT",
+        "baseCoin": "BTC",
+        "quoteCoin": "USDT",
+        "status": "Trading"
+      }
+    ],
+    "nextPageCursor": ""
+  },
+  "time": 1783036800000
+}

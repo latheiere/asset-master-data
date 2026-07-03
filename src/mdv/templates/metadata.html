@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Filter Metadata · Asset Master Data</title>
+  <style>
+    :root { color-scheme:light; --bg:#f5f7fa; --panel:#fff; --line:#d8dee8; --text:#182230; --muted:#607086; --accent:#2057d4; --grey-bg:#eef2f7; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font:14px/1.4 ui-sans-serif,system-ui,sans-serif; }
+    header { padding:22px 28px 12px; display:flex; justify-content:space-between; align-items:end; gap:20px; }
+    h1 { margin:0; font-size:24px; }
+    .summary, .muted { color:var(--muted); }
+    .summary { margin-top:4px; }
+    main { padding:0 28px 28px; }
+    .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; box-shadow:0 2px 8px #1a2a4410; overflow:auto; }
+    table { width:100%; border-collapse:collapse; }
+    th { background:#eef2f7; color:#44546a; text-align:left; font-size:12px; letter-spacing:.03em; }
+    th, td { border-bottom:1px solid var(--line); padding:11px; vertical-align:top; }
+    tr:last-child td { border-bottom:0; }
+    code { background:var(--grey-bg); border-radius:4px; padding:2px 5px; }
+    .badges { display:flex; flex-wrap:wrap; gap:5px; }
+    .badge { border-radius:999px; background:var(--grey-bg); padding:3px 8px; white-space:nowrap; font-size:12px; }
+    .button-link { min-height:36px; border:1px solid var(--accent); border-radius:6px; background:white; padding:7px 10px; color:var(--accent); font:inherit; font-weight:600; text-decoration:none; display:inline-flex; align-items:center; }
+    @media (max-width:800px) { header, main { padding-left:12px; padding-right:12px; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Filter Metadata</h1>
+      <div class="summary">Supported query filters and values from the current active universe.</div>
+    </div>
+    <div>
+      <a class="button-link" href="/mdv">Asset view</a>
+      <a class="button-link" href="/logs">Collection log</a>
+    </div>
+  </header>
+  <main>
+    <section class="panel">
+      <table>
+        <thead><tr><th>Filter</th><th>Kind</th><th>Values or constraints</th></tr></thead>
+        <tbody>
+        {% for name, definition in metadata.filters.items() %}
+          <tr>
+            <td><code>{{ name }}</code>{% if definition.get('multiple') %} <span class="muted">repeatable / comma-separated</span>{% endif %}</td>
+            <td>{{ definition.kind }}</td>
+            <td>
+              {% if definition.get('operators') %}
+                Operators: {% for operator in definition.operators %}<code>{{ operator }}</code>{% if not loop.last %}, {% endif %}{% endfor %}<br>
+              {% endif %}
+              {% if definition.get('values') is not none %}
+                <div class="badges">{% for value in definition.get('values') %}<span class="badge">{{ value }}</span>{% else %}<span class="muted">No current values</span>{% endfor %}</div>
+              {% elif definition.kind == 'text' %}
+                Wildcard: <code>{{ definition.wildcard }}</code>
+              {% else %}
+                Minimum: <code>{{ definition.minimum }}</code>{% if definition.get('maximum') is not none %} · Maximum: <code>{{ definition.maximum }}</code>{% endif %} · Default: <code>{{ definition.default }}</code>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>

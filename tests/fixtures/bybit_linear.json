@@ -1,0 +1,35 @@
+{
+  "retCode": 0,
+  "retMsg": "OK",
+  "result": {
+    "category": "linear",
+    "list": [
+      {
+        "symbol": "BTCUSDT",
+        "contractType": "LinearPerpetual",
+        "status": "Trading",
+        "baseCoin": "BTC",
+        "quoteCoin": "USDT",
+        "settleCoin": "USDT",
+        "deliveryTime": "0",
+        "lotSizeFilter": {
+          "maxMktOrderQty": "500.000"
+        }
+      },
+      {
+        "symbol": "BTCUSDT-25SEP26",
+        "contractType": "LinearFutures",
+        "status": "Trading",
+        "baseCoin": "BTC",
+        "quoteCoin": "USDT",
+        "settleCoin": "USDT",
+        "deliveryTime": "1790323200000",
+        "lotSizeFilter": {
+          "maxMktOrderQty": "250.000"
+        }
+      }
+    ],
+    "nextPageCursor": ""
+  },
+  "time": 1783036800000
+}

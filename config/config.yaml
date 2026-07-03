@@ -1,0 +1,19 @@
+database:
+  path: .data/mdv.sqlite3
+
+server:
+  host: 127.0.0.1
+  port: 8090
+  refresh_on_startup: if-empty
+
+collection:
+  http_timeout_seconds: 20
+  # systemd OnCalendar syntax. The installer renders this into the timer unit.
+  schedule: "*-*-* 00:00:00 UTC"
+
+auth:
+  entitlements_path: config/entitlements.yaml
+  session_cookie_name: mdv_session
+  session_ttl_seconds: 43200
+  # Set true when HTML is served over HTTPS.
+  session_cookie_secure: false

@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Asset Master Data</title>
+  <style>
+    :root { color-scheme:light; --bg:#f5f7fa; --panel:#fff; --line:#d8dee8; --text:#182230; --muted:#607086; --accent:#2057d4; --green:#137333; --green-bg:#e9f6ed; --amber:#8a4b08; --amber-bg:#fff3df; --grey-bg:#eef2f7; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font:14px/1.4 ui-sans-serif,system-ui,sans-serif; }
+    header { padding:22px 28px 12px; display:flex; justify-content:space-between; align-items:end; gap:20px; }
+    .header-leading { display:flex; align-items:flex-start; gap:12px; min-width:0; }
+    .column-settings { position:relative; flex:none; }
+    .column-settings-toggle { min-width:84px; }
+    .column-settings-popover { position:absolute; z-index:20; top:43px; left:0; width:min(340px,calc(100vw - 24px)); padding:14px; background:var(--panel); border:1px solid var(--line); border-radius:10px; box-shadow:0 12px 32px #1a2a4426; }
+    .column-settings-heading { display:flex; justify-content:space-between; align-items:start; gap:12px; margin-bottom:10px; }
+    .column-settings-heading h2 { margin:0; font-size:16px; }
+    .column-settings-list { display:grid; gap:6px; margin:0; padding:0; list-style:none; }
+    .column-settings-item { min-height:40px; padding:6px 7px; border:1px solid var(--line); border-radius:6px; background:white; cursor:grab; }
+    .column-settings-item:focus { outline:2px solid var(--accent); outline-offset:1px; }
+    .column-settings-item.dragging { opacity:.45; }
+    .column-settings-item label { display:flex; grid-template:none; align-items:center; gap:8px; min-width:0; color:var(--text); font-size:13px; cursor:pointer; }
+    .column-settings-item input { min-height:auto; margin:0; padding:0; }
+    .column-settings-footer { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-top:10px; }
+    .column-settings-footer .muted { font-size:11px; }
+    h1 { margin:0; font-size:24px; }
+    h3, h4 { margin:0; }
+    .summary, .muted { color:var(--muted); }
+    .summary { margin-top:4px; }
+    main { padding:0 28px 28px; }
+    .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; box-shadow:0 2px 8px #1a2a4410; }
+    form.filters { display:flex; gap:10px; flex-wrap:wrap; padding:14px; margin-bottom:14px; align-items:end; }
+    label { color:var(--muted); font-size:12px; display:grid; gap:4px; }
+    input, select, button, .button-link { min-height:36px; border:1px solid var(--line); border-radius:6px; background:white; padding:7px 10px; color:var(--text); font:inherit; }
+    button, .button-link { background:var(--accent); color:white; border-color:var(--accent); cursor:pointer; font-weight:600; text-decoration:none; display:inline-flex; align-items:center; justify-content:center; }
+    button.secondary, .button-link.secondary { background:white; color:var(--accent); }
+    .table-wrap { overflow:auto; max-height:calc(100vh - 210px); }
+    table { width:100%; border-collapse:separate; border-spacing:0; }
+    th { position:sticky; top:0; z-index:2; background:#eef2f7; color:#44546a; text-align:left; font-size:12px; letter-spacing:.03em; white-space:nowrap; }
+    th, td { border-bottom:1px solid var(--line); padding:10px 11px; vertical-align:top; }
+    th[hidden], td[hidden] { display:none; }
+    .asset-row:hover { background:#f7faff; }
+    .asset-symbol { font-size:16px; font-weight:750; }
+    .badge-list { display:flex; flex-wrap:wrap; gap:5px; }
+    .badge { display:inline-flex; gap:4px; align-items:center; border-radius:999px; background:var(--grey-bg); padding:3px 8px; white-space:nowrap; font-size:12px; }
+    .coverage { display:inline-flex; border-radius:999px; padding:4px 9px; white-space:nowrap; font-size:12px; font-weight:750; }
+    .coverage-all { color:var(--green); background:var(--green-bg); }
+    .coverage-single, .coverage-partial { color:var(--amber); background:var(--amber-bg); }
+    .coverage-none { color:var(--muted); background:var(--grey-bg); }
+    .details-row td { padding:0; background:#f8fafc; }
+    .details-content { padding:14px; }
+    .venue-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(380px,1fr)); gap:12px; }
+    .venue-card { background:white; border:1px solid var(--line); border-radius:8px; padding:13px; }
+    .venue-heading { display:flex; justify-content:space-between; align-items:start; gap:10px; margin-bottom:12px; }
+    .venue-symbols { display:flex; align-items:center; gap:5px; flex-wrap:wrap; justify-content:flex-end; }
+    .market-columns { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+    .market-group h4 { font-size:12px; color:#44546a; text-transform:uppercase; letter-spacing:.04em; margin-bottom:7px; }
+    .market-list { display:grid; gap:6px; }
+    .market-item { border-left:3px solid #c7d2e3; background:#f8fafc; border-radius:4px; padding:7px 9px; }
+    .market-name { font-weight:700; overflow-wrap:anywhere; }
+    .market-name a { color:var(--accent); text-decoration:none; }
+    .market-name a:hover { text-decoration:underline; }
+    .market-meta { color:var(--muted); font-size:12px; margin-top:2px; }
+    .empty-group, .empty { color:var(--muted); }
+    .empty-group { padding:8px 0; font-size:12px; }
+    .empty { padding:40px; text-align:center; }
+    .count { text-align:right; font-variant-numeric:tabular-nums; }
+    @media (max-width:800px) {
+      header, main { padding-left:12px; padding-right:12px; }
+      header { align-items:flex-start; flex-direction:column; }
+      .venue-grid, .market-columns { grid-template-columns:1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-leading">
+      <div class="column-settings">
+        <button class="secondary column-settings-toggle" id="column-settings-toggle" type="button" aria-expanded="false" aria-controls="column-settings-popover">Columns</button>
+        <section class="column-settings-popover" id="column-settings-popover" role="dialog" aria-labelledby="column-settings-title" hidden>
+          <div class="column-settings-heading">
+            <div>
+              <h2 id="column-settings-title">Table columns</h2>
+              <div class="muted">Select columns and drag to reorder.</div>
+            </div>
+            <button class="secondary" id="column-settings-close" type="button">Close</button>
+          </div>
+          <ul class="column-settings-list" id="column-settings-list">
+            {% for column_id, column_label in [
+              ('asset', 'Asset'),
+              ('tags', 'Tags'),
+              ('venue-symbols', 'Venue symbols'),
+              ('spot-venues', 'Spot venues'),
+              ('futures-venues', 'Futures venues'),
+              ('futures-coverage', 'Futures coverage'),
+              ('active-markets', 'Active markets'),
+              ('markets', 'Markets')
+            ] %}
+            <li class="column-settings-item" data-column-option="{{ column_id }}" draggable="true" tabindex="0" aria-label="{{ column_label }} column. Drag to reorder or press Alt plus arrow keys.">
+              <label><input type="checkbox" value="{{ column_id }}" checked> <span>{{ column_label }}</span></label>
+            </li>
+            {% endfor %}
+          </ul>
+          <div class="column-settings-footer">
+            <span class="muted">At least one column stays visible.</span>
+            <button class="secondary" id="column-settings-reset" type="button">Reset defaults</button>
+          </div>
+        </section>
+      </div>
+      <div>
+        <h1>Asset Master Data</h1>
+        <div class="summary">{{ asset_view.count }} active asset{{ '' if asset_view.count == 1 else 's' }} · {{ stats.active_markets or 0 }} active markets · futures venues: {{ asset_view.supported_future_venues|join(', ') }}</div>
+      </div>
+    </div>
+    <div class="badge-list">
+      <a class="button-link secondary" href="/logs">Collection log</a>
+      <a class="button-link secondary" href="/metadata">Filter metadata</a>
+    </div>
+  </header>
+  <main>
+    <form class="filters panel" method="get" action="/mdv" autocomplete="off">
+      <label>Asset type
+        <select name="TYPE">
+          <option value="">All</option>
+          <option value="FUTURE" {% if filters.type == 'FUTURE' %}selected{% endif %}>Has futures</option>
+          <option value="SPOT" {% if filters.type == 'SPOT' %}selected{% endif %}>Has spot</option>
+        </select>
+      </label>
+      <label>Contract
+        <select name="CONTRACT">
+          <option value="">Any</option>
+          <option value="PERP" {% if filters.contract in ['PERP', 'PERPETUAL'] %}selected{% endif %}>PERP</option>
+          <option value="DATED" {% if filters.contract == 'DATED' %}selected{% endif %}>DATED</option>
+          <option value="CQ" {% if filters.contract == 'CQ' %}selected{% endif %}>CQ</option>
+          <option value="NQ" {% if filters.contract == 'NQ' %}selected{% endif %}>NQ</option>
+        </select>
+      </label>
+      <label>Stock
+        <select name="STOCK">
+          <option value="">All</option>
+          <option value="1" {% if filters.stock in ['1', 'true', 'yes', 'stock'] %}selected{% endif %}>Stock only</option>
+          <option value="0" {% if filters.stock in ['0', 'false', 'no', 'nonstock', 'non-stock'] %}selected{% endif %}>No stocks</option>
+        </select>
+      </label>
+      <label>Futures on
+        <select name="FUTURES">
+          <option value="">Any venue</option>
+          {% for venue in asset_view.supported_future_venues %}
+            <option value="{{ venue }}" {% if filters.futures|length == 1 and filters.futures[0] == venue %}selected{% endif %}>{{ venue }}</option>
+          {% endfor %}
+          {% if asset_view.supported_future_venues|length > 1 %}
+            <option value="{{ asset_view.supported_future_venues|join(',') }}" {% if filters.futures|length == asset_view.supported_future_venues|length %}selected{% endif %}>All futures venues</option>
+          {% endif %}
+        </select>
+      </label>
+      <label>Without futures on
+        <select name="FUTURES!">
+          <option value="">None excluded</option>
+          {% for venue in asset_view.supported_future_venues %}
+            <option value="{{ venue }}" {% if venue in filters.futures_not %}selected{% endif %}>{{ venue }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Venue
+        <select name="VENUE">
+          <option value="">All</option>
+          <option value="BINANCE" {% if filters.venue == 'BINANCE' %}selected{% endif %}>Binance</option>
+          <option value="BITGET" {% if filters.venue == 'BITGET' %}selected{% endif %}>Bitget</option>
+          <option value="BYBIT" {% if filters.venue == 'BYBIT' %}selected{% endif %}>Bybit</option>
+          <option value="GATE" {% if filters.venue == 'GATE' %}selected{% endif %}>Gate.com</option>
+          <option value="MEXC" {% if filters.venue == 'MEXC' %}selected{% endif %}>MEXC</option>
+        </select>
+      </label>
+      <label>Product<input name="PRODUCT" value="{{ filters.product or '' }}" placeholder="USD-M" autocomplete="off"></label>
+      <label>Tag<input name="TAG" value="{{ filters.tags|join(',') }}" placeholder="BINANCE:MONITORING" autocomplete="off"></label>
+      <label>Asset or venue symbol<input name="SYMBOL" value="{{ filters.symbol or '' }}" placeholder="BTC*" autocomplete="off"></label>
+      <button type="submit">Apply</button>
+      <a class="button-link secondary" href="/mdv">Clear</a>
+    </form>
+    <section class="panel table-wrap">
+      {% if asset_view.assets %}
+      <table id="asset-table">
+        <thead>
+          <tr><th data-column="asset">Asset</th><th data-column="tags">Tags</th><th data-column="venue-symbols">Venue symbols</th><th data-column="spot-venues">Spot venues</th><th data-column="futures-venues">Futures venues</th><th data-column="futures-coverage">Futures coverage</th><th class="count" data-column="active-markets">Active markets</th><th data-column="markets">Markets</th></tr>
+        </thead>
+        {% for asset in asset_view.assets %}
+        <tbody>
+          <tr class="asset-row">
+            <td class="asset-symbol" data-column="asset">{{ asset.canonical_symbol }}{% if asset.is_stock %} <span class="badge">STOCK</span>{% endif %}</td>
+            <td data-column="tags"><div class="badge-list">{% for tag in asset.tags %}<span class="badge">{{ tag.provider }} · {{ tag.raw_tag }}</span>{% else %}<span class="muted">None</span>{% endfor %}</div></td>
+            <td data-column="venue-symbols">
+              <div class="badge-list">
+                {% for item in asset.venue_symbols %}
+                  {% for symbol in item.symbols %}<span class="badge">{{ item.venue }} · {{ symbol }}</span>{% endfor %}
+                {% endfor %}
+              </div>
+            </td>
+            <td data-column="spot-venues">
+              <div class="badge-list">
+                {% for item in asset.spot_venues %}<span class="badge">{{ item.venue }} · {{ item.count }}</span>{% else %}<span class="muted">None</span>{% endfor %}
+              </div>
+            </td>
+            <td data-column="futures-venues">
+              <div class="badge-list">
+                {% for item in asset.future_venues %}<span class="badge">{{ item.venue }} · {{ item.products|join(', ') }}</span>{% else %}<span class="muted">None</span>{% endfor %}
+              </div>
+            </td>
+            <td data-column="futures-coverage"><span class="coverage coverage-{{ asset.future_coverage_kind }}">{{ asset.future_coverage }}</span></td>
+            <td class="count" data-column="active-markets">{{ asset.active_market_count }}</td>
+            <td data-column="markets"><button class="secondary market-toggle" type="button" data-target="asset-details-{{ loop.index }}" aria-expanded="false">Show</button></td>
+          </tr>
+          <tr class="details-row" id="asset-details-{{ loop.index }}" hidden>
+            <td colspan="8" data-details-cell>
+              <div class="details-content">
+                <div class="venue-grid">
+                {% for venue in asset.venues %}
+                  <section class="venue-card">
+                    <div class="venue-heading">
+                      <h3>{{ venue.venue }}</h3>
+                      <div class="venue-symbols"><span class="muted">Venue symbols</span>{% for symbol in venue.symbols %}<span class="badge">{{ symbol }}</span>{% endfor %}</div>
+                    </div>
+                    <div class="market-columns">
+                      <div class="market-group">
+                        <h4>Spot pairs · {{ venue.spot|length }}</h4>
+                        <div class="market-list">
+                        {% for market in venue.spot %}
+                          <div class="market-item"><div class="market-name">{% if market.trade_url %}<a href="{{ market.trade_url }}" target="_blank" rel="noopener noreferrer">{{ market.raw_symbol }}</a>{% else %}{{ market.raw_symbol }}{% endif %}</div><div class="market-meta">{{ market.base_symbol }}/{{ market.quote_symbol }} · {{ market.status }}</div></div>
+                        {% else %}<div class="empty-group">No active spot pairs</div>{% endfor %}
+                        </div>
+                      </div>
+                      <div class="market-group">
+                        <h4>Futures · {{ venue.futures|length }}</h4>
+                        <div class="market-list">
+                        {% for market in venue.futures %}
+                          <div class="market-item">
+                            <div class="market-name">{% if market.trade_url %}<a href="{{ market.trade_url }}" target="_blank" rel="noopener noreferrer">{{ market.raw_symbol }}</a>{% else %}{{ market.raw_symbol }}{% endif %}</div>
+                            <div class="market-meta">{{ market.product }}{% if market.contract_type != market.product %} · {{ market.contract_type }}{% endif %} · {{ market.status }}</div>
+                            {% if market.expires_at %}<div class="market-meta">Expires: {{ market.expires_at }}</div>{% endif %}
+                            {% if market.underlying_multiplier != '1' %}<div class="market-meta">Underlying unit: {{ market.underlying_unit }}</div>{% endif %}
+                            {% if market.max_market_order_size %}<div class="market-meta">Max market order size: {{ market.max_market_order_size }}</div>{% endif %}
+                          </div>
+                        {% else %}<div class="empty-group">No active futures</div>{% endfor %}
+                        </div>
+                      </div>
+                    </div>
+                  </section>
+                {% endfor %}
+                </div>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+        {% endfor %}
+      </table>
+      {% else %}<div class="empty">No active assets match these filters.</div>{% endif %}
+    </section>
+  </main>
+  <script>
+    const columnDefaults = [
+      'asset',
+      'tags',
+      'venue-symbols',
+      'spot-venues',
+      'futures-venues',
+      'futures-coverage',
+      'active-markets',
+      'markets',
+    ];
+    const columnCookieName = 'mdv_columns';
+    const columnSettingsToggle = document.getElementById('column-settings-toggle');
+    const columnSettingsPopover = document.getElementById('column-settings-popover');
+    const columnSettingsClose = document.getElementById('column-settings-close');
+    const columnSettingsReset = document.getElementById('column-settings-reset');
+    const columnSettingsList = document.getElementById('column-settings-list');
+    const assetTable = document.getElementById('asset-table');
+
+    function readColumnState() {
+      const cookie = document.cookie.split('; ').find((item) => item.startsWith(`${columnCookieName}=`));
+      if (!cookie) return { order: [...columnDefaults], hidden: new Set() };
+      try {
+        const saved = JSON.parse(decodeURIComponent(cookie.slice(columnCookieName.length + 1)));
+        const savedOrder = Array.isArray(saved.order) ? saved.order : [];
+        const order = savedOrder.filter((value, index) => columnDefaults.includes(value) && savedOrder.indexOf(value) === index);
+        columnDefaults.forEach((value) => { if (!order.includes(value)) order.push(value); });
+        const hidden = new Set(Array.isArray(saved.hidden) ? saved.hidden.filter((value) => columnDefaults.includes(value)) : []);
+        if (hidden.size === columnDefaults.length) hidden.delete(order[0]);
+        return { order, hidden };
+      } catch (_) {
+        return { order: [...columnDefaults], hidden: new Set() };
+      }
+    }
+
+    let columnState = readColumnState();
+
+    function saveColumnState() {
+      const value = encodeURIComponent(JSON.stringify({ order: columnState.order, hidden: [...columnState.hidden] }));
+      document.cookie = `${columnCookieName}=${value}; Max-Age=31536000; Path=/; SameSite=Lax`;
+    }
+
+    function applyColumnState({ persist = true } = {}) {
+      const optionByColumn = new Map(
+        [...columnSettingsList.querySelectorAll('[data-column-option]')]
+          .map((item) => [item.dataset.columnOption, item]),
+      );
+      columnState.order.forEach((column) => columnSettingsList.append(optionByColumn.get(column)));
+
+      if (assetTable) {
+        assetTable.querySelectorAll('tr').forEach((row) => {
+          const cellByColumn = new Map(
+            [...row.children]
+              .filter((cell) => cell.dataset.column)
+              .map((cell) => [cell.dataset.column, cell]),
+          );
+          columnState.order.forEach((column) => {
+            const cell = cellByColumn.get(column);
+            if (cell) row.append(cell);
+          });
+        });
+        assetTable.querySelectorAll('[data-column]').forEach((cell) => {
+          cell.hidden = columnState.hidden.has(cell.dataset.column);
+        });
+        const visibleCount = columnDefaults.length - columnState.hidden.size;
+        assetTable.querySelectorAll('[data-details-cell]').forEach((cell) => {
+          cell.colSpan = visibleCount;
+        });
+        if (columnState.hidden.has('markets')) {
+          assetTable.querySelectorAll('.details-row').forEach((row) => { row.hidden = true; });
+          assetTable.querySelectorAll('.market-toggle').forEach((button) => {
+            button.setAttribute('aria-expanded', 'false');
+            button.textContent = 'Show';
+          });
+        }
+      }
+
+      const options = [...columnSettingsList.querySelectorAll('[data-column-option]')];
+      options.forEach((item) => {
+        item.querySelector('input').checked = !columnState.hidden.has(item.dataset.columnOption);
+      });
+      if (persist) saveColumnState();
+    }
+
+    function setColumnSettingsOpen(open) {
+      columnSettingsPopover.hidden = !open;
+      columnSettingsToggle.setAttribute('aria-expanded', String(open));
+      if (open) columnSettingsClose.focus();
+    }
+
+    columnSettingsToggle.addEventListener('click', () => {
+      setColumnSettingsOpen(columnSettingsPopover.hidden);
+    });
+    columnSettingsClose.addEventListener('click', () => {
+      setColumnSettingsOpen(false);
+      columnSettingsToggle.focus();
+    });
+    document.addEventListener('click', (event) => {
+      if (!columnSettingsPopover.hidden && !event.target.closest('.column-settings')) setColumnSettingsOpen(false);
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && !columnSettingsPopover.hidden) {
+        setColumnSettingsOpen(false);
+        columnSettingsToggle.focus();
+      }
+    });
+
+    columnSettingsList.addEventListener('change', (event) => {
+      if (!event.target.matches('input[type="checkbox"]')) return;
+      const column = event.target.value;
+      if (event.target.checked) {
+        columnState.hidden.delete(column);
+      } else if (columnDefaults.length - columnState.hidden.size === 1) {
+        event.target.checked = true;
+        return;
+      } else {
+        columnState.hidden.add(column);
+      }
+      applyColumnState();
+    });
+
+    columnSettingsList.addEventListener('keydown', (event) => {
+      if (!event.altKey || !['ArrowUp', 'ArrowDown'].includes(event.key)) return;
+      const item = event.target.closest('[data-column-option]');
+      if (!item || event.target !== item) return;
+      event.preventDefault();
+      const currentIndex = columnState.order.indexOf(item.dataset.columnOption);
+      const nextIndex = currentIndex + (event.key === 'ArrowUp' ? -1 : 1);
+      if (nextIndex < 0 || nextIndex >= columnState.order.length) return;
+      [columnState.order[currentIndex], columnState.order[nextIndex]] = [columnState.order[nextIndex], columnState.order[currentIndex]];
+      applyColumnState();
+      item.focus();
+    });
+
+    let draggedColumn = null;
+    columnSettingsList.addEventListener('dragstart', (event) => {
+      const item = event.target.closest('[data-column-option]');
+      if (!item) return;
+      draggedColumn = item.dataset.columnOption;
+      item.classList.add('dragging');
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', draggedColumn);
+    });
+    columnSettingsList.addEventListener('dragover', (event) => {
+      if (!draggedColumn) return;
+      event.preventDefault();
+      const target = event.target.closest('[data-column-option]');
+      const draggedItem = columnSettingsList.querySelector(`[data-column-option="${draggedColumn}"]`);
+      if (!target || target === draggedItem) return;
+      const insertBefore = event.clientY < target.getBoundingClientRect().top + target.offsetHeight / 2;
+      columnSettingsList.insertBefore(draggedItem, insertBefore ? target : target.nextSibling);
+    });
+    function finishColumnDrag() {
+      if (!draggedColumn) return;
+      columnState.order = [...columnSettingsList.querySelectorAll('[data-column-option]')]
+        .map((item) => item.dataset.columnOption);
+      columnSettingsList.querySelectorAll('.dragging').forEach((item) => item.classList.remove('dragging'));
+      draggedColumn = null;
+      applyColumnState();
+    }
+    columnSettingsList.addEventListener('drop', (event) => {
+      event.preventDefault();
+      finishColumnDrag();
+    });
+    columnSettingsList.addEventListener('dragend', finishColumnDrag);
+
+    columnSettingsReset.addEventListener('click', () => {
+      columnState = { order: [...columnDefaults], hidden: new Set() };
+      applyColumnState();
+    });
+
+    applyColumnState({ persist: false });
+
+    document.querySelectorAll('.market-toggle').forEach((button) => {
+      button.addEventListener('click', () => {
+        const row = document.getElementById(button.dataset.target);
+        const expanded = button.getAttribute('aria-expanded') === 'true';
+        row.hidden = expanded;
+        button.setAttribute('aria-expanded', String(!expanded));
+        button.textContent = expanded ? 'Show' : 'Hide';
+      });
+    });
+  </script>
+</body>
+</html>

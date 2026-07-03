@@ -1,0 +1,29 @@
+{
+  "retCode": 0,
+  "retMsg": "OK",
+  "result": {
+    "category": "inverse",
+    "list": [
+      {
+        "symbol": "BTCUSD",
+        "contractType": "InversePerpetual",
+        "status": "Trading",
+        "baseCoin": "BTC",
+        "quoteCoin": "USD",
+        "settleCoin": "BTC",
+        "deliveryTime": "0"
+      },
+      {
+        "symbol": "BTCUSDZ26",
+        "contractType": "InverseFutures",
+        "status": "Trading",
+        "baseCoin": "BTC",
+        "quoteCoin": "USD",
+        "settleCoin": "BTC",
+        "deliveryTime": "1798156800000"
+      }
+    ],
+    "nextPageCursor": ""
+  },
+  "time": 1783036800000
+}
