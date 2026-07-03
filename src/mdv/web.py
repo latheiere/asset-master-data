@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import hmac
 from contextlib import asynccontextmanager
 from importlib import resources
 from urllib.parse import parse_qs, quote
@@ -12,6 +15,7 @@ from mdv.auth import Entitlements, basic_credentials
 from mdv.collection import CollectionService, collection_json
 from mdv.config import Settings
 from mdv.db import SQLiteStore
+from mdv.resolution import MappingResolveRequest, MappingResolveResponse
 
 
 def _query_filters(request: Request) -> dict[str, object]:
@@ -63,10 +67,15 @@ def _canonical_mdv_query(request: Request) -> str:
     )
 
 
-def create_app(*, settings: Settings | None = None, store: SQLiteStore | None = None) -> FastAPI:
+def create_app(
+    *,
+    settings: Settings | None = None,
+    store: SQLiteStore | None = None,
+    entitlements: Entitlements | None = None,
+) -> FastAPI:
     settings = settings or Settings.from_yaml()
     store = store or SQLiteStore(settings.db_path)
-    entitlements = Entitlements.load(settings.entitlements_path)
+    entitlements = entitlements or Entitlements.load(settings.entitlements_path)
     templates = Jinja2Templates(directory=str(resources.files("mdv").joinpath("templates")))
 
     @asynccontextmanager
@@ -86,6 +95,7 @@ def create_app(*, settings: Settings | None = None, store: SQLiteStore | None = 
     app.state.store = store
     app.state.settings = settings
     app.state.entitlements = entitlements
+    basic_auth_cache: dict[bytes, str] = {}
 
     @app.middleware("http")
     async def require_authentication(request: Request, call_next):
@@ -94,8 +104,20 @@ def create_app(*, settings: Settings | None = None, store: SQLiteStore | None = 
 
         username = None
         credentials = basic_credentials(request.headers.get("authorization"))
-        if credentials and entitlements.authenticate(*credentials):
-            username = credentials[0]
+        if credentials:
+            cache_key = hmac.new(
+                entitlements.session_secret,
+                f"{credentials[0]}\0{credentials[1]}".encode("utf-8"),
+                hashlib.sha256,
+            ).digest()
+            username = basic_auth_cache.get(cache_key)
+            if username is None and await asyncio.to_thread(
+                entitlements.authenticate, *credentials
+            ):
+                username = credentials[0]
+                if len(basic_auth_cache) >= 128:
+                    basic_auth_cache.pop(next(iter(basic_auth_cache)))
+                basic_auth_cache[cache_key] = username
         if username is None:
             session = request.cookies.get(settings.session_cookie_name, "")
             username = entitlements.session_username(session)
@@ -174,6 +196,18 @@ def create_app(*, settings: Settings | None = None, store: SQLiteStore | None = 
             return store.list_assets(_query_filters(request))
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post(
+        "/api/v1/mappings/resolve",
+        response_model=MappingResolveResponse,
+        response_model_exclude_none=True,
+    )
+    def api_resolve_mappings(payload: MappingResolveRequest):
+        return store.resolve_venue_mappings(
+            source=payload.source.model_dump(exclude={"symbols"}),
+            target=payload.target.model_dump(),
+            symbols=payload.source.symbols,
+        )
 
     @app.get("/api/v1/stats")
     async def api_stats():

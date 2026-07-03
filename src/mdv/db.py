@@ -1020,6 +1020,221 @@ class SQLiteStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def resolve_venue_mappings(
+        self,
+        *,
+        source: dict[str, object],
+        target: dict[str, object],
+        symbols: list[str],
+    ) -> dict:
+        """Resolve a symbol basket without building the generic asset projection."""
+        requested_rows = ",".join("(?, ?)" for _ in symbols)
+        source_params: list[object] = [
+            item
+            for position, symbol in enumerate(symbols)
+            for item in (position, symbol)
+        ]
+        source_params.append(source["venue"])
+
+        target_clauses = [
+            "target_market.venue = ?",
+            "target_market.active = 1",
+            "target_market.market_type = ?",
+            "target_market.product = ?",
+            "target_market.contract_type = ?",
+            "target_market.quote_symbol = ?",
+            "target_market.settle_symbol = ?",
+            "target_market.status = ?",
+        ]
+        target_params: list[object] = [
+            target["venue"],
+            target["market_type"],
+            target["product"],
+            target["contract_type"],
+            target["quote_symbol"],
+            target["settle_symbol"],
+            target["status"],
+        ]
+        for field in ("venue_product", "contract_direction", "expiry_cycle"):
+            value = target.get(field)
+            if value is not None:
+                target_clauses.append(f"target_market.{field} = ?")
+                target_params.append(value)
+
+        source_sql = f"""
+            WITH requested(position, source_symbol) AS (VALUES {requested_rows})
+            SELECT
+                requested.position,
+                requested.source_symbol,
+                mapping.asset_id,
+                asset.canonical_symbol,
+                CASE
+                    WHEN latest.status = 'SUCCEEDED'
+                     AND source_market.last_seen_at >= latest.started_at
+                    THEN 0 ELSE 1
+                END AS is_stale
+            FROM requested
+            CROSS JOIN markets AS source_market INDEXED BY idx_markets_mapping_source
+              ON source_market.venue = ?
+             AND source_market.active = 1
+             AND source_market.base_symbol = requested.source_symbol
+            JOIN market_asset_mappings AS mapping
+              ON mapping.market_id = source_market.market_id
+            JOIN assets AS asset
+              ON asset.asset_id = mapping.asset_id
+            LEFT JOIN ingest_runs AS latest
+              ON latest.run_id = (
+                  SELECT run_id
+                  FROM ingest_runs
+                  WHERE source = source_market.source
+                  ORDER BY started_at DESC, run_id DESC
+                  LIMIT 1
+              )
+            ORDER BY requested.position, mapping.asset_id
+        """
+
+        database_uri = self.path.resolve().as_uri() + "?mode=ro"
+        conn = sqlite3.connect(database_uri, uri=True, timeout=30, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("PRAGMA query_only = ON")
+            conn.execute("PRAGMA busy_timeout = 30000")
+            conn.execute("BEGIN")
+            revision_row = conn.execute(
+                """
+                SELECT COALESCE(last_seen_at, '') AS revision
+                FROM markets
+                WHERE active = 1
+                ORDER BY last_seen_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            source_rows = conn.execute(source_sql, source_params).fetchall()
+            asset_ids = sorted({row["asset_id"] for row in source_rows})
+            target_rows: list[sqlite3.Row] = []
+            if asset_ids:
+                asset_placeholders = ",".join("?" for _ in asset_ids)
+                target_rows = conn.execute(
+                    f"""
+                    SELECT
+                        target_mapping.asset_id,
+                        target_market.market_id,
+                        target_market.raw_symbol,
+                        target_market.base_symbol,
+                        target_market.last_seen_at,
+                        CASE
+                            WHEN latest.status = 'SUCCEEDED'
+                             AND target_market.last_seen_at >= latest.started_at
+                            THEN 0 ELSE 1
+                        END AS is_stale
+                    FROM market_asset_mappings AS target_mapping
+                    JOIN markets AS target_market
+                      ON target_market.market_id = target_mapping.market_id
+                    LEFT JOIN ingest_runs AS latest
+                      ON latest.run_id = (
+                          SELECT run_id
+                          FROM ingest_runs
+                          WHERE source = target_market.source
+                          ORDER BY started_at DESC, run_id DESC
+                          LIMIT 1
+                      )
+                    WHERE target_mapping.asset_id IN ({asset_placeholders})
+                      AND {' AND '.join(target_clauses)}
+                    ORDER BY target_mapping.asset_id, target_market.market_id
+                    """,
+                    [*asset_ids, *target_params],
+                ).fetchall()
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+        grouped = {
+            position: {"source_symbol": symbol, "assets": {}}
+            for position, symbol in enumerate(symbols)
+        }
+        for row in source_rows:
+            asset = grouped[row["position"]]["assets"].setdefault(
+                row["asset_id"],
+                {
+                    "asset_id": row["asset_id"],
+                    "canonical_symbol": row["canonical_symbol"],
+                    "is_stale": True,
+                    "targets": {},
+                },
+            )
+            asset["is_stale"] = asset["is_stale"] and bool(row["is_stale"])
+
+        targets_by_asset: dict[str, dict[str, dict[str, object]]] = {}
+        for row in target_rows:
+            targets_by_asset.setdefault(row["asset_id"], {})[row["market_id"]] = {
+                "market_id": row["market_id"],
+                "raw_symbol": row["raw_symbol"],
+                "base_symbol": row["base_symbol"],
+                "last_seen_at": row["last_seen_at"],
+                "is_stale": bool(row["is_stale"]),
+            }
+        for item in grouped.values():
+            for asset in item["assets"].values():
+                asset["targets"] = targets_by_asset.get(asset["asset_id"], {})
+
+        results = []
+        for position in range(len(symbols)):
+            item = grouped[position]
+            assets = list(item["assets"].values())
+            if not assets:
+                results.append(
+                    {
+                        "source_symbol": item["source_symbol"],
+                        "status": "source_not_found",
+                        "error_code": "SOURCE_NOT_FOUND",
+                    }
+                )
+                continue
+            if len(assets) != 1:
+                results.append(
+                    {
+                        "source_symbol": item["source_symbol"],
+                        "status": "ambiguous_source",
+                        "error_code": "MULTIPLE_SOURCE_ASSETS",
+                    }
+                )
+                continue
+
+            asset = assets[0]
+            result = {
+                "source_symbol": item["source_symbol"],
+                "asset_id": asset["asset_id"],
+                "canonical_symbol": asset["canonical_symbol"],
+            }
+            targets = list(asset["targets"].values())
+            if not targets:
+                result.update(status="target_not_found", error_code="TARGET_NOT_FOUND")
+            elif len(targets) != 1:
+                result.update(status="ambiguous_target", error_code="MULTIPLE_TARGETS")
+            else:
+                selected = targets[0]
+                result["target"] = {
+                    key: selected[key]
+                    for key in ("market_id", "raw_symbol", "base_symbol", "last_seen_at")
+                }
+                if asset["is_stale"] or selected["is_stale"]:
+                    result.update(status="stale", error_code="STALE_SNAPSHOT")
+                else:
+                    result["status"] = "resolved"
+            results.append(result)
+
+        return {
+            "schema_version": "1",
+            "snapshot_revision": str(
+                revision_row["revision"] if revision_row is not None else ""
+            ).replace("+00:00", "Z"),
+            "results": results,
+        }
+
     def list_assets(self, filters: dict[str, object]) -> dict:
         """Build the active asset -> venue symbol -> market projection."""
         self.migrate()

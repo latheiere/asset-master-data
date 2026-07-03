@@ -209,6 +209,7 @@ original labels or payload evidence.
 - `GET /metadata` HTML filter definitions and currently available values
 - `GET /api/v1/assets` JSON asset hierarchy and venue coverage
 - `GET /api/v1/markets` JSON raw active-market view
+- `POST /api/v1/mappings/resolve` minimal batch venue-mapping resolution
 - `GET /api/v1/logs` JSON collection-run and change history
 - `GET /api/v1/metadata` filter definitions and currently available values
 - `GET /api/v1/stats` collection statistics
@@ -248,6 +249,45 @@ and JSON, respectively. Enum entries include values available from the current
 active universe; text and integer entries include their wildcard or range
 constraints, normalized meanings, and current values. Operators are uniform
 across data filters rather than being special-cased for futures coverage.
+
+### Batch venue mapping
+
+`POST /api/v1/mappings/resolve` resolves up to 100 unique base symbols against
+one SQLite snapshot without constructing the generic asset hierarchy. It uses
+the same mandatory Basic Auth as other API routes.
+
+```json
+{
+  "source": {
+    "venue": "BINANCE",
+    "symbol_type": "BASE",
+    "symbols": ["BTC", "ETH"]
+  },
+  "target": {
+    "venue": "GATE",
+    "market_type": "FUTURE",
+    "product": "PERP",
+    "contract_type": "PERP",
+    "quote_symbol": "USDT",
+    "settle_symbol": "USDT",
+    "status": "TRADING",
+    "venue_product": "USDT-PERP",
+    "contract_direction": "LINEAR"
+  }
+}
+```
+
+`product` and `contract_type` use the normalized `SPOT`, `PERP`, and `DATED`
+dictionary. `venue_product` is optional and selects a venue-native universe.
+Optional `contract_direction` and `expiry_cycle` filters use the normalized
+dictionaries documented above.
+
+The response contains one `snapshot_revision` and input-ordered results with
+only canonical identity and target `market_id`, `raw_symbol`, `base_symbol`,
+and `last_seen_at`. Per-symbol statuses are `resolved`, `source_not_found`,
+`target_not_found`, `ambiguous_source`, `ambiguous_target`, or `stale`.
+Syntactically valid batches return HTTP 200; malformed or invalid dictionaries
+return HTTP 422.
 
 ## Collection log
 

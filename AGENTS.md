@@ -42,6 +42,9 @@ symbols to canonical assets, and serves local HTML/JSON views.
   normalization in migrations before collection to avoid false status events.
 - Every data filter supports `=` and `!=`. Update raw-market queries, asset-view
   queries, metadata, URL canonicalization, and tests together.
+- Keep latency-sensitive mapping APIs projection-free: one indexed read
+  transaction, no `list_assets()`, no `raw_json`, and a synchronous/thread-pool
+  route. Benchmark authenticated 1/10/100-symbol and concurrent requests.
 
 ## Workflow
 
