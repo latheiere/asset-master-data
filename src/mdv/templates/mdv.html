@@ -122,24 +122,39 @@
       <label>Asset type
         <select name="TYPE">
           <option value="">All</option>
-          <option value="FUTURE" {% if filters.type == 'FUTURE' %}selected{% endif %}>Has futures</option>
-          <option value="SPOT" {% if filters.type == 'SPOT' %}selected{% endif %}>Has spot</option>
+          <option value="FUTURE" {% if 'FUTURE' in filters.type %}selected{% endif %}>Has futures</option>
+          <option value="SPOT" {% if 'SPOT' in filters.type %}selected{% endif %}>Has spot</option>
         </select>
       </label>
-      <label>Contract
-        <select name="CONTRACT">
+      <label>Product
+        <select name="PRODUCT">
           <option value="">Any</option>
-          <option value="PERP" {% if filters.contract in ['PERP', 'PERPETUAL'] %}selected{% endif %}>PERP</option>
-          <option value="DATED" {% if filters.contract == 'DATED' %}selected{% endif %}>DATED</option>
-          <option value="CQ" {% if filters.contract == 'CQ' %}selected{% endif %}>CQ</option>
-          <option value="NQ" {% if filters.contract == 'NQ' %}selected{% endif %}>NQ</option>
+          {% for product in filter_metadata.PRODUCT['values'] %}
+            <option value="{{ product }}" {% if product in filters.product %}selected{% endif %}>{{ product }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Expiry cycle
+        <select name="EXPIRY">
+          <option value="">Any</option>
+          {% for expiry in filter_metadata.EXPIRY['values'] %}
+            <option value="{{ expiry }}" {% if expiry in filters.expiry %}selected{% endif %}>{{ expiry }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Direction
+        <select name="DIRECTION">
+          <option value="">Any</option>
+          {% for direction in filter_metadata.DIRECTION['values'] %}
+            <option value="{{ direction }}" {% if direction in filters.direction %}selected{% endif %}>{{ direction }}</option>
+          {% endfor %}
         </select>
       </label>
       <label>Stock
         <select name="STOCK">
           <option value="">All</option>
-          <option value="1" {% if filters.stock in ['1', 'true', 'yes', 'stock'] %}selected{% endif %}>Stock only</option>
-          <option value="0" {% if filters.stock in ['0', 'false', 'no', 'nonstock', 'non-stock'] %}selected{% endif %}>No stocks</option>
+          <option value="1" {% if '1' in filters.stock %}selected{% endif %}>Stock only</option>
+          <option value="0" {% if '0' in filters.stock %}selected{% endif %}>No stocks</option>
         </select>
       </label>
       <label>Futures on
@@ -164,16 +179,17 @@
       <label>Venue
         <select name="VENUE">
           <option value="">All</option>
-          <option value="BINANCE" {% if filters.venue == 'BINANCE' %}selected{% endif %}>Binance</option>
-          <option value="BITGET" {% if filters.venue == 'BITGET' %}selected{% endif %}>Bitget</option>
-          <option value="BYBIT" {% if filters.venue == 'BYBIT' %}selected{% endif %}>Bybit</option>
-          <option value="GATE" {% if filters.venue == 'GATE' %}selected{% endif %}>Gate.com</option>
-          <option value="MEXC" {% if filters.venue == 'MEXC' %}selected{% endif %}>MEXC</option>
+          <option value="BINANCE" {% if 'BINANCE' in filters.venue %}selected{% endif %}>Binance</option>
+          <option value="BITGET" {% if 'BITGET' in filters.venue %}selected{% endif %}>Bitget</option>
+          <option value="BYBIT" {% if 'BYBIT' in filters.venue %}selected{% endif %}>Bybit</option>
+          <option value="GATE" {% if 'GATE' in filters.venue %}selected{% endif %}>Gate.com</option>
+          <option value="MEXC" {% if 'MEXC' in filters.venue %}selected{% endif %}>MEXC</option>
         </select>
       </label>
-      <label>Product<input name="PRODUCT" value="{{ filters.product or '' }}" placeholder="USD-M" autocomplete="off"></label>
+      <label>Quote<input name="QUOTE" value="{{ filters.quote|join(',') }}" placeholder="USDT" autocomplete="off"></label>
+      <label>Settle<input name="SETTLE" value="{{ filters.settle|join(',') }}" placeholder="USDC" autocomplete="off"></label>
       <label>Tag<input name="TAG" value="{{ filters.tags|join(',') }}" placeholder="BINANCE:MONITORING" autocomplete="off"></label>
-      <label>Asset or venue symbol<input name="SYMBOL" value="{{ filters.symbol or '' }}" placeholder="BTC*" autocomplete="off"></label>
+      <label>Asset or venue symbol<input name="SYMBOL" value="{{ filters.symbol|join(',') }}" placeholder="BTC*" autocomplete="off"></label>
       <button type="submit">Apply</button>
       <a class="button-link secondary" href="/mdv">Clear</a>
     </form>
@@ -234,7 +250,7 @@
                         {% for market in venue.futures %}
                           <div class="market-item">
                             <div class="market-name">{% if market.trade_url %}<a href="{{ market.trade_url }}" target="_blank" rel="noopener noreferrer">{{ market.raw_symbol }}</a>{% else %}{{ market.raw_symbol }}{% endif %}</div>
-                            <div class="market-meta">{{ market.product }}{% if market.contract_type != market.product %} · {{ market.contract_type }}{% endif %} · {{ market.status }}</div>
+                            <div class="market-meta">{{ market.product }}{% if market.expiry_cycle %} · {{ market.expiry_cycle }}{% endif %}{% if market.contract_direction %} · {{ market.contract_direction }}{% endif %} · {{ market.quote_symbol }}{% if market.settle_symbol %} / settle {{ market.settle_symbol }}{% endif %} · {{ market.status }}</div>
                             {% if market.expires_at %}<div class="market-meta">Expires: {{ market.expires_at }}</div>{% endif %}
                             {% if market.underlying_multiplier != '1' %}<div class="market-meta">Underlying unit: {{ market.underlying_unit }}</div>{% endif %}
                             {% if market.max_market_order_size %}<div class="market-meta">Max market order size: {{ market.max_market_order_size }}</div>{% endif %}

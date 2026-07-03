@@ -21,6 +21,17 @@ from mdv.matching import (
     stable_asset_id,
 )
 from mdv.models import MarketSnapshot
+from mdv.normalization import (
+    CONTRACT_DIRECTION_VALUES,
+    EXPIRY_CYCLE_VALUES,
+    PRODUCT_VALUES,
+    STATUS_VALUES,
+    contract_direction,
+    legacy_expiry_cycle,
+    normalize_contract_type,
+    normalize_product,
+    normalize_status,
+)
 
 
 def utc_now() -> str:
@@ -51,14 +62,31 @@ def requested_tag_keys(value: object) -> set[tuple[str, str]]:
     }
 
 
+def requested_values(filters: dict[str, object], name: str) -> set[str]:
+    value = filters.get(name) or []
+    raw_values = value if isinstance(value, list) else [value]
+    return {
+        item.strip().upper()
+        for raw in raw_values
+        for item in str(raw).split(",")
+        if item.strip()
+    }
+
+
+def requested_contract_values(filters: dict[str, object], suffix: str = "") -> set[str]:
+    values = requested_values(filters, f"contract{suffix}")
+    return {"PERP" if value == "PERPETUAL" else value for value in values}
+
+
 def market_trade_url(market: dict) -> str | None:
     venue = str(market.get("venue") or "").upper()
     market_type = str(market.get("market_type") or "").upper()
+    venue_product = str(market.get("venue_product") or market.get("product") or "").upper()
     raw_symbol = quote(str(market.get("raw_symbol") or ""), safe="_-")
     base = quote(str(market.get("base_symbol") or ""), safe="_-")
     quote_symbol = quote(str(market.get("quote_symbol") or ""), safe="_-")
     if venue == "BINANCE" and market_type == "FUTURE":
-        section = "delivery" if market.get("product") == "COIN-M" else "futures"
+        section = "delivery" if venue_product == "COIN-M" else "futures"
         return f"https://www.binance.com/en/{section}/{raw_symbol}"
     if venue == "BINANCE" and market_type == "SPOT":
         return f"https://www.binance.com/en/trade/{base}_{quote_symbol}?type=spot"
@@ -68,21 +96,23 @@ def market_trade_url(market: dict) -> str | None:
         return f"https://www.mexc.com/exchange/{base}_{quote_symbol}"
     if venue == "BYBIT" and market_type == "FUTURE":
         settle = str(market.get("settle_symbol") or "").upper()
-        section = "usdc" if settle == "USDC" else "usdt"
+        section = (
+            "inverse"
+            if venue_product == "INVERSE"
+            else ("usdc" if settle == "USDC" else "usdt")
+        )
         return f"https://www.bybit.com/trade/{section}/{raw_symbol}"
     if venue == "BYBIT" and market_type == "SPOT":
         return f"https://www.bybit.com/en/trade/spot/{base}/{quote_symbol}"
     if venue == "GATE" and market_type == "FUTURE":
         settle = quote(str(market.get("settle_symbol") or ""), safe="_-")
-        if str(market.get("product") or "").endswith("-DELIVERY"):
+        if venue_product.endswith("-DELIVERY"):
             return f"https://www.gate.com/en/futures-delivery/{settle.lower()}/{raw_symbol}"
         return f"https://www.gate.com/futures/{settle}/{raw_symbol}"
     if venue == "GATE" and market_type == "SPOT":
         return f"https://www.gate.com/trade/{raw_symbol}"
     if venue == "BITGET" and market_type == "FUTURE":
-        section = {"USDT-M": "usdt", "USDC-M": "usdc", "COIN-M": "coin"}.get(
-            str(market.get("product") or "").upper()
-        )
+        section = {"USDT-M": "usdt", "USDC-M": "usdc", "COIN-M": "coin"}.get(venue_product)
         if section:
             return f"https://www.bitget.com/futures/{section}/{raw_symbol}"
     if venue == "BITGET" and market_type == "SPOT":
@@ -342,15 +372,34 @@ class SQLiteStore:
                     venue=market.venue,
                     market_type=market.market_type,
                 )
+                normalized_contract_type = normalize_contract_type(
+                    market.contract_type,
+                    market_type=market.market_type,
+                )
+                normalized_product = normalize_product(
+                    market.market_type,
+                    normalized_contract_type,
+                )
+                venue_product = market.venue_product or market.product
+                venue_status = market.venue_status or market.status
+                normalized_status = normalize_status(market.status)
+                normalized_direction = market.contract_direction or contract_direction(
+                    market_type=market.market_type,
+                    base_symbol=market.base_symbol,
+                    quote_symbol=market.quote_symbol,
+                    settle_symbol=market.settle_symbol,
+                )
+                expiry_cycle = market.expiry_cycle or legacy_expiry_cycle(market.contract_type)
                 conn.execute(
                     """
                     INSERT INTO markets(
                         market_id, source, venue, market_type, product, raw_symbol,
                         base_symbol, quote_symbol, settle_symbol, contract_type,
                         status, active, contract_multiplier, expires_at, max_market_order_size,
-                        underlying_multiplier,
+                        underlying_multiplier, venue_product, venue_status,
+                        contract_direction, expiry_cycle,
                         first_seen_at, last_seen_at, raw_json, content_hash
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(market_id) DO UPDATE SET
                         product=excluded.product,
                         base_symbol=excluded.base_symbol,
@@ -363,6 +412,10 @@ class SQLiteStore:
                         expires_at=excluded.expires_at,
                         max_market_order_size=excluded.max_market_order_size,
                         underlying_multiplier=excluded.underlying_multiplier,
+                        venue_product=excluded.venue_product,
+                        venue_status=excluded.venue_status,
+                        contract_direction=excluded.contract_direction,
+                        expiry_cycle=excluded.expiry_cycle,
                         last_seen_at=excluded.last_seen_at,
                         raw_json=excluded.raw_json,
                         content_hash=excluded.content_hash
@@ -372,18 +425,22 @@ class SQLiteStore:
                         market.source,
                         market.venue,
                         market.market_type,
-                        market.product,
+                        normalized_product,
                         market.raw_symbol,
                         market.base_symbol,
                         market.quote_symbol,
                         market.settle_symbol,
-                        market.contract_type,
-                        market.status,
+                        normalized_contract_type,
+                        normalized_status,
                         int(market.active),
                         market.contract_multiplier,
                         market.expires_at,
                         market.max_market_order_size,
                         str(normalized.multiplier),
+                        venue_product,
+                        venue_status,
+                        normalized_direction,
+                        expiry_cycle,
                         snapshot.observed_at,
                         snapshot.observed_at,
                         raw_json,
@@ -401,14 +458,14 @@ class SQLiteStore:
                         run_id,
                         market.market_id,
                         snapshot.observed_at,
-                        market.status,
+                        normalized_status,
                         int(market.active),
                         content_hash,
                         raw_json,
                     ),
                 )
                 if previous is None:
-                    self._insert_event(conn, run_id, market.market_id, "DISCOVERED", None, market.status, snapshot.observed_at)
+                    self._insert_event(conn, run_id, market.market_id, "DISCOVERED", None, normalized_status, snapshot.observed_at)
                 else:
                     if bool(previous["active"]) != market.active:
                         event_type = "ACTIVATED" if market.active else "DEACTIVATED"
@@ -421,14 +478,14 @@ class SQLiteStore:
                             str(market.active),
                             snapshot.observed_at,
                         )
-                    if previous["status"] != market.status:
+                    if previous["status"] != normalized_status:
                         self._insert_event(
                             conn,
                             run_id,
                             market.market_id,
                             "STATUS_CHANGED",
                             previous["status"],
-                            market.status,
+                            normalized_status,
                             snapshot.observed_at,
                         )
 
@@ -440,7 +497,7 @@ class SQLiteStore:
                 if row["market_id"] in seen_ids:
                     continue
                 conn.execute(
-                    "UPDATE markets SET active = 0, status = 'MISSING_FROM_COMPLETE_SNAPSHOT' WHERE market_id = ?",
+                    "UPDATE markets SET active = 0, status = 'MISSING' WHERE market_id = ?",
                     (row["market_id"],),
                 )
                 self._insert_event(
@@ -449,7 +506,7 @@ class SQLiteStore:
                     row["market_id"],
                     "MISSING",
                     row["status"],
-                    "MISSING_FROM_COMPLETE_SNAPSHOT",
+                    "MISSING",
                     snapshot.observed_at,
                 )
 
@@ -847,30 +904,89 @@ class SQLiteStore:
         self.migrate()
         clauses = []
         params: list[object] = []
-        for column, key in (("m.market_type", "type"), ("m.venue", "venue"), ("m.product", "product"), ("m.status", "status")):
-            value = filters.get(key)
-            if value:
-                clauses.append(f"{column} = ?")
-                params.append(str(value).upper())
-        active = filters.get("active")
-        if active in (None, ""):
+
+        def add_set_filter(column: str, key: str) -> None:
+            included = requested_values(filters, key)
+            excluded = requested_values(filters, f"{key}_not")
+            if included:
+                placeholders = ",".join("?" for _ in included)
+                clauses.append(f"{column} IN ({placeholders})")
+                params.extend(sorted(included))
+            if excluded:
+                placeholders = ",".join("?" for _ in excluded)
+                clauses.append(f"({column} IS NULL OR {column} NOT IN ({placeholders}))")
+                params.extend(sorted(excluded))
+
+        for column, key in (
+            ("m.market_type", "type"),
+            ("m.venue", "venue"),
+            ("m.product", "product"),
+            ("m.expiry_cycle", "expiry"),
+            ("m.contract_direction", "direction"),
+            ("m.quote_symbol", "quote"),
+            ("m.settle_symbol", "settle"),
+            ("m.status", "status"),
+        ):
+            add_set_filter(column, key)
+
+        for suffix, excluded_filter in (("", False), ("_not", True)):
+            contracts = requested_contract_values(filters, suffix)
+            if contracts:
+                expressions = []
+                direct = contracts & {"PERP", "DATED"}
+                if direct:
+                    placeholders = ",".join("?" for _ in direct)
+                    expressions.append(f"m.contract_type IN ({placeholders})")
+                    params.extend(sorted(direct))
+                for alias, expiry in (("CQ", "Q"), ("NQ", "BQ")):
+                    if alias in contracts:
+                        expressions.append("(m.contract_type = 'DATED' AND m.expiry_cycle = ?)")
+                        params.append(expiry)
+                expression = "(" + " OR ".join(expressions) + ")"
+                clauses.append(f"NOT {expression}" if excluded_filter else expression)
+
+        active_included = requested_values(filters, "active")
+        active_excluded = requested_values(filters, "active_not")
+        if not active_included and not active_excluded:
             clauses.append("m.active = 1")
         else:
-            text = str(active).lower()
-            if text not in {"0", "1", "true", "false"}:
-                raise ValueError("ACTIVE must be true, false, 1, or 0")
-            clauses.append("m.active = ?")
-            params.append(1 if text in {"1", "true"} else 0)
-        symbol = filters.get("symbol")
-        if symbol:
-            escaped = str(symbol).upper().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_").replace("*", "%")
-            clauses.append(
-                "(UPPER(m.raw_symbol) LIKE ? ESCAPE '\\' OR UPPER(m.base_symbol) LIKE ? ESCAPE '\\' OR UPPER(a.canonical_symbol) LIKE ? ESCAPE '\\')"
-            )
-            params.extend([escaped, escaped, escaped])
+            def active_values(values: set[str]) -> set[int]:
+                invalid = values - {"0", "1", "TRUE", "FALSE"}
+                if invalid:
+                    raise ValueError("ACTIVE must be true, false, 1, or 0")
+                return {1 if value in {"1", "TRUE"} else 0 for value in values}
+
+            for values, operator in (
+                (active_values(active_included), "IN"),
+                (active_values(active_excluded), "NOT IN"),
+            ):
+                if values:
+                    placeholders = ",".join("?" for _ in values)
+                    clauses.append(f"m.active {operator} ({placeholders})")
+                    params.extend(sorted(values))
+
+        def add_symbol_filter(key: str, *, excluded: bool = False) -> None:
+            for symbol in sorted(requested_values(filters, key)):
+                escaped = symbol.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_").replace("*", "%")
+                expression = (
+                    "(UPPER(m.raw_symbol) LIKE ? ESCAPE '\\' OR "
+                    "UPPER(m.base_symbol) LIKE ? ESCAPE '\\' OR "
+                    "UPPER(a.canonical_symbol) LIKE ? ESCAPE '\\')"
+                )
+                clauses.append(f"NOT {expression}" if excluded else expression)
+                params.extend([escaped, escaped, escaped])
+
+        add_symbol_filter("symbol")
+        add_symbol_filter("symbol_not", excluded=True)
         for provider, tag in sorted(requested_tag_keys(filters.get("tags") or [])):
             clauses.append(
                 "EXISTS (SELECT 1 FROM asset_tags at "
+                "WHERE at.asset_id = a.asset_id AND at.provider = ? AND at.tag = ? AND at.active = 1)"
+            )
+            params.extend([provider, tag])
+        for provider, tag in sorted(requested_tag_keys(filters.get("tags_not") or [])):
+            clauses.append(
+                "NOT EXISTS (SELECT 1 FROM asset_tags at "
                 "WHERE at.asset_id = a.asset_id AND at.provider = ? AND at.tag = ? AND at.active = 1)"
             )
             params.extend([provider, tag])
@@ -886,7 +1002,8 @@ class SQLiteStore:
                     m.raw_symbol, m.base_symbol, m.quote_symbol,
                     m.settle_symbol, m.contract_type, m.status, m.active,
                     m.contract_multiplier, m.expires_at, m.max_market_order_size,
-                    m.underlying_multiplier,
+                    m.underlying_multiplier, m.venue_product, m.venue_status,
+                    m.contract_direction, m.expiry_cycle,
                     m.first_seen_at, m.last_seen_at, m.raw_json,
                     a.asset_id, a.canonical_symbol,
                     map.method AS match_method,
@@ -914,7 +1031,8 @@ class SQLiteStore:
                     m.raw_symbol, m.base_symbol, m.quote_symbol,
                     m.settle_symbol, m.contract_type, m.status,
                     m.contract_multiplier, m.expires_at, m.max_market_order_size,
-                    m.underlying_multiplier,
+                    m.underlying_multiplier, m.venue_product, m.venue_status,
+                    m.contract_direction, m.expiry_cycle,
                     m.first_seen_at, m.last_seen_at, m.raw_json,
                     a.asset_id, a.canonical_symbol
                 FROM markets m
@@ -962,44 +1080,55 @@ class SQLiteStore:
             )
             asset["markets"].append(row)
 
-        requested_type = str(filters.get("type") or "").upper()
-        if requested_type and requested_type not in {"SPOT", "FUTURE"}:
-            raise ValueError("TYPE must be SPOT or FUTURE")
-        requested_contract = str(filters.get("contract") or "").upper()
-        if requested_contract == "PERPETUAL":
-            requested_contract = "PERP"
-        if requested_contract and requested_contract not in {"PERP", "DATED", "CQ", "NQ"}:
-            raise ValueError("CONTRACT must be PERP, DATED, CQ, or NQ")
+        included = {
+            name: requested_values(filters, name)
+            for name in (
+                "type", "product", "expiry", "direction", "venue",
+                "quote", "settle", "status",
+            )
+        }
+        excluded = {
+            name: requested_values(filters, f"{name}_not")
+            for name in included
+        }
+        contracts = requested_contract_values(filters)
+        contracts_not = requested_contract_values(filters, "_not")
 
-        def venue_filter(name: str) -> set[str]:
-            value = filters.get(name) or []
-            raw_values = value if isinstance(value, list) else [value]
-            return {
-                item.strip().upper()
-                for raw in raw_values
-                for item in str(raw).split(",")
-                if item.strip()
-            }
+        validations = (
+            ("TYPE", included["type"] | excluded["type"], {"SPOT", "FUTURE"}),
+            ("PRODUCT", included["product"] | excluded["product"], set(PRODUCT_VALUES)),
+            ("CONTRACT", contracts | contracts_not, {"PERP", "DATED", "CQ", "NQ"}),
+            ("EXPIRY", included["expiry"] | excluded["expiry"], set(EXPIRY_CYCLE_VALUES)),
+            ("DIRECTION", included["direction"] | excluded["direction"], set(CONTRACT_DIRECTION_VALUES)),
+            ("STATUS", included["status"] | excluded["status"], set(STATUS_VALUES)),
+        )
+        for name, values, allowed in validations:
+            invalid = values - allowed
+            if invalid:
+                raise ValueError(f"{name} has unknown value(s): {', '.join(sorted(invalid))}")
 
-        required_future_venues = venue_filter("futures")
-        excluded_future_venues = venue_filter("futures_not")
+        required_future_venues = requested_values(filters, "futures")
+        excluded_future_venues = requested_values(filters, "futures_not")
         overlap = required_future_venues & excluded_future_venues
         if overlap:
             raise ValueError(f"FUTURES requires and excludes the same venue: {', '.join(sorted(overlap))}")
-        requested_venue = str(filters.get("venue") or "").upper()
-        requested_product = str(filters.get("product") or "").upper()
-        requested_status = str(filters.get("status") or "").upper()
-        requested_symbol = str(filters.get("symbol") or "").upper()
         requested_tags = requested_tag_keys(filters.get("tags") or [])
-        requested_stock = str(filters.get("stock") or "").lower()
-        if requested_stock in {"1", "true", "yes", "stock"}:
-            stock_filter = True
-        elif requested_stock in {"0", "false", "no", "nonstock", "non-stock"}:
-            stock_filter = False
-        elif requested_stock:
-            raise ValueError("STOCK must be 1 or 0")
-        else:
-            stock_filter = None
+        excluded_tags = requested_tag_keys(filters.get("tags_not") or [])
+
+        def stock_values(name: str) -> set[bool]:
+            values = requested_values(filters, name)
+            aliases = {
+                "1": True, "TRUE": True, "YES": True, "STOCK": True,
+                "0": False, "FALSE": False, "NO": False,
+                "NONSTOCK": False, "NON-STOCK": False,
+            }
+            invalid = values - set(aliases)
+            if invalid:
+                raise ValueError("STOCK must be 1 or 0")
+            return {aliases[value] for value in values}
+
+        included_stock = stock_values("stock")
+        excluded_stock = stock_values("stock_not")
         limit = min(max(int(filters.get("limit") or 1000), 1), 5000)
         offset = max(int(filters.get("offset") or 0), 0)
 
@@ -1020,6 +1149,8 @@ class SQLiteStore:
             asset_tag_keys = {(item["provider"], item["tag"]) for item in asset_tags}
             if not requested_tags.issubset(asset_tag_keys):
                 continue
+            if excluded_tags & asset_tag_keys:
+                continue
             for row in all_markets:
                 try:
                     raw_payload = json.loads(row["raw_json"] or "{}")
@@ -1034,40 +1165,80 @@ class SQLiteStore:
                 )
                 row.pop("raw_json", None)
             is_stock = any(row["is_stock"] for row in all_markets)
-            if stock_filter is not None and is_stock != stock_filter:
+            if included_stock and is_stock not in included_stock:
+                continue
+            if is_stock in excluded_stock:
                 continue
             spot_markets = [row for row in all_markets if row["market_type"] == "SPOT"]
-            matching_futures = [
-                row for row in all_markets
-                if row["market_type"] == "FUTURE"
-                and (not requested_contract or row["contract_type"] == requested_contract)
-            ]
+
+            column_by_filter = {
+                "type": "market_type",
+                "product": "product",
+                "expiry": "expiry_cycle",
+                "direction": "contract_direction",
+                "venue": "venue",
+                "quote": "quote_symbol",
+                "settle": "settle_symbol",
+                "status": "status",
+            }
+
+            def matches_contract(row: dict, values: set[str]) -> bool:
+                return any(
+                    (value == "PERP" and row["contract_type"] == "PERP")
+                    or (value == "DATED" and row["contract_type"] == "DATED")
+                    or (value == "CQ" and row["contract_type"] == "DATED" and row["expiry_cycle"] == "Q")
+                    or (value == "NQ" and row["contract_type"] == "DATED" and row["expiry_cycle"] == "BQ")
+                    for value in values
+                )
+
+            def matches_included_dimensions(row: dict) -> bool:
+                if contracts and not matches_contract(row, contracts):
+                    return False
+                return all(
+                    not values or str(row[column] or "").upper() in values
+                    for name, values in included.items()
+                    for column in [column_by_filter[name]]
+                )
+
+            if contracts_not and any(matches_contract(row, contracts_not) for row in all_markets):
+                continue
+            if any(
+                values and any(str(row[column_by_filter[name]] or "").upper() in values for row in all_markets)
+                for name, values in excluded.items()
+            ):
+                continue
+
+            matching_markets = [row for row in all_markets if matches_included_dimensions(row)]
+            if (contracts or any(included.values())) and not matching_markets:
+                continue
+            matching_futures = [row for row in matching_markets if row["market_type"] == "FUTURE"]
+            if not (contracts or any(included.values())):
+                matching_futures = [row for row in all_markets if row["market_type"] == "FUTURE"]
             matching_future_venues = {row["venue"] for row in matching_futures}
 
-            if (requested_contract or required_future_venues or excluded_future_venues) and not matching_futures:
+            if (contracts or required_future_venues or excluded_future_venues) and not matching_futures:
                 continue
             if not required_future_venues.issubset(matching_future_venues):
                 continue
             if excluded_future_venues & matching_future_venues:
                 continue
 
-            markets = spot_markets + matching_futures if requested_contract else all_markets
-            if requested_type == "FUTURE" and not matching_futures:
+            markets = all_markets
+            candidates = [asset["canonical_symbol"]]
+            candidates.extend(row["base_symbol"] for row in markets)
+            candidates.extend(row["raw_symbol"] for row in markets)
+            symbol_patterns = requested_values(filters, "symbol")
+            excluded_symbol_patterns = requested_values(filters, "symbol_not")
+            if symbol_patterns and not any(
+                fnmatchcase(str(candidate).upper(), pattern)
+                for candidate in candidates for pattern in symbol_patterns
+            ):
                 continue
-            if requested_type == "SPOT" and not spot_markets:
+            if any(
+                fnmatchcase(str(candidate).upper(), pattern)
+                for candidate in candidates for pattern in excluded_symbol_patterns
+            ):
                 continue
-            if requested_venue and not any(row["venue"] == requested_venue for row in markets):
-                continue
-            if requested_product and not any(row["product"] == requested_product for row in markets):
-                continue
-            if requested_status and not any(row["status"] == requested_status for row in markets):
-                continue
-            if requested_symbol:
-                candidates = [asset["canonical_symbol"]]
-                candidates.extend(row["base_symbol"] for row in markets)
-                candidates.extend(row["raw_symbol"] for row in markets)
-                if not any(fnmatchcase(str(candidate).upper(), requested_symbol) for candidate in candidates):
-                    continue
 
             venues: dict[str, dict] = {}
             for market in markets:
@@ -1185,25 +1356,74 @@ class SQLiteStore:
                 """
             )]
 
-            filters = {
-                "TYPE": {"kind": "enum", "values": active_values("market_type")},
-                "CONTRACT": {
+            def enum(values: list[str], description: str, **extra) -> dict:
+                return {
                     "kind": "enum",
-                    "values": active_values("contract_type", "AND market_type = 'FUTURE'"),
-                },
-                "FUTURES": {
-                    "kind": "enum",
-                    "values": future_venues,
-                    "multiple": True,
+                    "values": values,
                     "operators": ["=", "!="],
+                    "multiple": True,
+                    "description": description,
+                    **extra,
+                }
+
+            filters = {
+                "TYPE": enum(
+                    active_values("market_type"),
+                    "Market family: spot or futures.",
+                ),
+                "PRODUCT": enum(
+                    active_values("product"),
+                    "Normalized instrument product. Currency and payoff direction are separate fields.",
+                    value_descriptions={
+                        "SPOT": "Immediate-delivery spot pair.",
+                        "PERP": "Perpetual futures contract with no scheduled expiry.",
+                        "DATED": "Futures contract with a scheduled expiry.",
+                    },
+                ),
+                "CONTRACT": enum(
+                    active_values("contract_type", "AND market_type = 'FUTURE'"),
+                    "Backward-compatible alias for futures PRODUCT; CQ/NQ inputs map to DATED plus Q/BQ expiry.",
+                    deprecated_alias_for="PRODUCT",
+                ),
+                "EXPIRY": enum(
+                    active_values("expiry_cycle", "AND market_type = 'FUTURE'"),
+                    "Venue-published dated-contract listing cycle.",
+                    value_descriptions={
+                        "W": "Weekly", "BW": "Bi-weekly", "TW": "Tri-weekly",
+                        "M": "Monthly", "BM": "Bi-monthly", "Q": "Quarterly",
+                        "BQ": "Bi-quarterly", "TQ": "Tri-quarterly",
+                    },
+                ),
+                "DIRECTION": enum(
+                    active_values("contract_direction", "AND market_type = 'FUTURE'"),
+                    "Futures payoff/settlement direction.",
+                    value_descriptions={
+                        "LINEAR": "Settles in the quote asset.",
+                        "INVERSE": "Settles in the base asset.",
+                        "QUANTO": "Settles in an asset other than base or quote.",
+                    },
+                ),
+                "QUOTE": enum(active_values("quote_symbol"), "Price-denomination asset."),
+                "SETTLE": enum(
+                    active_values("settle_symbol", "AND market_type = 'FUTURE'"),
+                    "Futures settlement or margin asset.",
+                ),
+                "FUTURES": enum(
+                    future_venues,
+                    "Futures venue coverage required or excluded at asset level.",
+                ),
+                "STOCK": enum(["0", "1"], "Canonical asset stock classification."),
+                "TAG": enum(tags, "Provider-scoped canonical asset tag."),
+                "VENUE": enum(active_values("venue"), "Trading venue."),
+                "SYMBOL": {
+                    "kind": "text", "wildcard": "*", "operators": ["=", "!="],
+                    "multiple": True, "description": "Canonical, venue-base, or raw market symbol.",
                 },
-                "STOCK": {"kind": "enum", "values": ["0", "1"]},
-                "TAG": {"kind": "enum", "values": tags, "multiple": True},
-                "VENUE": {"kind": "enum", "values": active_values("venue")},
-                "PRODUCT": {"kind": "enum", "values": active_values("product")},
-                "SYMBOL": {"kind": "text", "wildcard": "*"},
-                "STATUS": {"kind": "enum", "values": active_values("status")},
-                "ACTIVE": {"kind": "enum", "values": ["true", "false"]},
+                "STATUS": enum(
+                    active_values("status"),
+                    "Normalized operational market status; venue_status retains the source label.",
+                ),
+                "ACTIVE": enum(["true", "false"], "Whether the market is in the current active view."),
                 "LIMIT": {"kind": "integer", "default": 5000, "minimum": 1, "maximum": 5000},
                 "OFFSET": {"kind": "integer", "default": 0, "minimum": 0},
             }

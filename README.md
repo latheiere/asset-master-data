@@ -32,10 +32,12 @@ preferred.
 - MEXC perps
 
 `TYPE=FUTURE` shows assets with at least one active futures contract.
-`CONTRACT=PERP` selects perps. Binance delivery codes are `CQ` and `NQ`;
-Bybit delivery contracts use `DATED`. Gate.com and Bitget delivery contracts
-use `CQ` and `NQ`. All expose their UTC expiration as `expires_at` in API
-projections.
+`PRODUCT=PERP` selects perpetuals and `PRODUCT=DATED` selects expiring futures.
+Product duration is independent of quote currency, settlement currency, and
+linear/inverse direction. Dated contracts expose UTC `expires_at`; explicit
+venue cycles are normalized as weekly `W`, bi-weekly `BW`, quarterly `Q`, and
+bi-quarterly `BQ`. The schema also reserves `TW`, `M`, `BM`, and `TQ` for the
+additional cycles documented by supported venues.
 
 ## Start
 
@@ -55,9 +57,9 @@ Open:
 
 ```text
 http://127.0.0.1:8090/mdv?TYPE=FUTURE
-http://127.0.0.1:8090/mdv?CONTRACT=PERP&FUTURES=BINANCE,MEXC
-http://127.0.0.1:8090/mdv?CONTRACT=PERP&FUTURES=BINANCE&FUTURES!=MEXC
-http://127.0.0.1:8090/mdv?CONTRACT=PERP&STOCK=1
+http://127.0.0.1:8090/mdv?PRODUCT=PERP&FUTURES=BINANCE,MEXC
+http://127.0.0.1:8090/mdv?PRODUCT=PERP&FUTURES=BINANCE&FUTURES!=MEXC
+http://127.0.0.1:8090/mdv?PRODUCT=PERP&SETTLE=USDC
 http://127.0.0.1:8090/mdv?TAG=BINANCE:MONITORING
 http://127.0.0.1:8090/mdv?TYPE=SPOT&VENUE=BINANCE
 http://127.0.0.1:8090/mdv?SYMBOL=BTC*
@@ -162,8 +164,9 @@ reorder table columns. Drag-and-drop is supported, with `Alt+ArrowUp` and
 selection in the `mdv_columns` cookie for one year; `Reset defaults` restores
 the original layout.
 
-Submitted filter URLs omit empty fields. Futures exclusions use the readable
-`FUTURES!=MEXC` form rather than percent-encoding the exclamation mark.
+Submitted filter URLs omit empty fields and retain readable inequality keys,
+for example `VENUE!=MEXC`. Every data filter supports `=` and `!=`; values can
+be repeated or comma-separated.
 
 Inactive pairs and contracts never appear in the master view. They remain in
 SQLite observations and lifecycle history for audit. Raw market API requests
@@ -173,6 +176,31 @@ querying inactive records.
 Unit-prefixed futures remain explicit. For example, `1000BONK` maps to asset
 `BONK`, keeps venue symbol `1000BONK`, and reports underlying unit `1000 BONK`.
 The multiplier is not appended to the venue symbol.
+
+### Market data dictionary
+
+Normalized market projections keep independent concepts in independent fields:
+
+| Field | Values / meaning |
+| --- | --- |
+| `market_type` | `SPOT`, `FUTURE` |
+| `product` | `SPOT`, `PERP`, `DATED` |
+| `contract_type` | Backward-compatible alias of normalized product duration |
+| `quote_symbol` | Asset in which price is denominated |
+| `settle_symbol` | Futures settlement or margin asset; null for spot |
+| `contract_direction` | `LINEAR`, `INVERSE`, `QUANTO`; null for spot |
+| `expiry_cycle` | `W`, `BW`, `TW`, `M`, `BM`, `Q`, `BQ`, `TQ` when explicitly known |
+| `expires_at` | Exact UTC expiry timestamp for dated contracts |
+| `status` | `PRELAUNCH`, `TRADING`, `BUY_ONLY`, `SELL_ONLY`, `CLOSE_ONLY`, `API_RESTRICTED`, `PAUSED`, `DELISTING`, `DELIVERING`, `SETTLING`, `CLOSED`, `MISSING`, or `UNKNOWN` |
+| `active` | Whether the market belongs in the current operational view |
+| `venue_product` | Original connector/universe classification such as `USD-M` or `LINEAR` |
+| `venue_status` | Original normalized-case venue status such as `TRADABLE`, `ENABLED`, or `NORMAL` |
+| `contract_multiplier` | Venue-reported contract value, retained for audit |
+| `underlying_multiplier` | Canonical unit prefix such as `1000` |
+| `max_market_order_size` | Venue-reported maximum market-order quantity |
+
+`raw_json` remains unchanged, so normalization never discards the exchange's
+original labels or payload evidence.
 
 ## HTTP API
 
@@ -188,11 +216,19 @@ The multiplier is not appended to the venue symbol.
 - `POST /api/v1/refresh?VENUE=BINANCE` collect one venue
 - `GET /health` health check
 
-Asset-view filters are `TYPE`, `CONTRACT`, `FUTURES`, `STOCK`, `TAG`,
-`VENUE`, `PRODUCT`, `SYMBOL`, `LIMIT`, and `OFFSET`:
+Asset-view filters are `TYPE`, `PRODUCT`, `EXPIRY`, `DIRECTION`, `QUOTE`,
+`SETTLE`, `FUTURES`, `STOCK`, `TAG`, `VENUE`, `SYMBOL`, `STATUS`, `LIMIT`, and
+`OFFSET`:
 
-- `CONTRACT=PERP`, `CONTRACT=DATED`, `CONTRACT=CQ`, and `CONTRACT=NQ` select
-  normalized contract codes.
+- `PRODUCT=SPOT`, `PRODUCT=PERP`, and `PRODUCT=DATED` select normalized
+  instrument products. `CONTRACT` remains a backward-compatible alias;
+  legacy `CQ` and `NQ` inputs map to `DATED` plus `Q` and `BQ` respectively.
+- `EXPIRY=W`, `EXPIRY=BW`, `EXPIRY=Q`, and `EXPIRY=BQ` select explicit venue
+  expiry cycles where published.
+- `DIRECTION=LINEAR`, `DIRECTION=INVERSE`, and `DIRECTION=QUANTO` describe the
+  relationship between base, quote, and settlement assets.
+- `QUOTE=USDT` filters the price denomination; `SETTLE=USDC` filters the
+  futures settlement or margin asset.
 - `FUTURES=BINANCE,MEXC` requires futures on both venues.
 - `FUTURES=BINANCE` requires Binance and permits other venues.
 - `FUTURES=BINANCE&FUTURES!=MEXC` requires Binance and excludes MEXC.
@@ -202,7 +238,7 @@ Asset-view filters are `TYPE`, `CONTRACT`, `FUTURES`, `STOCK`, `TAG`,
 
 Lowercase query names are accepted too. `SYMBOL` searches canonical assets,
 venue base symbols, and raw market symbols and supports `*` wildcards. The raw
-market API additionally supports `STATUS` and `ACTIVE`.
+market API additionally supports `ACTIVE`; `/mdv` remains active-only.
 
 The default listener is localhost-only. Authentication is mandatory on every
 route, including `/health`. Add TLS before binding it to a public interface.
@@ -210,8 +246,8 @@ route, including `/health`. Add TLS before binding it to a public interface.
 `GET /metadata` and `GET /api/v1/metadata` describe every query filter as HTML
 and JSON, respectively. Enum entries include values available from the current
 active universe; text and integer entries include their wildcard or range
-constraints. `FUTURES` is marked as a multi-value filter supporting `=` and
-`!=`; `TAG` is also marked as multi-value.
+constraints, normalized meanings, and current values. Operators are uniform
+across data filters rather than being special-cased for futures coverage.
 
 ## Collection log
 

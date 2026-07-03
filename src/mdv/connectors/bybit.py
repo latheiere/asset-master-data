@@ -7,6 +7,7 @@ import httpx
 
 from mdv.connectors.base import fetch_json, utc_now
 from mdv.models import MarketRecord, MarketSnapshot
+from mdv.normalization import contract_direction, normalize_contract_type, normalize_product, normalize_status
 
 
 class BybitConnector:
@@ -70,13 +71,14 @@ class BybitConnector:
                         raise ValueError(
                             f"{self.source}: unknown contractType {raw_contract_type!r}"
                         )
-                status = str(row.get("status") or "UNKNOWN").upper()
+                venue_status = str(row.get("status") or "UNKNOWN").upper()
                 base_symbol = self._required(row, "baseCoin")
                 quote_symbol = self._required(row, "quoteCoin")
                 settle_symbol = None
                 if self.market_type == "FUTURE":
                     fallback_settle = base_symbol if self.category == "inverse" else quote_symbol
                     settle_symbol = str(row.get("settleCoin") or fallback_settle).upper()
+                contract_type = self._contract_type(raw_contract_type)
                 lot_size_filter = row.get("lotSizeFilter")
                 max_market_order_size = None
                 if self.market_type == "FUTURE" and isinstance(lot_size_filter, dict):
@@ -88,18 +90,26 @@ class BybitConnector:
                         source=self.source,
                         venue=self.venue,
                         market_type=self.market_type,
-                        product=self.product,
+                        product=normalize_product(self.market_type, contract_type),
                         raw_symbol=self._required(row, "symbol"),
                         base_symbol=base_symbol,
                         quote_symbol=quote_symbol,
                         settle_symbol=settle_symbol,
-                        contract_type=self._contract_type(raw_contract_type),
-                        status=status,
-                        active=status == "TRADING",
+                        contract_type=contract_type,
+                        status=normalize_status(venue_status),
+                        active=venue_status == "TRADING",
                         contract_multiplier=None,
                         raw=row,
                         expires_at=self._expires_at(row.get("deliveryTime")),
                         max_market_order_size=max_market_order_size,
+                        venue_product=self.product,
+                        venue_status=venue_status,
+                        contract_direction=contract_direction(
+                            market_type=self.market_type,
+                            base_symbol=base_symbol,
+                            quote_symbol=quote_symbol,
+                            settle_symbol=settle_symbol,
+                        ),
                     )
                 )
         snapshot = MarketSnapshot(
@@ -133,9 +143,7 @@ class BybitConnector:
     def _contract_type(self, raw_contract_type: str) -> str:
         if self.market_type == "SPOT":
             return "SPOT"
-        if raw_contract_type in {"LinearPerpetual", "InversePerpetual"}:
-            return "PERP"
-        return "DATED"
+        return normalize_contract_type(raw_contract_type, market_type=self.market_type)
 
     def _expires_at(self, raw_value: object) -> str | None:
         if raw_value in (None, "", "0", 0):

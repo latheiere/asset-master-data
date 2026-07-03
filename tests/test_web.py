@@ -193,6 +193,8 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
         response = client.get("/mdv?TYPE=FUTURE")
         api_response = client.get("/api/v1/markets?TYPE=FUTURE")
         asset_response = client.get("/api/v1/assets?TYPE=FUTURE")
+        without_perpetuals = client.get("/api/v1/assets?PRODUCT!=PERP")
+        without_spot = client.get("/api/v1/assets?TYPE!=SPOT")
         metadata_response = client.get("/api/v1/metadata")
         metadata_html_response = client.get("/metadata")
         logs_response = client.get("/logs")
@@ -239,6 +241,10 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
     assert api_response.json()["count"] == 3
     assert api_response.json()["markets"][2]["max_market_order_size"] == "5000000"
     assert asset_response.json()["count"] == 3
+    assert {
+        asset["canonical_symbol"] for asset in without_perpetuals.json()["assets"]
+    } == {"SOL", "WIF"}
+    assert without_spot.json()["count"] == 3
     assert metadata_response.status_code == 200
     assert metadata_response.json()["filters"]["VENUE"]["values"] == [
         "BINANCE",
@@ -255,7 +261,8 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
     assert "Filter Metadata" in metadata_html_response.text
     assert "BINANCE:MONITORING" in metadata_html_response.text
     assert "repeatable / comma-separated" in metadata_html_response.text
-    assert "Operators:" in metadata_html_response.text
+    assert "All data filters support" in metadata_html_response.text
+    assert "Normalized instrument product" in metadata_html_response.text
     assert logs_response.status_code == 200
     assert "Collection Log" in logs_response.text
     assert 'id="timezone-select"' in logs_response.text

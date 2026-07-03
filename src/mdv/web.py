@@ -30,22 +30,29 @@ def _query_filters(request: Request) -> dict[str, object]:
                     result.append(normalized)
         return result
 
-    return {
-        "type": value("TYPE"),
-        "venue": value("VENUE"),
-        "product": value("PRODUCT"),
-        "contract": value("CONTRACT"),
-        "futures": values("FUTURES"),
-        # `FUTURES!=MEXC` is parsed as query key `FUTURES!`, value `MEXC`.
-        "futures_not": values("FUTURES!"),
-        "stock": value("STOCK"),
-        "tags": values("TAG"),
-        "symbol": value("SYMBOL"),
-        "status": value("STATUS"),
-        "active": value("ACTIVE"),
+    result: dict[str, object] = {
         "limit": value("LIMIT", 5000),
         "offset": value("OFFSET", 0),
     }
+    for query_name, filter_name in (
+        ("TYPE", "type"),
+        ("PRODUCT", "product"),
+        ("CONTRACT", "contract"),
+        ("EXPIRY", "expiry"),
+        ("DIRECTION", "direction"),
+        ("FUTURES", "futures"),
+        ("STOCK", "stock"),
+        ("TAG", "tags"),
+        ("VENUE", "venue"),
+        ("QUOTE", "quote"),
+        ("SETTLE", "settle"),
+        ("SYMBOL", "symbol"),
+        ("STATUS", "status"),
+        ("ACTIVE", "active"),
+    ):
+        result[filter_name] = values(query_name)
+        result[f"{filter_name}_not"] = values(f"{query_name}!")
+    return result
 
 
 def _canonical_mdv_query(request: Request) -> str:
@@ -248,7 +255,12 @@ def create_app(*, settings: Settings | None = None, store: SQLiteStore | None = 
         return templates.TemplateResponse(
             request=request,
             name="mdv.html",
-            context={"asset_view": asset_view, "filters": filters, "stats": store.stats()},
+            context={
+                "asset_view": asset_view,
+                "filters": filters,
+                "filter_metadata": store.filter_metadata()["filters"],
+                "stats": store.stats(),
+            },
         )
 
     return app

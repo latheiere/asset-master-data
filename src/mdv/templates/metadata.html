@@ -29,7 +29,7 @@
   <header>
     <div>
       <h1>Filter Metadata</h1>
-      <div class="summary">Supported query filters and values from the current active universe.</div>
+      <div class="summary">Supported query filters and values from the current active universe. All data filters support <code>=</code> and <code>!=</code>.</div>
     </div>
     <div>
       <a class="button-link" href="/mdv">Asset view</a>
@@ -39,18 +39,16 @@
   <main>
     <section class="panel">
       <table>
-        <thead><tr><th>Filter</th><th>Kind</th><th>Values or constraints</th></tr></thead>
+        <thead><tr><th>Filter</th><th>Meaning</th><th>Kind</th><th>Values or constraints</th></tr></thead>
         <tbody>
         {% for name, definition in metadata.filters.items() %}
           <tr>
             <td><code>{{ name }}</code>{% if definition.get('multiple') %} <span class="muted">repeatable / comma-separated</span>{% endif %}</td>
+            <td>{{ definition.get('description', '') }}{% if definition.get('deprecated_alias_for') %} <span class="muted">Use {{ definition.deprecated_alias_for }} for new integrations.</span>{% endif %}</td>
             <td>{{ definition.kind }}</td>
             <td>
-              {% if definition.get('operators') %}
-                Operators: {% for operator in definition.operators %}<code>{{ operator }}</code>{% if not loop.last %}, {% endif %}{% endfor %}<br>
-              {% endif %}
               {% if definition.get('values') is not none %}
-                <div class="badges">{% for value in definition.get('values') %}<span class="badge">{{ value }}</span>{% else %}<span class="muted">No current values</span>{% endfor %}</div>
+                <div class="badges">{% for value in definition.get('values') %}<span class="badge"{% if definition.get('value_descriptions', {}).get(value) %} title="{{ definition.value_descriptions[value] }}"{% endif %}>{{ value }}</span>{% else %}<span class="muted">No current values</span>{% endfor %}</div>
               {% elif definition.kind == 'text' %}
                 Wildcard: <code>{{ definition.wildcard }}</code>
               {% else %}

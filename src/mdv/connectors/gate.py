@@ -6,6 +6,7 @@ import httpx
 
 from mdv.connectors.base import fetch_json, utc_now
 from mdv.models import MarketRecord, MarketSnapshot
+from mdv.normalization import contract_direction, normalize_product, normalize_status
 
 
 def _required(row: dict, name: str, *, source: str) -> str:
@@ -39,7 +40,7 @@ class GateSpotConnector:
         for row in payload:
             if not isinstance(row, dict):
                 raise ValueError(f"{self.source}: currency pair is not an object")
-            status = str(row.get("trade_status") or "UNKNOWN").strip().upper()
+            venue_status = str(row.get("trade_status") or "UNKNOWN").strip().upper()
             tags = []
             if row.get("st_tag") is True:
                 tags.append(
@@ -61,10 +62,12 @@ class GateSpotConnector:
                     quote_symbol=_required(row, "quote", source=self.source),
                     settle_symbol=None,
                     contract_type="SPOT",
-                    status=status,
-                    active=status == "TRADABLE",
+                    status=normalize_status(venue_status),
+                    active=venue_status == "TRADABLE",
                     contract_multiplier=None,
                     raw=_asset_tags(row, tags),
+                    venue_product=self.product,
+                    venue_status=venue_status,
                 )
             )
         snapshot = MarketSnapshot(
@@ -110,20 +113,21 @@ class GateFutureConnector:
                 raise ValueError(f"{self.source}: invalid underlying {underlying!r}") from exc
             in_delisting = row.get("in_delisting") is True
             raw_status = str(row.get("status") or "").strip().upper()
-            status = "DELISTING" if in_delisting else (raw_status or "TRADING")
-            active = status == "TRADING" and not in_delisting
+            venue_status = "DELISTING" if in_delisting else (raw_status or "TRADING")
+            active = venue_status == "TRADING" and not in_delisting
+            contract_type = self._contract_type(row)
             markets.append(
                 MarketRecord(
                     source=self.source,
                     venue=self.venue,
                     market_type=self.market_type,
-                    product=self.product,
+                    product=normalize_product(self.market_type, contract_type),
                     raw_symbol=raw_symbol,
                     base_symbol=base_symbol,
                     quote_symbol=quote_symbol,
                     settle_symbol=self.settle,
-                    contract_type=self._contract_type(row),
-                    status=status,
+                    contract_type=contract_type,
+                    status=normalize_status(venue_status),
                     active=active,
                     contract_multiplier=(
                         str(row["quanto_multiplier"])
@@ -137,6 +141,15 @@ class GateFutureConnector:
                         if not self.delivery and row.get("market_order_size_max") is not None
                         else None
                     ),
+                    venue_product=self.product,
+                    venue_status=venue_status,
+                    contract_direction=contract_direction(
+                        market_type=self.market_type,
+                        base_symbol=base_symbol,
+                        quote_symbol=quote_symbol,
+                        settle_symbol=self.settle,
+                    ),
+                    expiry_cycle=self._expiry_cycle(row),
                 )
             )
         snapshot = MarketSnapshot(
@@ -153,12 +166,18 @@ class GateFutureConnector:
     def _contract_type(self, row: dict) -> str:
         if not self.delivery:
             return "PERP"
+        self._expiry_cycle(row)
+        return "DATED"
+
+    def _expiry_cycle(self, row: dict) -> str | None:
+        if not self.delivery:
+            return None
         cycle = str(row.get("cycle") or "").strip().upper()
         codes = {
-            "WEEKLY": "CQ",
-            "QUARTERLY": "CQ",
-            "BI-WEEKLY": "NQ",
-            "BI-QUARTERLY": "NQ",
+            "WEEKLY": "W",
+            "BI-WEEKLY": "BW",
+            "QUARTERLY": "Q",
+            "BI-QUARTERLY": "BQ",
         }
         try:
             return codes[cycle]

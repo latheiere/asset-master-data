@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 
 import httpx
 
 from mdv.connectors.base import fetch_json, utc_now
 from mdv.models import MarketRecord, MarketSnapshot
+from mdv.normalization import contract_direction, normalize_contract_type, normalize_product, normalize_status
 
 
 class BinanceConnector:
@@ -45,15 +47,15 @@ class BinanceConnector:
             }
         markets = []
         for row in symbols:
-            status = str(row.get("status") or row.get("contractStatus") or "UNKNOWN").upper()
+            venue_status = str(row.get("status") or row.get("contractStatus") or "UNKNOWN").upper()
             is_spot = self.market_type == "SPOT"
             raw_contract_type = str(row.get("contractType") or "FUTURE").upper()
-            contract_type = {
-                "PERPETUAL": "PERP",
-                "TRADIFI_PERPETUAL": "PERP",
-                "CURRENT_QUARTER": "CQ",
-                "NEXT_QUARTER": "NQ",
-            }.get(raw_contract_type, raw_contract_type)
+            contract_type = "SPOT" if is_spot else normalize_contract_type(raw_contract_type)
+            settle_symbol = (
+                None
+                if is_spot
+                else str(row.get("marginAsset") or row.get("quoteAsset") or "").upper() or None
+            )
             metadata = metadata_by_symbol.get(str(row["symbol"]).upper())
             raw = dict(row)
             if metadata is not None:
@@ -61,7 +63,7 @@ class BinanceConnector:
             market_lot_size = next(
                 (
                     item
-                    for item in row.get("filters", [])
+                    for item in (row.get("filters") or [])
                     if isinstance(item, dict) and item.get("filterType") == "MARKET_LOT_SIZE"
                 ),
                 None,
@@ -71,14 +73,14 @@ class BinanceConnector:
                     source=self.source,
                     venue=self.venue,
                     market_type=self.market_type,
-                    product=self.product,
+                    product=normalize_product(self.market_type, contract_type),
                     raw_symbol=str(row["symbol"]).upper(),
                     base_symbol=str(row["baseAsset"]).upper(),
                     quote_symbol=str(row["quoteAsset"]).upper(),
-                    settle_symbol=None if is_spot else str(row.get("marginAsset") or row.get("quoteAsset") or "").upper() or None,
-                    contract_type="SPOT" if is_spot else contract_type,
-                    status=status,
-                    active=status == "TRADING",
+                    settle_symbol=settle_symbol,
+                    contract_type=contract_type,
+                    status=normalize_status(venue_status),
+                    active=venue_status == "TRADING",
                     contract_multiplier=str(row.get("contractSize")) if row.get("contractSize") is not None else None,
                     raw=raw,
                     max_market_order_size=(
@@ -86,6 +88,21 @@ class BinanceConnector:
                         if market_lot_size is not None and market_lot_size.get("maxQty") is not None
                         else None
                     ),
+                    expires_at=self._expires_at(row.get("deliveryDate"), contract_type),
+                    venue_product=self.product,
+                    venue_status=venue_status,
+                    contract_direction=contract_direction(
+                        market_type=self.market_type,
+                        base_symbol=str(row["baseAsset"]),
+                        quote_symbol=str(row["quoteAsset"]),
+                        settle_symbol=settle_symbol,
+                    ),
+                    expiry_cycle={
+                        "CURRENT_MONTH": "M",
+                        "NEXT_MONTH": "BM",
+                        "CURRENT_QUARTER": "Q",
+                        "NEXT_QUARTER": "BQ",
+                    }.get(raw_contract_type),
                 )
             )
         snapshot = MarketSnapshot(
@@ -98,6 +115,14 @@ class BinanceConnector:
         )
         snapshot.validate()
         return snapshot
+
+    def _expires_at(self, value: object, contract_type: str) -> str | None:
+        if contract_type != "DATED" or value in (None, "", 0, "0"):
+            return None
+        try:
+            return datetime.fromtimestamp(int(str(value)) / 1000, timezone.utc).isoformat()
+        except (OverflowError, TypeError, ValueError) as exc:
+            raise ValueError(f"{self.source}: invalid deliveryDate {value!r}") from exc
 
 
 def binance_connectors() -> list[BinanceConnector]:

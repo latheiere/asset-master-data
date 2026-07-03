@@ -4,6 +4,7 @@ import httpx
 
 from mdv.connectors.base import fetch_json, utc_now
 from mdv.models import MarketRecord, MarketSnapshot
+from mdv.normalization import contract_direction, normalize_status
 
 
 class MexcSpotConnector:
@@ -23,9 +24,9 @@ class MexcSpotConnector:
         markets = []
         for row in symbols:
             raw_status = str(row.get("status") or "UNKNOWN").upper()
-            status = {"1": "ENABLED", "0": "DISABLED"}.get(raw_status, raw_status)
+            venue_status = {"1": "ENABLED", "0": "DISABLED"}.get(raw_status, raw_status)
             allowed = row.get("isSpotTradingAllowed")
-            active = status in {"TRADING", "ENABLED"} and allowed is not False
+            active = venue_status in {"TRADING", "ENABLED"} and allowed is not False
             markets.append(
                 MarketRecord(
                     source=self.source,
@@ -37,10 +38,12 @@ class MexcSpotConnector:
                     quote_symbol=str(row["quoteAsset"]).upper(),
                     settle_symbol=None,
                     contract_type="SPOT",
-                    status=status,
+                    status=normalize_status(venue_status),
                     active=active,
                     contract_multiplier=None,
                     raw=row,
+                    venue_product=self.product,
+                    venue_status=venue_status,
                 )
             )
         snapshot = MarketSnapshot(self.source, self.venue, self.market_type, self.product, observed_at, tuple(markets))
@@ -64,7 +67,10 @@ class MexcFutureConnector:
         markets = []
         for row in payload["data"]:
             state = int(row.get("state", -1))
-            status = {0: "ENABLED", 1: "DELIVERY", 2: "COMPLETED", 3: "OFFLINE", 4: "PAUSED"}.get(state, f"STATE_{state}")
+            venue_status = {0: "ENABLED", 1: "DELIVERY", 2: "COMPLETED", 3: "OFFLINE", 4: "PAUSED"}.get(state, f"STATE_{state}")
+            base_symbol = str(row["baseCoin"]).upper()
+            quote_symbol = str(row["quoteCoin"]).upper()
+            settle_symbol = str(row.get("settleCoin") or row.get("quoteCoin") or "").upper() or None
             markets.append(
                 MarketRecord(
                     source=self.source,
@@ -72,16 +78,24 @@ class MexcFutureConnector:
                     market_type=self.market_type,
                     product=self.product,
                     raw_symbol=str(row["symbol"]).upper(),
-                    base_symbol=str(row["baseCoin"]).upper(),
-                    quote_symbol=str(row["quoteCoin"]).upper(),
-                    settle_symbol=str(row.get("settleCoin") or row.get("quoteCoin") or "").upper() or None,
+                    base_symbol=base_symbol,
+                    quote_symbol=quote_symbol,
+                    settle_symbol=settle_symbol,
                     contract_type="PERP",
-                    status=status,
+                    status=normalize_status(venue_status),
                     active=state == 0,
                     contract_multiplier=str(row.get("contractSize")) if row.get("contractSize") is not None else None,
                     raw=row,
                     max_market_order_size=(
                         str(row["maxVol"]) if row.get("maxVol") is not None else None
+                    ),
+                    venue_product=self.product,
+                    venue_status=venue_status,
+                    contract_direction=contract_direction(
+                        market_type=self.market_type,
+                        base_symbol=base_symbol,
+                        quote_symbol=quote_symbol,
+                        settle_symbol=settle_symbol,
                     ),
                 )
             )

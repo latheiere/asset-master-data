@@ -7,6 +7,7 @@ import httpx
 
 from mdv.connectors.base import fetch_json, utc_now
 from mdv.models import MarketRecord, MarketSnapshot
+from mdv.normalization import contract_direction, normalize_product, normalize_status
 
 
 def _required(row: dict, name: str, *, source: str) -> str:
@@ -48,7 +49,7 @@ class BitgetSpotConnector:
         for row in _data(payload, source=self.source):
             if not isinstance(row, dict):
                 raise ValueError(f"{self.source}: symbol is not an object")
-            status = str(row.get("status") or "UNKNOWN").strip().upper()
+            venue_status = str(row.get("status") or "UNKNOWN").strip().upper()
             tags = []
             if str(row.get("areaSymbol") or "").strip().lower() == "yes":
                 tags.append(
@@ -70,10 +71,12 @@ class BitgetSpotConnector:
                     quote_symbol=_required(row, "quoteCoin", source=self.source),
                     settle_symbol=None,
                     contract_type="SPOT",
-                    status=status,
-                    active=status == "ONLINE",
+                    status=normalize_status(venue_status),
+                    active=venue_status == "ONLINE",
                     contract_multiplier=None,
                     raw=_asset_tags(row, tags),
+                    venue_product=self.product,
+                    venue_status=venue_status,
                 )
             )
         snapshot = MarketSnapshot(
@@ -108,7 +111,7 @@ class BitgetFutureConnector:
         for row in _data(payload, source=self.source):
             if not isinstance(row, dict):
                 raise ValueError(f"{self.source}: contract is not an object")
-            status = str(row.get("symbolStatus") or "UNKNOWN").strip().upper()
+            venue_status = str(row.get("symbolStatus") or "UNKNOWN").strip().upper()
             tags = []
             if str(row.get("isRwa") or "").strip().upper() == "YES":
                 tags.append(
@@ -121,21 +124,21 @@ class BitgetFutureConnector:
                 )
             base_symbol = _required(row, "baseCoin", source=self.source)
             quote_symbol = _required(row, "quoteCoin", source=self.source)
+            settle_symbol = base_symbol if self.product_type == "COIN-FUTURES" else quote_symbol
+            contract_type = self._contract_type(row)
             markets.append(
                 MarketRecord(
                     source=self.source,
                     venue=self.venue,
                     market_type=self.market_type,
-                    product=self.product,
+                    product=normalize_product(self.market_type, contract_type),
                     raw_symbol=_required(row, "symbol", source=self.source),
                     base_symbol=base_symbol,
                     quote_symbol=quote_symbol,
-                    settle_symbol=(
-                        base_symbol if self.product_type == "COIN-FUTURES" else quote_symbol
-                    ),
-                    contract_type=self._contract_type(row),
-                    status=status,
-                    active=status == "NORMAL",
+                    settle_symbol=settle_symbol,
+                    contract_type=contract_type,
+                    status=normalize_status(venue_status),
+                    active=venue_status == "NORMAL",
                     contract_multiplier=None,
                     raw=_asset_tags(row, tags),
                     expires_at=self._expires_at(row),
@@ -144,6 +147,15 @@ class BitgetFutureConnector:
                         if row.get("maxMarketOrderQty") is not None
                         else None
                     ),
+                    venue_product=self.product,
+                    venue_status=venue_status,
+                    contract_direction=contract_direction(
+                        market_type=self.market_type,
+                        base_symbol=base_symbol,
+                        quote_symbol=quote_symbol,
+                        settle_symbol=settle_symbol,
+                    ),
+                    expiry_cycle=self._expiry_cycle(row),
                 )
             )
         snapshot = MarketSnapshot(
@@ -164,11 +176,16 @@ class BitgetFutureConnector:
         if symbol_type != "delivery":
             raise ValueError(f"{self.source}: unknown symbolType {symbol_type!r}")
         period = str(row.get("deliveryPeriod") or "").strip().lower()
-        codes = {"this_quarter": "CQ", "next_quarter": "NQ"}
-        try:
-            return codes[period]
-        except KeyError as exc:
-            raise ValueError(f"{self.source}: unknown deliveryPeriod {period!r}") from exc
+        if period not in {"this_quarter", "next_quarter"}:
+            raise ValueError(f"{self.source}: unknown deliveryPeriod {period!r}")
+        return "DATED"
+
+    def _expiry_cycle(self, row: dict) -> str | None:
+        if str(row.get("symbolType") or "").strip().lower() != "delivery":
+            return None
+        return {"this_quarter": "Q", "next_quarter": "BQ"}.get(
+            str(row.get("deliveryPeriod") or "").strip().lower()
+        )
 
     def _expires_at(self, row: dict) -> str | None:
         if str(row.get("symbolType") or "").strip().lower() != "delivery":

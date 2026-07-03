@@ -79,6 +79,9 @@ def test_store_applies_snapshot_matches_asset_and_filters(tmp_path):
     assert len(rows) == 1
     assert rows[0]["canonical_symbol"] == "BTC"
     assert rows[0]["market_type"] == "FUTURE"
+    assert rows[0]["product"] == "PERP"
+    assert rows[0]["venue_product"] == "USD-M"
+    assert rows[0]["contract_direction"] == "LINEAR"
     assert rows[0]["active"] == 1
 
 
@@ -88,17 +91,20 @@ def test_filter_metadata_describes_filters_and_current_values(tmp_path):
 
     metadata = store.filter_metadata()
 
-    assert metadata["filters"]["TYPE"] == {"kind": "enum", "values": ["FUTURE"]}
-    assert metadata["filters"]["CONTRACT"] == {"kind": "enum", "values": ["PERP"]}
-    assert metadata["filters"]["FUTURES"] == {
-        "kind": "enum",
-        "values": ["BINANCE"],
-        "multiple": True,
-        "operators": ["=", "!="],
-    }
+    assert metadata["filters"]["TYPE"]["values"] == ["FUTURE"]
+    assert metadata["filters"]["CONTRACT"]["values"] == ["PERP"]
+    assert metadata["filters"]["CONTRACT"]["deprecated_alias_for"] == "PRODUCT"
+    assert metadata["filters"]["FUTURES"]["values"] == ["BINANCE"]
     assert "FUTURES!" not in metadata["filters"]
-    assert metadata["filters"]["PRODUCT"]["values"] == ["USD-M"]
-    assert metadata["filters"]["SYMBOL"] == {"kind": "text", "wildcard": "*"}
+    assert metadata["filters"]["PRODUCT"]["values"] == ["PERP"]
+    assert metadata["filters"]["DIRECTION"]["values"] == ["LINEAR"]
+    assert metadata["filters"]["SETTLE"]["values"] == ["USDT"]
+    assert metadata["filters"]["SYMBOL"]["wildcard"] == "*"
+    assert all(
+        definition["operators"] == ["=", "!="]
+        for name, definition in metadata["filters"].items()
+        if name not in {"LIMIT", "OFFSET"}
+    )
     assert metadata["filters"]["LIMIT"]["maximum"] == 5000
 
 
@@ -252,6 +258,9 @@ def test_collection_run_migration_backfills_previous_ingest_runs(tmp_path):
     )
     assert child_parents == {parents[0][0]}
     assert "max_market_order_size" in market_columns
+    assert {
+        "venue_product", "venue_status", "contract_direction", "expiry_cycle"
+    }.issubset(market_columns)
 
 
 def test_asset_view_groups_active_markets_and_reports_cross_venue_futures(tmp_path):
@@ -342,7 +351,58 @@ def test_short_future_filters_support_required_and_excluded_venues(tmp_path):
     assert [asset["canonical_symbol"] for asset in binance_only["assets"]] == ["ETH"]
     assert all(asset["canonical_symbol"] != "BNB" for asset in binance_optional["assets"])
     assert [asset["canonical_symbol"] for asset in current_quarter["assets"]] == ["BNB"]
-    assert store.filter_metadata()["filters"]["CONTRACT"]["values"] == ["CQ", "PERP"]
+    metadata = store.filter_metadata()["filters"]
+    assert metadata["CONTRACT"]["values"] == ["DATED", "PERP"]
+    assert metadata["EXPIRY"]["values"] == ["Q"]
+
+
+def test_normalized_dimensions_support_equal_and_not_equal_filters(tmp_path):
+    store = SQLiteStore(tmp_path / "mdv.sqlite3")
+    perpetual = market(
+        source="BINANCE_BTC",
+        venue="BINANCE",
+        market_type="FUTURE",
+        raw_symbol="BTCUSDT",
+        base_symbol="BTC",
+        product="USD-M",
+    )
+    dated = market(
+        source="GATE_ETH_DELIVERY",
+        venue="GATE",
+        market_type="FUTURE",
+        raw_symbol="ETH_USDC_20260710",
+        base_symbol="ETH",
+        quote_symbol="USDC",
+        product="USDC-DELIVERY",
+        contract_type="DATED",
+    )
+    dated = MarketRecord(
+        **{
+            **dated.__dict__,
+            "settle_symbol": "USDC",
+            "expiry_cycle": "W",
+            "venue_product": "USDC-DELIVERY",
+        }
+    )
+    apply_market(store, perpetual)
+    apply_market(store, dated)
+
+    assert [row["raw_symbol"] for row in store.list_markets({"product": "PERP"})] == [
+        "BTCUSDT"
+    ]
+    assert [row["raw_symbol"] for row in store.list_markets({"product_not": "PERP"})] == [
+        "ETH_USDC_20260710"
+    ]
+    assert store.list_markets({"expiry": "W"})[0]["contract_type"] == "DATED"
+    assert store.list_markets({"quote": "USDC"})[0]["settle_symbol"] == "USDC"
+    assert store.list_markets({"settle_not": "USDT"})[0]["raw_symbol"] == "ETH_USDC_20260710"
+    assert store.list_markets({"direction": "LINEAR"})[0]["status"] == "TRADING"
+
+    assert [asset["canonical_symbol"] for asset in store.list_assets({"venue_not": "GATE"})["assets"]] == ["BTC"]
+    assert [asset["canonical_symbol"] for asset in store.list_assets({"product_not": "PERP"})["assets"]] == ["ETH"]
+    assert [asset["canonical_symbol"] for asset in store.list_assets({"expiry": "W"})["assets"]] == ["ETH"]
+    assert [asset["canonical_symbol"] for asset in store.list_assets({"quote_not": "USDT"})["assets"]] == ["ETH"]
+    assert [asset["canonical_symbol"] for asset in store.list_assets({"symbol_not": "BTC*"})["assets"]] == ["ETH"]
 
 
 def test_unit_prefixed_spot_and_future_symbols_share_one_asset(tmp_path):
@@ -470,7 +530,8 @@ def test_gate_and_bitget_trade_links_use_exact_product_routes():
         {
             "venue": "GATE",
             "market_type": "FUTURE",
-            "product": "USDT-DELIVERY",
+            "product": "DATED",
+            "venue_product": "USDT-DELIVERY",
             "raw_symbol": "SOL_USDT_20260710",
             "base_symbol": "SOL",
             "quote_symbol": "USDT",
@@ -481,7 +542,8 @@ def test_gate_and_bitget_trade_links_use_exact_product_routes():
         {
             "venue": "GATE",
             "market_type": "FUTURE",
-            "product": "USDT-PERP",
+            "product": "PERP",
+            "venue_product": "USDT-PERP",
             "raw_symbol": "BTC_USDT",
             "settle_symbol": "USDT",
         }
@@ -490,10 +552,21 @@ def test_gate_and_bitget_trade_links_use_exact_product_routes():
         {
             "venue": "BITGET",
             "market_type": "FUTURE",
-            "product": "COIN-M",
+            "product": "PERP",
+            "venue_product": "COIN-M",
             "raw_symbol": "BTCUSD",
         }
     ) == "https://www.bitget.com/futures/coin/BTCUSD"
+    assert market_trade_url(
+        {
+            "venue": "BYBIT",
+            "market_type": "FUTURE",
+            "product": "PERP",
+            "venue_product": "INVERSE",
+            "raw_symbol": "BTCUSD",
+            "settle_symbol": "BTC",
+        }
+    ) == "https://www.bybit.com/trade/inverse/BTCUSD"
     assert market_trade_url(
         {
             "venue": "BITGET",

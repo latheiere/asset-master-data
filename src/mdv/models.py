@@ -21,6 +21,10 @@ class MarketRecord:
     raw: dict[str, Any]
     expires_at: str | None = None
     max_market_order_size: str | None = None
+    venue_product: str | None = None
+    venue_status: str | None = None
+    contract_direction: str | None = None
+    expiry_cycle: str | None = None
 
     @property
     def market_id(self) -> str:

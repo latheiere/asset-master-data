@@ -31,8 +31,9 @@ symbols to canonical assets, and serves local HTML/JSON views.
   history and expose them only through explicit audit queries.
 - Display unit-prefixed futures as venue symbol `1000BONK` and underlying unit
   `1000 BONK`; never render the multiplier twice.
-- Use short normalized contract codes in UI/API projections: `PERP`, `CQ`, and
-  `NQ`. Raw exchange payload values remain unchanged.
+- Normalize product duration as `SPOT`, `PERP`, or `DATED`. Keep quote,
+  settlement asset, linear/inverse direction, and expiry cycle in separate
+  fields. Raw exchange payload values and venue-native labels remain unchanged.
 
 ## Workflow
 
