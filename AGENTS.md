@@ -34,6 +34,14 @@ symbols to canonical assets, and serves local HTML/JSON views.
 - Normalize product duration as `SPOT`, `PERP`, or `DATED`. Keep quote,
   settlement asset, linear/inverse direction, and expiry cycle in separate
   fields. Raw exchange payload values and venue-native labels remain unchanged.
+- Keep `venue_product` and `venue_status` for source semantics. Venue-specific
+  URLs and routing must use `venue_product`, never overloaded normalized fields.
+- Do not infer an expiry cycle when the source publishes only an exact expiry;
+  keep `expiry_cycle` null and preserve `expires_at`.
+- Synthetic lifecycle states such as `MISSING` are not venue statuses. Backfill
+  normalization in migrations before collection to avoid false status events.
+- Every data filter supports `=` and `!=`. Update raw-market queries, asset-view
+  queries, metadata, URL canonicalization, and tests together.
 
 ## Workflow
 
@@ -46,6 +54,8 @@ symbols to canonical assets, and serves local HTML/JSON views.
    changes.
 7. Do not create an origin, push, deploy, or expose the service publicly unless
    explicitly requested.
+8. After an authorized production deploy, verify the deployed commit, schema,
+   collection result, API service, refresh timer, and authentication boundary.
 
 ## Data safety
 
