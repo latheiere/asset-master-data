@@ -475,7 +475,7 @@ def test_mexc_stock_suffix_maps_to_underlying_without_changing_raw_truth(tmp_pat
             "SELECT COUNT(*) FROM market_asset_mapping_revisions WHERE market_id = 'MEXC_AMAT:AMATSTOCK_USDT'"
         ).fetchone()[0]
     assert tuple(raw_market) == ("AMATSTOCK", "AMATSTOCK_USDT")
-    assert "MEXC_STOCK_METADATA" in mapping_method
+    assert "STOCK_SUFFIX_METADATA" in mapping_method
     assert revision_count == 1
     assert store.list_assets({"stock": "1"})["count"] == 1
     assert store.list_assets({"stock": "0"})["count"] == 0
@@ -496,7 +496,43 @@ def test_unverified_stock_suffix_remains_a_separate_candidate(tmp_path):
         ).fetchone()
 
     assert both["count"] == 0
-    assert tuple(candidate) == ("PROPOSED", 0.2)
+    assert tuple(candidate) == ("PROPOSED", 0.0)
+
+
+def test_stock_suffix_alias_can_use_any_declared_reference_venue(tmp_path):
+    store = SQLiteStore(tmp_path / "mdv.sqlite3")
+    apply_market(
+        store,
+        market(
+            source="BYBIT_AMAT",
+            venue="BYBIT",
+            market_type="FUTURE",
+            raw_symbol="AMATUSDT",
+            base_symbol="AMAT",
+            raw={"symbol": "AMATUSDT", "symbolType": "stock"},
+        ),
+    )
+    apply_market(
+        store,
+        market(
+            source="MEXC_AMAT",
+            venue="MEXC",
+            market_type="FUTURE",
+            raw_symbol="AMATSTOCK_USDT",
+            base_symbol="AMATSTOCK",
+            raw={
+                "symbol": "AMATSTOCK_USDT",
+                "displayNameEn": "AMAT_USDT PERPETUAL",
+                "conceptPlate": ["Stock"],
+                "indexOrigin": ["BYBIT_FUTURE"],
+            },
+        ),
+    )
+
+    view = store.list_assets({"futures": ["BYBIT", "MEXC"]})
+
+    assert view["count"] == 1
+    assert view["assets"][0]["canonical_symbol"] == "AMAT"
 
 
 def test_market_projection_has_exact_venue_trade_links(tmp_path):

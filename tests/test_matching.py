@@ -1,4 +1,10 @@
-from mdv.matching import evaluate_mexc_stock_alias, normalize_asset_symbol, normalize_venue_asset_symbol, score_symbol_groups
+from mdv.matching import (
+    AliasHint,
+    evaluate_alias_hint,
+    normalize_asset_symbol,
+    normalize_venue_asset_symbol,
+    score_symbol_groups,
+)
 
 
 def test_normalize_futures_unit_prefix_without_breaking_numeric_asset_name():
@@ -22,33 +28,30 @@ def test_same_venue_spot_future_has_stronger_score_than_cross_venue_only():
     assert scores["ABC"] == ("CROSS_VENUE_SYMBOL", 0.85)
 
 
-def test_mexc_stock_alias_requires_independent_metadata_evidence():
-    accepted = evaluate_mexc_stock_alias(
-        symbol="AMATSTOCK",
-        venue="MEXC",
-        market_type="FUTURE",
-        raw={
-            "displayNameEn": "AMAT_USDT PERPETUAL",
-            "conceptPlate": ["mc-trade-zone-Stock", "mc-trade-zone-tradfi"],
-            "indexOrigin": ["BINANCE_FUTURE", "BINANCETICKER"],
-        },
-        active_binance_future_symbols={"AMAT"},
-        binance_equity_symbols={"AMAT"},
+def test_alias_hint_requires_independent_reference_evidence():
+    hint = AliasHint(
+        proposed_symbol="AMAT",
+        rule="STOCK_SUFFIX_METADATA",
+        display_symbol_match=True,
+        classifications=frozenset({"EQUITY"}),
+        reference_venues=frozenset({"REFERENCE_A"}),
     )
-    proposed = evaluate_mexc_stock_alias(
-        symbol="NOTSTOCK",
-        venue="MEXC",
-        market_type="FUTURE",
-        raw={},
-        active_binance_future_symbols=set(),
-        binance_equity_symbols=set(),
+    accepted = evaluate_alias_hint(
+        hint=hint,
+        active_symbols_by_venue={"REFERENCE_A": {"AMAT"}},
+        classified_symbols_by_venue={"REFERENCE_A": {"AMAT"}},
+        required_classification="EQUITY",
+    )
+    proposed = evaluate_alias_hint(
+        hint=hint,
+        active_symbols_by_venue={},
+        classified_symbols_by_venue={},
+        required_classification="EQUITY",
     )
 
-    assert accepted is not None
     assert accepted.proposed_symbol == "AMAT"
     assert accepted.decision == "ACCEPTED"
     assert accepted.score == 1.0
-    assert proposed is not None
     assert proposed.decision == "PROPOSED"
-    assert proposed.score == 0.0
+    assert proposed.score == 0.6
     assert normalize_venue_asset_symbol("AMATSTOCK", venue="MEXC", market_type="FUTURE").symbol == "AMATSTOCK"

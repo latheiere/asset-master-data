@@ -4,17 +4,19 @@ import hashlib
 import json
 import sqlite3
 import uuid
+from collections import defaultdict
 from fnmatch import fnmatchcase
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from importlib import resources
 from pathlib import Path
 from typing import Iterator
-from urllib.parse import quote
+
+from mdv.connectors import market_metadata, market_trade_url
 
 from mdv.matching import (
     MATCHER_VERSION,
-    evaluate_mexc_stock_alias,
+    evaluate_alias_hint,
     normalize_asset_symbol,
     normalize_venue_asset_symbol,
     score_symbol_groups,
@@ -76,48 +78,6 @@ def requested_values(filters: dict[str, object], name: str) -> set[str]:
 def requested_contract_values(filters: dict[str, object], suffix: str = "") -> set[str]:
     values = requested_values(filters, f"contract{suffix}")
     return {"PERP" if value == "PERPETUAL" else value for value in values}
-
-
-def market_trade_url(market: dict) -> str | None:
-    venue = str(market.get("venue") or "").upper()
-    market_type = str(market.get("market_type") or "").upper()
-    venue_product = str(market.get("venue_product") or market.get("product") or "").upper()
-    raw_symbol = quote(str(market.get("raw_symbol") or ""), safe="_-")
-    base = quote(str(market.get("base_symbol") or ""), safe="_-")
-    quote_symbol = quote(str(market.get("quote_symbol") or ""), safe="_-")
-    if venue == "BINANCE" and market_type == "FUTURE":
-        section = "delivery" if venue_product == "COIN-M" else "futures"
-        return f"https://www.binance.com/en/{section}/{raw_symbol}"
-    if venue == "BINANCE" and market_type == "SPOT":
-        return f"https://www.binance.com/en/trade/{base}_{quote_symbol}?type=spot"
-    if venue == "MEXC" and market_type == "FUTURE":
-        return f"https://www.mexc.com/futures/{raw_symbol}"
-    if venue == "MEXC" and market_type == "SPOT":
-        return f"https://www.mexc.com/exchange/{base}_{quote_symbol}"
-    if venue == "BYBIT" and market_type == "FUTURE":
-        settle = str(market.get("settle_symbol") or "").upper()
-        section = (
-            "inverse"
-            if venue_product == "INVERSE"
-            else ("usdc" if settle == "USDC" else "usdt")
-        )
-        return f"https://www.bybit.com/trade/{section}/{raw_symbol}"
-    if venue == "BYBIT" and market_type == "SPOT":
-        return f"https://www.bybit.com/en/trade/spot/{base}/{quote_symbol}"
-    if venue == "GATE" and market_type == "FUTURE":
-        settle = quote(str(market.get("settle_symbol") or ""), safe="_-")
-        if venue_product.endswith("-DELIVERY"):
-            return f"https://www.gate.com/en/futures-delivery/{settle.lower()}/{raw_symbol}"
-        return f"https://www.gate.com/futures/{settle}/{raw_symbol}"
-    if venue == "GATE" and market_type == "SPOT":
-        return f"https://www.gate.com/trade/{raw_symbol}"
-    if venue == "BITGET" and market_type == "FUTURE":
-        section = {"USDT-M": "usdt", "USDC-M": "usdc", "COIN-M": "coin"}.get(venue_product)
-        if section:
-            return f"https://www.bitget.com/futures/{section}/{raw_symbol}"
-    if venue == "BITGET" and market_type == "SPOT":
-        return f"https://www.bitget.com/spot/{raw_symbol}"
-    return None
 
 
 class SQLiteStore:
@@ -548,32 +508,28 @@ class SQLiteStore:
                 FROM markets
                 """
             )]
+            metadata_by_market = {}
+            for market in markets:
+                try:
+                    raw = json.loads(market["raw_json"] or "{}")
+                except (TypeError, ValueError):
+                    raw = {}
+                metadata_by_market[market["market_id"]] = market_metadata(market, raw)
             exact_symbols = {
                 normalize_asset_symbol(market["base_symbol"], allow_unit_prefix=False).symbol
                 for market in markets
             }
-            active_binance_futures = {
-                normalize_asset_symbol(market["base_symbol"], allow_unit_prefix=False).symbol
-                for market in markets
-                if market["venue"] == "BINANCE"
-                and market["market_type"] == "FUTURE"
-                and market["active"]
-            }
-            binance_equities = set()
+            active_symbols_by_venue: dict[str, set[str]] = defaultdict(set)
+            classified_symbols_by_venue: dict[str, set[str]] = defaultdict(set)
             for market in markets:
-                if market["venue"] != "BINANCE" or market["market_type"] != "FUTURE" or not market["active"]:
+                if market["market_type"] != "FUTURE" or not market["active"]:
                     continue
-                try:
-                    payload = json.loads(market["raw_json"] or "{}")
-                except (TypeError, ValueError):
-                    payload = {}
-                if (
-                    str(payload.get("underlyingType") or "").upper() == "EQUITY"
-                    or str(payload.get("contractType") or "").upper() == "TRADIFI_PERPETUAL"
-                ):
-                    binance_equities.add(
-                        normalize_asset_symbol(market["base_symbol"], allow_unit_prefix=False).symbol
-                    )
+                symbol = normalize_asset_symbol(
+                    market["base_symbol"], allow_unit_prefix=False
+                ).symbol
+                active_symbols_by_venue[market["venue"]].add(symbol)
+                if "EQUITY" in metadata_by_market[market["market_id"]].classifications:
+                    classified_symbols_by_venue[market["venue"]].add(symbol)
             prepared = []
             for market in markets:
                 raw_symbol = normalize_asset_symbol(market["base_symbol"], allow_unit_prefix=False)
@@ -611,33 +567,27 @@ class SQLiteStore:
                         multiplier = unit_candidate.multiplier
                         mapping_evidence = unit_evidence
 
-                try:
-                    raw_payload = json.loads(market["raw_json"] or "{}")
-                except (TypeError, ValueError):
-                    raw_payload = {}
-                stock_candidate = evaluate_mexc_stock_alias(
-                    symbol=market["base_symbol"],
-                    venue=market["venue"],
-                    market_type=market["market_type"],
-                    raw=raw_payload,
-                    active_binance_future_symbols=active_binance_futures,
-                    binance_equity_symbols=binance_equities,
-                )
-                if stock_candidate is not None:
+                for hint in metadata_by_market[market["market_id"]].alias_hints:
+                    alias_candidate = evaluate_alias_hint(
+                        hint=hint,
+                        active_symbols_by_venue=active_symbols_by_venue,
+                        classified_symbols_by_venue=classified_symbols_by_venue,
+                        required_classification="EQUITY",
+                    )
                     candidates.append(
                         {
-                            "proposed_symbol": stock_candidate.proposed_symbol,
-                            "rule": stock_candidate.rule,
-                            "decision": stock_candidate.decision,
-                            "score": stock_candidate.score,
-                            "evidence": stock_candidate.evidence,
+                            "proposed_symbol": alias_candidate.proposed_symbol,
+                            "rule": alias_candidate.rule,
+                            "decision": alias_candidate.decision,
+                            "score": alias_candidate.score,
+                            "evidence": alias_candidate.evidence,
                         }
                     )
-                    if stock_candidate.decision == "ACCEPTED":
-                        canonical_symbol = stock_candidate.proposed_symbol
-                        identity_method = stock_candidate.rule
+                    if alias_candidate.decision == "ACCEPTED":
+                        canonical_symbol = alias_candidate.proposed_symbol
+                        identity_method = alias_candidate.rule
                         multiplier = 1
-                        mapping_evidence = stock_candidate.evidence
+                        mapping_evidence = alias_candidate.evidence
 
                 for candidate in candidates:
                     candidate_id = str(uuid.uuid5(
@@ -782,7 +732,8 @@ class SQLiteStore:
             desired: dict[tuple[str, str, str], dict] = {}
             rows = conn.execute(
                 """
-                SELECT m.market_id, m.raw_json, map.asset_id
+                SELECT m.market_id, m.venue, m.market_type, m.base_symbol,
+                       m.raw_json, map.asset_id
                 FROM markets m
                 JOIN market_asset_mappings map ON map.market_id = m.market_id
                 WHERE m.active = 1
@@ -793,23 +744,7 @@ class SQLiteStore:
                     raw = json.loads(row["raw_json"] or "{}")
                 except (TypeError, ValueError):
                     continue
-                product = (raw.get("_metadata") or {}).get("BINANCE_PRODUCT")
-                if isinstance(product, dict):
-                    tag_rows = [
-                        {
-                            "provider": "BINANCE",
-                            "tag": raw_tag,
-                            "raw_tag": raw_tag,
-                            "source": "BINANCE_PRODUCT",
-                            "product_symbol": product.get("s"),
-                        }
-                        for raw_tag in product.get("tags") or []
-                    ]
-                else:
-                    tag_rows = []
-                generic_tags = (raw.get("_metadata") or {}).get("ASSET_TAGS") or []
-                if isinstance(generic_tags, list):
-                    tag_rows.extend(item for item in generic_tags if isinstance(item, dict))
+                tag_rows = market_metadata(dict(row), raw).tags
                 for tag_row in tag_rows:
                     provider = str(tag_row.get("provider") or "").strip().upper()
                     raw_tag = tag_row.get("raw_tag", tag_row.get("tag"))
@@ -1371,13 +1306,9 @@ class SQLiteStore:
                     raw_payload = json.loads(row["raw_json"] or "{}")
                 except (TypeError, ValueError):
                     raw_payload = {}
-                concepts = [str(value).lower() for value in (raw_payload.get("conceptPlate") or [])]
-                row["is_stock"] = (
-                    any("stock" in value for value in concepts)
-                    or str(raw_payload.get("underlyingType") or "").upper() == "EQUITY"
-                    or str(raw_payload.get("contractType") or "").upper() == "TRADIFI_PERPETUAL"
-                    or str(raw_payload.get("symbolType") or "").upper() == "STOCK"
-                )
+                row["is_stock"] = "EQUITY" in market_metadata(
+                    row, raw_payload
+                ).classifications
                 row.pop("raw_json", None)
             is_stock = any(row["is_stock"] for row in all_markets)
             if included_stock and is_stock not in included_stock:

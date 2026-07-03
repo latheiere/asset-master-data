@@ -11,6 +11,7 @@ import yaml
 
 from mdv.auth import hash_password
 from mdv.collection import CollectionService, collection_json, results_json
+from mdv.connectors import supported_venues
 from mdv.config import DEFAULT_CONFIG_PATH, Settings, load_config_value
 from mdv.db import SQLiteStore
 
@@ -27,7 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     collect = subparsers.add_parser("collect", help="refresh exchange universes")
     collect.add_argument(
         "--venue",
-        help="refresh one venue: BINANCE, BITGET, BYBIT, GATE, or MEXC",
+        help=f"refresh one venue: {', '.join(supported_venues())}",
     )
     subparsers.add_parser("stats", help="print collection statistics")
     serve = subparsers.add_parser("serve", help="serve HTML and JSON API")

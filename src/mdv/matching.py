@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import uuid
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
-MATCHER_VERSION = "evidence-v1"
+MATCHER_VERSION = "evidence-v2"
 UNIT_PREFIXES = ("1000000", "10000", "1000")
 
 
@@ -23,6 +23,16 @@ class AliasCandidate:
     decision: str
     score: float
     evidence: dict
+
+
+@dataclass(frozen=True)
+class AliasHint:
+    proposed_symbol: str
+    rule: str
+    display_symbol_match: bool
+    classifications: frozenset[str]
+    reference_venues: frozenset[str]
+    source_evidence: dict = field(default_factory=dict)
 
 
 def normalize_asset_symbol(symbol: str, *, allow_unit_prefix: bool) -> NormalizedSymbol:
@@ -48,44 +58,42 @@ def normalize_venue_asset_symbol(
     return normalize_asset_symbol(symbol, allow_unit_prefix=True)
 
 
-def evaluate_mexc_stock_alias(
+def evaluate_alias_hint(
     *,
-    symbol: str,
-    venue: str,
-    market_type: str,
-    raw: dict,
-    active_binance_future_symbols: set[str],
-    binance_equity_symbols: set[str],
-) -> AliasCandidate | None:
-    clean = normalize_asset_symbol(symbol, allow_unit_prefix=False).symbol
-    if venue.upper() != "MEXC" or market_type.upper() != "FUTURE" or not clean.endswith("STOCK"):
-        return None
-    proposed = clean[:-5]
-    if not proposed:
-        return None
-
-    display_name = str(raw.get("displayNameEn") or "").upper()
-    concepts = [str(value) for value in (raw.get("conceptPlate") or [])]
-    origins = [str(value).upper() for value in (raw.get("indexOrigin") or [])]
+    hint: AliasHint,
+    active_symbols_by_venue: dict[str, set[str]],
+    classified_symbols_by_venue: dict[str, set[str]],
+    required_classification: str,
+) -> AliasCandidate:
+    proposed = normalize_asset_symbol(
+        hint.proposed_symbol, allow_unit_prefix=False
+    ).symbol
+    classification = required_classification.upper()
+    reference_venues = sorted(hint.reference_venues)
     checks = {
-        "display_symbol_match": display_name.startswith(f"{proposed}_"),
-        "stock_classification": any("stock" in value.lower() for value in concepts),
-        "binance_index_origin": any(value in {"BINANCE_FUTURE", "BINANCETICKER"} for value in origins),
-        "active_binance_future_exists": proposed in active_binance_future_symbols,
-        "binance_equity_classification": proposed in binance_equity_symbols,
+        "display_symbol_match": hint.display_symbol_match,
+        "asset_classification": classification in hint.classifications,
+        "reference_venue_declared": bool(reference_venues),
+        "active_reference_market_exists": any(
+            proposed in active_symbols_by_venue.get(venue, set())
+            for venue in reference_venues
+        ),
+        "reference_classification": any(
+            proposed in classified_symbols_by_venue.get(venue, set())
+            for venue in reference_venues
+        ),
     }
     score = sum(checks.values()) / len(checks)
     evidence = {
-        "raw_symbol": clean,
         "proposed_symbol": proposed,
-        "display_name": display_name,
-        "concepts": concepts,
-        "index_origins": origins,
+        "classifications": sorted(hint.classifications),
+        "reference_venues": reference_venues,
+        "source_evidence": hint.source_evidence,
         "checks": checks,
     }
     return AliasCandidate(
         proposed_symbol=proposed,
-        rule="MEXC_STOCK_METADATA",
+        rule=hint.rule,
         decision="ACCEPTED" if all(checks.values()) else "PROPOSED",
         score=score,
         evidence=evidence,

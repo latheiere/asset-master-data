@@ -5,13 +5,7 @@ from dataclasses import asdict, dataclass
 
 import httpx
 
-from mdv.connectors import (
-    binance_connectors,
-    bitget_connectors,
-    bybit_connectors,
-    gate_connectors,
-    mexc_connectors,
-)
+from mdv.connectors import default_connectors
 from mdv.connectors.base import Connector
 from mdv.db import SQLiteStore
 
@@ -30,13 +24,7 @@ class CollectionService:
     def __init__(self, store: SQLiteStore, *, timeout_seconds: float = 20, connectors: list[Connector] | None = None):
         self.store = store
         self.timeout_seconds = timeout_seconds
-        self.connectors = connectors or [
-            *binance_connectors(),
-            *bitget_connectors(),
-            *bybit_connectors(),
-            *gate_connectors(),
-            *mexc_connectors(),
-        ]
+        self.connectors = connectors or default_connectors()
 
     async def collect_all(self) -> list[CollectionResult]:
         return await self.collect()
@@ -57,8 +45,7 @@ class CollectionService:
         venues = [requested_venue] if requested_venue else available_venues
         collection_run_id = self.store.start_collection_run(scope=scope, venues=venues)
         timeout = httpx.Timeout(self.timeout_seconds)
-        # Binance futures CDN rejects some non-browser User-Agent values with
-        # HTTP 403 even though these are public endpoints.
+        # Some public venue CDNs reject generic library User-Agent values.
         headers = {"User-Agent": "Mozilla/5.0 (compatible; AssetMasterData/0.1)"}
         try:
             async with httpx.AsyncClient(timeout=timeout, headers=headers, follow_redirects=True) as client:

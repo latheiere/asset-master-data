@@ -179,11 +179,9 @@
       <label>Venue
         <select name="VENUE">
           <option value="">All</option>
-          <option value="BINANCE" {% if 'BINANCE' in filters.venue %}selected{% endif %}>Binance</option>
-          <option value="BITGET" {% if 'BITGET' in filters.venue %}selected{% endif %}>Bitget</option>
-          <option value="BYBIT" {% if 'BYBIT' in filters.venue %}selected{% endif %}>Bybit</option>
-          <option value="GATE" {% if 'GATE' in filters.venue %}selected{% endif %}>Gate.com</option>
-          <option value="MEXC" {% if 'MEXC' in filters.venue %}selected{% endif %}>MEXC</option>
+          {% for venue in filter_metadata.VENUE['values'] %}
+          <option value="{{ venue }}" {% if venue in filters.venue %}selected{% endif %}>{{ venue }}</option>
+          {% endfor %}
         </select>
       </label>
       <label>Quote<input name="QUOTE" value="{{ filters.quote|join(',') }}" placeholder="USDT" autocomplete="off"></label>

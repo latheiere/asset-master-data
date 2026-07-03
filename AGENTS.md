@@ -4,6 +4,11 @@ This repository is an independent asset master-data service. It discovers
 public exchange universes, records market lifecycle state, matches venue
 symbols to canonical assets, and serves local HTML/JSON views.
 
+Human-facing project behavior belongs in `README.md`. Contracts consumed by
+external services belong in `docs/API.md`. Known implementation gaps and
+acceptance criteria belong in `docs/TECHNICAL_DEBT.md`; do not present them as
+implemented behavior.
+
 ## Boundaries
 
 - Do not import code, configuration, databases, or runtime state from sibling
@@ -45,6 +50,34 @@ symbols to canonical assets, and serves local HTML/JSON views.
 - Keep latency-sensitive mapping APIs projection-free: one indexed read
   transaction, no `list_assets()`, no `raw_json`, and a synchronous/thread-pool
   route. Benchmark authenticated 1/10/100-symbol and concurrent requests.
+
+## Extension architecture
+
+- Add venues through the connector registry. Collection, CLI help, API venue
+  validation, UI options, and trade-link dispatch must derive from it rather
+  than repeat venue lists.
+- Keep provider parsing and field names at the connector/evidence-adapter
+  boundary. Generic matching, storage, and projection code consumes normalized
+  evidence, never a required provider pair.
+- Model aliases as candidates with independent evidence. Reference venues come
+  from normalized provider evidence; do not require Binance, MEXC, or another
+  fixed corroboration venue in the matching engine.
+- Venue-specific product/status translation and URL routing are expected, but
+  must be registered capabilities rather than conditionals spread across the
+  service.
+- New connectors require recorded success and malformed/partial fixtures,
+  lifecycle safety tests, normalized-field tests, and registry-extension tests.
+
+## Documentation ownership
+
+- `README.md`: purpose, quick start, supported behavior, data guarantees,
+  operation, and links to detailed contracts.
+- `docs/API.md`: every external HTTP route, auth, filters, schemas, examples,
+  errors, compatibility, and pagination semantics.
+- `AGENTS.md`: coding-agent constraints, workflow, architecture invariants, and
+  validation requirements. Do not move these instructions into README.
+- Update `docs/TECHNICAL_DEBT.md` when a documented invariant is intentionally
+  deferred. Remove items only after code, migration, tests, and docs agree.
 
 ## Workflow
 

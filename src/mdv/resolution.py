@@ -10,9 +10,10 @@ from mdv.normalization import (
     PRODUCT_VALUES,
     STATUS_VALUES,
 )
+from mdv.connectors import supported_venues
 
 
-SUPPORTED_VENUES = {"BINANCE", "BITGET", "BYBIT", "GATE", "MEXC"}
+SUPPORTED_VENUES = frozenset(supported_venues())
 
 
 def _uppercase(value: object) -> str:
