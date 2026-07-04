@@ -8,7 +8,7 @@ from importlib import resources
 from urllib.parse import parse_qs, quote
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
 from mdv.auth import Entitlements, basic_credentials
@@ -67,6 +67,25 @@ def _canonical_mdv_query(request: Request) -> str:
     )
 
 
+def _log_query_filters(request: Request) -> dict[str, object]:
+    query = request.query_params
+
+    def value(name: str, default=None):
+        return query.get(name) or query.get(name.lower()) or default
+
+    return {
+        "limit": int(value("LIMIT", 100)),
+        "offset": int(value("OFFSET", 0)),
+        "venue": value("VENUE"),
+        "action": value("ACTION"),
+        "tag": value("TAG"),
+        "symbol": value("SYMBOL"),
+        "product": value("PRODUCT"),
+        "date_from": value("DATE_FROM"),
+        "date_to": value("DATE_TO"),
+    }
+
+
 def create_app(
     *,
     settings: Settings | None = None,
@@ -99,7 +118,7 @@ def create_app(
 
     @app.middleware("http")
     async def require_authentication(request: Request, call_next):
-        if request.url.path == "/login":
+        if request.url.path in {"/login", "/favicon.ico"}:
             return await call_next(request)
 
         username = None
@@ -142,6 +161,13 @@ def create_app(
             request=request,
             name="login.html",
             context={"next_path": next_path, "error": None},
+        )
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon():
+        return Response(
+            status_code=204,
+            headers={"Cache-Control": "public, max-age=86400"},
         )
 
     @app.post("/login", response_class=HTMLResponse, include_in_schema=False)
@@ -216,11 +242,7 @@ def create_app(
     @app.get("/api/v1/logs")
     async def api_logs(request: Request):
         try:
-            return store.list_collection_runs(
-                limit=int(request.query_params.get("LIMIT") or request.query_params.get("limit") or 100),
-                offset=int(request.query_params.get("OFFSET") or request.query_params.get("offset") or 0),
-                venue=request.query_params.get("VENUE") or request.query_params.get("venue"),
-            )
+            return store.list_collection_runs(**_log_query_filters(request))
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -261,17 +283,25 @@ def create_app(
     @app.get("/logs", response_class=HTMLResponse, include_in_schema=False)
     async def logs(request: Request):
         try:
-            collection_log = store.list_collection_runs(
-                limit=int(request.query_params.get("LIMIT") or request.query_params.get("limit") or 100),
-                offset=int(request.query_params.get("OFFSET") or request.query_params.get("offset") or 0),
-                venue=request.query_params.get("VENUE") or request.query_params.get("venue"),
-            )
+            log_filters = _log_query_filters(request)
+            collection_log = store.list_collection_runs(**log_filters)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return templates.TemplateResponse(
             request=request,
             name="logs.html",
-            context={"collection_log": collection_log},
+            context={
+                "collection_log": collection_log,
+                "filters": {
+                    "action": str(log_filters["action"] or "").upper(),
+                    "tag": str(log_filters["tag"] or "").upper(),
+                    "venue": str(log_filters["venue"] or "").upper(),
+                    "symbol": str(log_filters["symbol"] or "").upper(),
+                    "product": str(log_filters["product"] or "").upper(),
+                    "date_from": log_filters["date_from"] or "",
+                    "date_to": log_filters["date_to"] or "",
+                },
+            },
         )
 
     @app.get("/mdv", response_class=HTMLResponse)

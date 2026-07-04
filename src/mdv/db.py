@@ -1581,21 +1581,180 @@ class SQLiteStore:
         limit: int = 100,
         offset: int = 0,
         venue: str | None = None,
+        action: str | None = None,
+        tag: str | None = None,
+        symbol: str | None = None,
+        product: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
     ) -> dict:
         """Return collection invocations with universe outcomes and audit changes."""
         self.migrate()
         limit = min(max(int(limit), 1), 500)
         offset = max(int(offset), 0)
         requested_venue = str(venue or "").strip().upper()
-        where = ""
+        requested_action = str(action or "").strip().upper()
+        action_event_types = {
+            "LISTING": ("lifecycle", "DISCOVERED"),
+            "REMOVAL": ("lifecycle", "MISSING"),
+            "TAG_ADDED": ("tag", "ADDED"),
+            "TAG_REMOVED": ("tag", "REMOVED"),
+        }
+        if requested_action and requested_action not in action_event_types:
+            raise ValueError(
+                "ACTION must be LISTING, REMOVAL, TAG_ADDED, or TAG_REMOVED"
+            )
+        requested_tag = normalized_tag_key(tag) if str(tag or "").strip() else None
+        requested_symbol = str(symbol or "").strip().upper()
+        requested_product = str(product or "").strip().upper()
+        if requested_product and requested_product not in {"SPOT", "PERP", "DATED"}:
+            raise ValueError("PRODUCT must be SPOT, PERP, or DATED")
+        if requested_tag and requested_symbol:
+            raise ValueError("TAG and SYMBOL cannot be combined")
+        if requested_tag and requested_product:
+            raise ValueError("TAG and PRODUCT cannot be combined")
+        if requested_tag and requested_action in {"LISTING", "REMOVAL"}:
+            raise ValueError("TAG cannot filter LISTING or REMOVAL actions")
+        if requested_symbol and requested_action in {"TAG_ADDED", "TAG_REMOVED"}:
+            raise ValueError("SYMBOL cannot filter TAG_ADDED or TAG_REMOVED actions")
+        if requested_product and requested_action in {"TAG_ADDED", "TAG_REMOVED"}:
+            raise ValueError("PRODUCT cannot filter TAG_ADDED or TAG_REMOVED actions")
+
+        def change_date(value: str | None, name: str) -> str | None:
+            raw = str(value or "").strip()
+            if not raw:
+                return None
+            try:
+                parsed = datetime.strptime(raw, "%Y-%m-%d").date().isoformat()
+            except ValueError as exc:
+                raise ValueError(f"{name} must use YYYY-MM-DD") from exc
+            if parsed != raw:
+                raise ValueError(f"{name} must use YYYY-MM-DD")
+            return parsed
+
+        requested_date_from = change_date(date_from, "DATE_FROM")
+        requested_date_to = change_date(date_to, "DATE_TO")
+        if requested_date_from and requested_date_to and requested_date_from > requested_date_to:
+            raise ValueError("DATE_FROM must be on or before DATE_TO")
+
+        where_clauses: list[str] = []
         params: list[object] = []
         if requested_venue:
-            where = (
-                "WHERE EXISTS (SELECT 1 FROM ingest_runs ir "
+            where_clauses.append(
+                "EXISTS (SELECT 1 FROM ingest_runs ir "
                 "WHERE ir.collection_run_id = cr.collection_run_id AND ir.venue = ?)"
             )
             params.append(requested_venue)
+
+        change_filters_active = bool(
+            requested_action
+            or requested_tag
+            or requested_symbol
+            or requested_product
+            or requested_date_from
+            or requested_date_to
+        )
+        if change_filters_active:
+            matching_queries: list[str] = []
+            matching_params: list[object] = []
+            action_family, action_event_type = action_event_types.get(
+                requested_action, (None, None)
+            )
+
+            if action_family in (None, "lifecycle") and requested_tag is None:
+                lifecycle_clauses: list[str] = []
+                if action_event_type:
+                    lifecycle_clauses.append("e.event_type = ?")
+                    matching_params.append(action_event_type)
+                if requested_venue:
+                    lifecycle_clauses.append("ir.venue = ?")
+                    matching_params.append(requested_venue)
+                if requested_symbol:
+                    escaped_symbol = (
+                        requested_symbol.replace("\\", "\\\\")
+                        .replace("%", "\\%")
+                        .replace("_", "\\_")
+                        .replace("*", "%")
+                    )
+                    lifecycle_clauses.append(
+                        "(UPPER(m.raw_symbol) LIKE ? ESCAPE '\\' OR "
+                        "UPPER(m.base_symbol) LIKE ? ESCAPE '\\' OR "
+                        "UPPER(a.canonical_symbol) LIKE ? ESCAPE '\\')"
+                    )
+                    matching_params.extend([escaped_symbol] * 3)
+                if requested_product:
+                    lifecycle_clauses.append("m.product = ?")
+                    matching_params.append(requested_product)
+                if requested_date_from:
+                    lifecycle_clauses.append("date(e.observed_at) >= ?")
+                    matching_params.append(requested_date_from)
+                if requested_date_to:
+                    lifecycle_clauses.append("date(e.observed_at) <= ?")
+                    matching_params.append(requested_date_to)
+                matching_queries.append(
+                    "SELECT ir.collection_run_id "
+                    "FROM market_lifecycle_events e "
+                    "JOIN ingest_runs ir ON ir.run_id = e.run_id "
+                    "JOIN markets m ON m.market_id = e.market_id "
+                    "LEFT JOIN market_asset_mappings map ON map.market_id = m.market_id "
+                    "LEFT JOIN assets a ON a.asset_id = map.asset_id "
+                    + ("WHERE " + " AND ".join(lifecycle_clauses) if lifecycle_clauses else "")
+                )
+
+            if (
+                action_family in (None, "tag")
+                and not requested_symbol
+                and not requested_product
+            ):
+                tag_clauses: list[str] = []
+                if action_event_type:
+                    tag_clauses.append("e.event_type = ?")
+                    matching_params.append(action_event_type)
+                if requested_tag:
+                    tag_clauses.extend(("e.provider = ?", "e.tag = ?"))
+                    matching_params.extend(requested_tag)
+                if requested_venue:
+                    tag_clauses.append("e.provider = ?")
+                    matching_params.append(requested_venue)
+                if requested_date_from:
+                    tag_clauses.append("date(e.observed_at) >= ?")
+                    matching_params.append(requested_date_from)
+                if requested_date_to:
+                    tag_clauses.append("date(e.observed_at) <= ?")
+                    matching_params.append(requested_date_to)
+                matching_queries.append(
+                    "SELECT ir.collection_run_id "
+                    "FROM asset_tag_events e "
+                    "JOIN ingest_runs ir ON ir.run_id = e.run_id "
+                    + ("WHERE " + " AND ".join(tag_clauses) if tag_clauses else "")
+                )
+
+            if matching_queries:
+                where_clauses.append(
+                    "cr.collection_run_id IN (" + " UNION ".join(matching_queries) + ")"
+                )
+                params.extend(matching_params)
+            else:
+                where_clauses.append("0")
+
+        where = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
         with self.readonly() as conn:
+            available_tags = [str(row[0]) for row in conn.execute(
+                """
+                SELECT DISTINCT provider || ':' || tag
+                FROM asset_tag_events
+                ORDER BY provider || ':' || tag
+                """
+            )]
+            available_venues = [str(row[0]) for row in conn.execute(
+                "SELECT DISTINCT venue FROM ingest_runs ORDER BY venue"
+            )]
+            filter_options = {
+                "actions": list(action_event_types),
+                "tags": available_tags,
+                "venues": available_venues,
+                "products": ["PERP", "DATED", "SPOT"],
+            }
             total = int(conn.execute(
                 f"SELECT COUNT(*) FROM collection_runs cr {where}",
                 params,
@@ -1611,7 +1770,7 @@ class SQLiteStore:
             )]
             run_ids = [row["collection_run_id"] for row in run_rows]
             if not run_ids:
-                return {"count": total, "runs": []}
+                return {"count": total, "runs": [], "filter_options": filter_options}
             placeholders = ",".join("?" for _ in run_ids)
             universe_rows = [dict(row) for row in conn.execute(
                 f"""
@@ -1628,7 +1787,7 @@ class SQLiteStore:
                 f"""
                 SELECT ir.collection_run_id, ir.run_id, ir.venue, ir.source,
                        e.event_type, e.old_value, e.new_value, e.observed_at,
-                       m.raw_symbol, m.base_symbol,
+                       m.raw_symbol, m.base_symbol, m.product,
                        COALESCE(a.canonical_symbol, m.base_symbol) AS canonical_symbol
                 FROM market_lifecycle_events e
                 JOIN ingest_runs ir ON ir.run_id = e.run_id
@@ -1682,6 +1841,7 @@ class SQLiteStore:
                     "observed_at": row["observed_at"],
                     "asset": asset,
                     "market": row["raw_symbol"],
+                    "product": row["product"],
                     "old_value": row["old_value"],
                     "new_value": row["new_value"],
                     "message": message,
@@ -1699,11 +1859,48 @@ class SQLiteStore:
                     "observed_at": row["observed_at"],
                     "asset": asset,
                     "market": None,
+                    "product": None,
                     "old_value": None,
                     "new_value": f"{row['provider']}:{row['tag']}",
                     "message": f"{asset} {action} {row['raw_tag']} tag",
                 }
             )
+
+        if change_filters_active:
+            expected_kind = {
+                "LISTING": "MARKET_DISCOVERED",
+                "REMOVAL": "MARKET_MISSING",
+                "TAG_ADDED": "TAG_ADDED",
+                "TAG_REMOVED": "TAG_REMOVED",
+            }.get(requested_action)
+
+            def selected_change(change: dict) -> bool:
+                if expected_kind and change["kind"] != expected_kind:
+                    return False
+                if requested_tag and change["new_value"] != ":".join(requested_tag):
+                    return False
+                if requested_symbol and not any(
+                    fnmatchcase(str(value or "").upper(), requested_symbol)
+                    for value in (change["asset"], change["market"])
+                ):
+                    return False
+                if requested_product and change["product"] != requested_product:
+                    return False
+                if requested_venue and change["venue"] != requested_venue:
+                    return False
+                observed_date = datetime.fromisoformat(
+                    str(change["observed_at"]).replace("Z", "+00:00")
+                ).astimezone(timezone.utc).date().isoformat()
+                if requested_date_from and observed_date < requested_date_from:
+                    return False
+                if requested_date_to and observed_date > requested_date_to:
+                    return False
+                return True
+
+            changes_by_run = {
+                run_id: [change for change in changes if selected_change(change)]
+                for run_id, changes in changes_by_run.items()
+            }
 
         for run_id, run in runs_by_id.items():
             try:
@@ -1711,9 +1908,17 @@ class SQLiteStore:
             except (TypeError, ValueError):
                 requested_venues = []
             universes = universes_by_run.get(run_id, [])
+            product_order = {"PERP": 0, "DATED": 1, "SPOT": 2}
             changes = sorted(
                 changes_by_run.get(run_id, []),
-                key=lambda item: (item["observed_at"], item["venue"], item["message"]),
+                key=lambda item: (
+                    product_order.get(item["product"], 3)
+                    if requested_action in {"LISTING", "REMOVAL"}
+                    else 0,
+                    item["observed_at"],
+                    item["venue"],
+                    item["message"],
+                ),
             )
             venue_names = set(requested_venues)
             venue_names.update(row["venue"] for row in universes)
@@ -1722,6 +1927,8 @@ class SQLiteStore:
             for venue_name in sorted(venue_names):
                 venue_universes = [row for row in universes if row["venue"] == venue_name]
                 venue_changes = [row for row in changes if row["venue"] == venue_name]
+                if change_filters_active and not venue_changes:
+                    continue
                 statuses = {row["status"] for row in venue_universes}
                 if "FAILED" in statuses and "SUCCEEDED" in statuses:
                     venue_status = "PARTIAL"
@@ -1744,7 +1951,7 @@ class SQLiteStore:
             run["requested_venues"] = requested_venues
             run["change_count"] = len(changes)
             run["venues"] = venue_rows
-        return {"count": total, "runs": run_rows}
+        return {"count": total, "runs": run_rows, "filter_options": filter_options}
 
     def stats(self) -> dict:
         self.migrate()

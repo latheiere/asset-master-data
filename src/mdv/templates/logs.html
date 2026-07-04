@@ -15,9 +15,15 @@
     .summary { margin-top:4px; }
     .header-actions { display:flex; flex-wrap:wrap; gap:8px; align-items:end; }
     label { color:var(--muted); font-size:12px; display:grid; gap:4px; }
-    select, .button-link { min-height:36px; border:1px solid var(--line); border-radius:6px; background:white; padding:7px 10px; color:var(--text); font:inherit; }
+    select, input, button, .button-link { min-height:36px; border:1px solid var(--line); border-radius:6px; background:white; padding:7px 10px; color:var(--text); font:inherit; }
     .button-link { color:var(--accent); border-color:var(--accent); cursor:pointer; font-weight:600; text-decoration:none; display:inline-flex; align-items:center; justify-content:center; }
     main { max-width:1120px; padding:0 28px 40px; }
+    .filters { display:flex; flex-wrap:wrap; gap:10px; align-items:end; margin:8px 0 18px; padding:12px; background:var(--panel); border:1px solid var(--line); border-radius:8px; }
+    .filters label { min-width:130px; flex:1 1 140px; }
+    .filter-group { display:contents; }
+    .filter-actions { display:flex; gap:8px; align-items:end; margin-left:auto; }
+    [hidden] { display:none !important; }
+    .filters button { color:white; background:var(--accent); border-color:var(--accent); cursor:pointer; font-weight:650; }
     .date-heading { margin:22px 0 10px; font-size:16px; color:#44546a; }
     .run-entry { margin-bottom:12px; border:1px solid var(--line); border-left:4px solid #8aa4d8; border-radius:8px; background:var(--panel); box-shadow:0 2px 8px #1a2a4410; overflow:hidden; }
     .run-header { padding:13px 15px; background:#f8fafc; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; gap:16px; align-items:flex-start; }
@@ -50,6 +56,7 @@
     @media (max-width:760px) {
       header, main { padding-left:12px; padding-right:12px; }
       header, .run-header { align-items:flex-start; flex-direction:column; }
+      .filters label { width:100%; }
       .change-log li { grid-template-columns:1fr; gap:2px; }
       .venue-header { align-items:flex-start; flex-direction:column; }
     }
@@ -59,7 +66,7 @@
   <header>
     <div>
       <h1>Collection Log</h1>
-      <div class="summary">{{ collection_log.count }} saved collection run{{ '' if collection_log.count == 1 else 's' }} · grouped by venue</div>
+      <div class="summary">{{ collection_log.count }} matching collection run{{ '' if collection_log.count == 1 else 's' }} · grouped by venue</div>
     </div>
     <div class="header-actions">
       <label>Timezone
@@ -70,6 +77,52 @@
     </div>
   </header>
   <main>
+    <form class="filters" method="get" action="/logs">
+      <label>Action
+        <select id="action-filter" name="ACTION">
+          <option value="">All changes</option>
+          <option value="LISTING"{% if filters.action == 'LISTING' %} selected{% endif %}>Listing</option>
+          <option value="REMOVAL"{% if filters.action == 'REMOVAL' %} selected{% endif %}>Delisting</option>
+          <option value="TAG_ADDED"{% if filters.action == 'TAG_ADDED' %} selected{% endif %}>Tag added</option>
+          <option value="TAG_REMOVED"{% if filters.action == 'TAG_REMOVED' %} selected{% endif %}>Tag removed</option>
+        </select>
+      </label>
+      <div id="market-filter-group" class="filter-group"{% if filters.action not in ['LISTING', 'REMOVAL'] %} hidden{% endif %}>
+        <label>Venue
+          <select name="VENUE"{% if filters.action not in ['LISTING', 'REMOVAL'] %} disabled{% endif %}>
+            <option value="">All venues</option>
+            {% for venue in collection_log.filter_options.venues %}<option value="{{ venue }}"{% if filters.venue == venue %} selected{% endif %}>{{ venue }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>Symbol
+          <input name="SYMBOL" value="{{ filters.symbol }}" placeholder="BTC or BTC*" autocomplete="off"{% if filters.action not in ['LISTING', 'REMOVAL'] %} disabled{% endif %}>
+        </label>
+        <label>Market type
+          <select name="PRODUCT"{% if filters.action not in ['LISTING', 'REMOVAL'] %} disabled{% endif %}>
+            <option value="">All market types</option>
+            {% for product in collection_log.filter_options.products %}<option value="{{ product }}"{% if filters.product == product %} selected{% endif %}>{{ product }}</option>{% endfor %}
+          </select>
+        </label>
+      </div>
+      <div id="tag-filter-group" class="filter-group"{% if filters.action not in ['TAG_ADDED', 'TAG_REMOVED'] %} hidden{% endif %}>
+        <label>Tag
+          <select name="TAG"{% if filters.action not in ['TAG_ADDED', 'TAG_REMOVED'] %} disabled{% endif %}>
+            <option value="">All tags</option>
+            {% for tag in collection_log.filter_options.tags %}<option value="{{ tag }}"{% if filters.tag == tag %} selected{% endif %}>{{ tag }}</option>{% endfor %}
+          </select>
+        </label>
+      </div>
+      <label>Change date from (UTC)
+        <input type="date" name="DATE_FROM" value="{{ filters.date_from }}">
+      </label>
+      <label>Change date to (UTC)
+        <input type="date" name="DATE_TO" value="{{ filters.date_to }}">
+      </label>
+      <div class="filter-actions">
+        <button type="submit">Apply filters</button>
+        {% if filters.action or filters.tag or filters.venue or filters.symbol or filters.product or filters.date_from or filters.date_to %}<a class="button-link" href="/logs">Clear</a>{% endif %}
+      </div>
+    </form>
     {% if collection_log.runs %}
     <section id="run-list" aria-label="Collection runs">
       {% for run in collection_log.runs %}
@@ -101,7 +154,7 @@
                 <time class="local-time" data-timestamp="{{ change.observed_at }}">{{ change.observed_at }}</time>
                 <div>
                   <div class="change-message">{{ change.message }}</div>
-                  <div class="change-detail">{{ change.kind }}{% if change.market %} · {{ change.market }}{% endif %} · {{ change.source }}</div>
+                  <div class="change-detail">{{ change.kind }}{% if change.product %} · {{ change.product }}{% endif %}{% if change.market %} · {{ change.market }}{% endif %} · {{ change.source }}</div>
                 </div>
               </li>
               {% endfor %}
@@ -130,10 +183,30 @@
       {% endfor %}
     </section>
     {% else %}
-    <div class="empty">No collection runs have been recorded.</div>
+    <div class="empty">No collection runs match these filters.</div>
     {% endif %}
   </main>
   <script>
+    const actionFilter = document.getElementById('action-filter');
+    const marketFilterGroup = document.getElementById('market-filter-group');
+    const tagFilterGroup = document.getElementById('tag-filter-group');
+
+    function updateContextFilters() {
+      const showMarketFilters = ['LISTING', 'REMOVAL'].includes(actionFilter.value);
+      const showTagFilter = ['TAG_ADDED', 'TAG_REMOVED'].includes(actionFilter.value);
+      marketFilterGroup.hidden = !showMarketFilters;
+      tagFilterGroup.hidden = !showTagFilter;
+      marketFilterGroup.querySelectorAll('input, select').forEach((field) => {
+        field.disabled = !showMarketFilters;
+      });
+      tagFilterGroup.querySelectorAll('input, select').forEach((field) => {
+        field.disabled = !showTagFilter;
+      });
+    }
+
+    actionFilter.addEventListener('change', updateContextFilters);
+    updateContextFilters();
+
     const timezoneCookieName = 'mdv_timezone';
     const timezoneSelect = document.getElementById('timezone-select');
 

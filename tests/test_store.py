@@ -1,6 +1,8 @@
 import sqlite3
 from importlib import resources
 
+import pytest
+
 from mdv.db import SQLiteStore, market_trade_url
 from mdv.models import MarketRecord, MarketSnapshot
 
@@ -173,6 +175,41 @@ def test_collection_log_groups_market_and_tag_changes_by_venue(tmp_path):
     )
     store.finish_collection_run(second_parent)
 
+    third_parent = store.start_collection_run(scope="BINANCE", venues=["BINANCE"])
+    store.apply_snapshot(
+        MarketSnapshot(
+            source=untagged.source,
+            venue=untagged.venue,
+            market_type=untagged.market_type,
+            product=untagged.product,
+            observed_at="2026-07-04T01:00:00+00:00",
+            markets=(untagged,),
+        ),
+        collection_run_id=third_parent,
+    )
+    store.finish_collection_run(third_parent)
+
+    replacement = market(
+        source="BINANCE_WIF_SPOT",
+        venue="BINANCE",
+        market_type="SPOT",
+        raw_symbol="BONKUSDT",
+        base_symbol="BONK",
+    )
+    fourth_parent = store.start_collection_run(scope="BINANCE", venues=["BINANCE"])
+    store.apply_snapshot(
+        MarketSnapshot(
+            source=replacement.source,
+            venue=replacement.venue,
+            market_type=replacement.market_type,
+            product=replacement.product,
+            observed_at="2026-07-05T01:00:00+00:00",
+            markets=(replacement,),
+        ),
+        collection_run_id=fourth_parent,
+    )
+    store.finish_collection_run(fourth_parent)
+
     log = store.list_collection_runs(limit=10)
     by_id = {run["collection_run_id"]: run for run in log["runs"]}
     assert by_id[first_parent]["venues"][0]["changes"][0]["message"] == "WIF listed"
@@ -180,6 +217,139 @@ def test_collection_log_groups_market_and_tag_changes_by_venue(tmp_path):
     assert by_id[second_parent]["venues"][0]["changes"][0]["message"] == (
         "WIF added Monitoring tag"
     )
+    assert log["filter_options"]["tags"] == ["BINANCE:MONITORING"]
+
+    tag_added = store.list_collection_runs(
+        action="TAG_ADDED", tag="binance:monitoring"
+    )
+    assert tag_added["count"] == 1
+    assert tag_added["runs"][0]["collection_run_id"] == second_parent
+    assert [
+        change["kind"]
+        for venue in tag_added["runs"][0]["venues"]
+        for change in venue["changes"]
+    ] == ["TAG_ADDED"]
+
+    tag_removed = store.list_collection_runs(action="TAG_REMOVED")
+    assert tag_removed["count"] == 1
+    assert tag_removed["runs"][0]["collection_run_id"] == third_parent
+    assert tag_removed["runs"][0]["venues"][0]["changes"][0]["kind"] == "TAG_REMOVED"
+
+    removals = store.list_collection_runs(action="REMOVAL")
+    assert removals["count"] == 1
+    assert removals["runs"][0]["collection_run_id"] == fourth_parent
+    assert removals["runs"][0]["venues"][0]["changes"][0]["message"] == "WIF removed"
+
+    dated = store.list_collection_runs(
+        date_from="2026-07-04", date_to="2026-07-04"
+    )
+    assert dated["count"] == 1
+    assert dated["runs"][0]["collection_run_id"] == third_parent
+    with pytest.raises(ValueError, match="TAG cannot filter LISTING"):
+        store.list_collection_runs(action="LISTING", tag="BINANCE:MONITORING")
+
+    mixed_parent = store.start_collection_run(scope="ALL", venues=["BINANCE", "MEXC"])
+    store.apply_snapshot(
+        MarketSnapshot(
+            source=replacement.source,
+            venue=replacement.venue,
+            market_type=replacement.market_type,
+            product=replacement.product,
+            observed_at="2026-07-06T01:00:00+00:00",
+            markets=(replacement,),
+        ),
+        collection_run_id=mixed_parent,
+    )
+    mexc_market = market(
+        source="MEXC_SPOT",
+        venue="MEXC",
+        market_type="SPOT",
+        raw_symbol="ETHUSDT",
+        base_symbol="ETH",
+    )
+    store.apply_snapshot(
+        MarketSnapshot(
+            source=mexc_market.source,
+            venue=mexc_market.venue,
+            market_type=mexc_market.market_type,
+            product=mexc_market.product,
+            observed_at="2026-07-06T01:00:00+00:00",
+            markets=(mexc_market,),
+        ),
+        collection_run_id=mixed_parent,
+    )
+    store.finish_collection_run(mixed_parent)
+    filtered_mixed = store.list_collection_runs(action="LISTING")
+    mixed_run = next(
+        run for run in filtered_mixed["runs"]
+        if run["collection_run_id"] == mixed_parent
+    )
+    assert [venue["venue"] for venue in mixed_run["venues"]] == ["MEXC"]
+    symbol_listing = store.list_collection_runs(action="LISTING", symbol="BONK*")
+    assert symbol_listing["count"] == 1
+    assert symbol_listing["runs"][0]["collection_run_id"] == fourth_parent
+    venue_symbol_listing = store.list_collection_runs(
+        action="LISTING", venue="MEXC", symbol="ETH*", product="SPOT"
+    )
+    assert venue_symbol_listing["count"] == 1
+    assert venue_symbol_listing["runs"][0]["collection_run_id"] == mixed_parent
+    assert venue_symbol_listing["runs"][0]["venues"][0]["changes"][0]["product"] == "SPOT"
+    assert filtered_mixed["filter_options"]["venues"] == ["BINANCE", "MEXC"]
+
+    sorted_parent = store.start_collection_run(scope="BINANCE", venues=["BINANCE"])
+    sorted_markets = (
+        market(
+            source="SORT_PERP",
+            venue="BINANCE",
+            market_type="FUTURE",
+            raw_symbol="AAAUSDT",
+            base_symbol="AAA",
+        ),
+        market(
+            source="SORT_DATED",
+            venue="BINANCE",
+            market_type="FUTURE",
+            raw_symbol="BBBUSDT",
+            base_symbol="BBB",
+            contract_type="DATED",
+        ),
+        market(
+            source="SORT_SPOT",
+            venue="BINANCE",
+            market_type="SPOT",
+            raw_symbol="CCCUSDT",
+            base_symbol="CCC",
+        ),
+    )
+    for sorted_market in sorted_markets:
+        store.apply_snapshot(
+            MarketSnapshot(
+                source=sorted_market.source,
+                venue=sorted_market.venue,
+                market_type=sorted_market.market_type,
+                product=sorted_market.product,
+                observed_at="2026-07-07T01:00:00+00:00",
+                markets=(sorted_market,),
+            ),
+            collection_run_id=sorted_parent,
+        )
+    store.finish_collection_run(sorted_parent)
+    sorted_run = next(
+        run for run in store.list_collection_runs(action="LISTING")["runs"]
+        if run["collection_run_id"] == sorted_parent
+    )
+    assert [
+        change["product"] for change in sorted_run["venues"][0]["changes"]
+    ] == ["PERP", "DATED", "SPOT"]
+
+    with pytest.raises(ValueError, match="ACTION must be"):
+        store.list_collection_runs(action="UNKNOWN")
+    with pytest.raises(ValueError, match="SYMBOL cannot filter TAG_ADDED"):
+        store.list_collection_runs(action="TAG_ADDED", symbol="WIF")
+    with pytest.raises(ValueError, match="PRODUCT must be"):
+        store.list_collection_runs(action="LISTING", product="FUTURE")
+    with pytest.raises(ValueError, match="DATE_FROM must be on or before DATE_TO"):
+        store.list_collection_runs(date_from="2026-07-05", date_to="2026-07-04")
 
 
 def test_collection_log_records_explicit_no_change_run(tmp_path):

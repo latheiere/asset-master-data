@@ -167,6 +167,7 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
 
     with TestClient(create_app(settings=settings, store=store)) as client:
         unauthenticated_api = client.get("/api/v1/stats")
+        favicon_response = client.get("/favicon.ico")
         login_redirect = client.get("/mdv", follow_redirects=False)
         failed_login = client.post(
             "/login",
@@ -200,12 +201,27 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
         logs_response = client.get("/logs")
         logs_api_response = client.get("/api/v1/logs")
         mexc_logs_api_response = client.get("/api/v1/logs?VENUE=MEXC")
+        filtered_logs_response = client.get(
+            "/logs?ACTION=TAG_ADDED&TAG=BINANCE%3AMONITORING&DATE_FROM=2026-07-03&DATE_TO=2026-07-03"
+        )
+        filtered_logs_api_response = client.get(
+            "/api/v1/logs?ACTION=TAG_ADDED&TAG=BINANCE%3AMONITORING&DATE_FROM=2026-07-03&DATE_TO=2026-07-03"
+        )
+        listing_logs_response = client.get(
+            "/logs?ACTION=LISTING&VENUE=BINANCE&SYMBOL=WIF*&PRODUCT=SPOT"
+        )
+        listing_logs_api_response = client.get(
+            "/api/v1/logs?ACTION=LISTING&VENUE=BINANCE&SYMBOL=WIF*&PRODUCT=SPOT"
+        )
+        invalid_logs_api_response = client.get("/api/v1/logs?ACTION=UNKNOWN")
         binance_only = client.get("/mdv?CONTRACT=PERP&FUTURES=BINANCE&FUTURES!=MEXC")
         monitoring = client.get("/mdv?TAG=BINANCE:MONITORING")
         scoped_refresh = client.post("/api/v1/refresh?VENUE=MEXC")
 
     assert unauthenticated_api.status_code == 401
     assert unauthenticated_api.headers["www-authenticate"] == 'Basic realm="asset-master-data"'
+    assert favicon_response.status_code == 204
+    assert "max-age=86400" in favicon_response.headers["cache-control"]
     assert login_redirect.status_code == 303
     assert login_redirect.headers["location"].startswith("/login?next=")
     assert failed_login.status_code == 401
@@ -268,6 +284,15 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
     assert 'id="timezone-select"' in logs_response.text
     assert "mdv_timezone" in logs_response.text
     assert "Venues updated:" in logs_response.text
+    assert 'name="ACTION"' in logs_response.text
+    assert 'name="TAG"' in logs_response.text
+    assert 'name="VENUE"' in logs_response.text
+    assert 'name="SYMBOL"' in logs_response.text
+    assert 'name="PRODUCT"' in logs_response.text
+    assert 'name="DATE_FROM"' in logs_response.text
+    assert 'name="DATE_TO"' in logs_response.text
+    assert 'id="market-filter-group" class="filter-group" hidden' in logs_response.text
+    assert 'id="tag-filter-group" class="filter-group" hidden' in logs_response.text
     assert logs_api_response.status_code == 200
     assert logs_api_response.json()["count"] == 4
     assert {run["scope"] for run in logs_api_response.json()["runs"]} == {
@@ -277,6 +302,21 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
     }
     assert mexc_logs_api_response.json()["count"] == 1
     assert mexc_logs_api_response.json()["runs"][0]["scope"] == "MEXC"
+    assert filtered_logs_response.status_code == 200
+    assert "WIF added Monitoring tag" in filtered_logs_response.text
+    assert "WIF added Seed tag" not in filtered_logs_response.text
+    assert filtered_logs_api_response.status_code == 200
+    assert filtered_logs_api_response.json()["count"] == 1
+    assert filtered_logs_api_response.json()["runs"][0]["change_count"] == 1
+    assert listing_logs_response.status_code == 200
+    assert 'id="market-filter-group" class="filter-group">' in listing_logs_response.text
+    assert 'id="tag-filter-group" class="filter-group" hidden' in listing_logs_response.text
+    assert "MARKET_DISCOVERED · SPOT · WIFUSDT" in listing_logs_response.text
+    assert listing_logs_api_response.status_code == 200
+    assert listing_logs_api_response.json()["count"] == 1
+    assert listing_logs_api_response.json()["runs"][0]["venues"][0]["venue"] == "BINANCE"
+    assert listing_logs_api_response.json()["runs"][0]["venues"][0]["changes"][0]["product"] == "SPOT"
+    assert invalid_logs_api_response.status_code == 422
     assert "ETHUSDT" in binance_only.text
     assert "BTC_USDT" not in binance_only.text
     assert monitoring.status_code == 200

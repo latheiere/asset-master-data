@@ -165,8 +165,10 @@ http://127.0.0.1:8090/mdv?SYMBOL=BTC*
 
 `/mdv` shows active markets only. Expand an asset to inspect venue symbols and
 markets, including exact venue trading links. `/logs` shows collection outcomes
-and lifecycle/tag changes. `/metadata` describes filter meanings and current
-values.
+and lifecycle/tag changes, with action, provider-scoped tag, and inclusive UTC
+change-date filters. The log form exposes tag selection for tag actions and
+venue, symbol, and normalized `PERP`/`DATED`/`SPOT` filters for listing or
+removal actions. `/metadata` describes filter meanings and current values.
 
 Every data filter supports `=` and `!=`. Values may be repeated or
 comma-separated. `SYMBOL` supports `*` wildcards. The Columns control changes

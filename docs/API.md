@@ -240,7 +240,24 @@ inside the read snapshot.
 
 Returns durable collection invocations newest-first.
 
-Parameters: `VENUE`, `LIMIT` (default 100, maximum 500), and `OFFSET`.
+Parameters:
+
+- `VENUE`: restrict collection runs, and matching changes when a change filter is active.
+- `ACTION`: `LISTING`, `REMOVAL`, `TAG_ADDED`, or `TAG_REMOVED`.
+- `TAG`: provider-scoped tag such as `BINANCE:MONITORING`; restricts results to
+  tag changes for that tag. It cannot be combined with listing/removal actions
+  or `SYMBOL`.
+- `SYMBOL`: canonical, venue-base, or raw market symbol for lifecycle changes;
+  `*` wildcard supported. It cannot be combined with tag actions.
+- `PRODUCT`: normalized lifecycle market type: `PERP`, `DATED`, or `SPOT`. It
+  cannot be combined with tag actions.
+- `DATE_FROM` and `DATE_TO`: inclusive UTC change dates in `YYYY-MM-DD` format.
+- `LIMIT` (default 100, maximum 500) and `OFFSET`: paginate matching collection runs.
+
+When any change filter is present, only runs containing a matching change and
+only matching changes and venue sections inside those runs are returned. Venue
+updates with no matching change are omitted. `count` is the total number of
+matching runs before pagination.
 
 ```json
 {
@@ -263,12 +280,20 @@ Parameters: `VENUE`, `LIMIT` (default 100, maximum 500), and `OFFSET`.
         }
       ]
     }
-  ]
+  ],
+  "filter_options": {
+    "actions": ["LISTING", "REMOVAL", "TAG_ADDED", "TAG_REMOVED"],
+    "tags": ["BINANCE:MONITORING"],
+    "venues": ["BINANCE", "MEXC"],
+    "products": ["PERP", "DATED", "SPOT"]
+  }
 }
 ```
 
 Universe rows contain source, market type, venue product, timing, completion,
 record count, and error. Changes contain lifecycle or tag event details.
+Filter options include historical tags, including tags no longer active, and
+venues represented in collection history.
 
 ### `GET /api/v1/metadata`
 
