@@ -22,7 +22,7 @@ from mdv.matching import (
     score_symbol_groups,
     stable_asset_id,
 )
-from mdv.models import MarketSnapshot
+from mdv.models import FinancingSnapshot, MarketSnapshot
 from mdv.normalization import (
     CONTRACT_DIRECTION_VALUES,
     EXPIRY_CYCLE_VALUES,
@@ -78,6 +78,20 @@ def requested_values(filters: dict[str, object], name: str) -> set[str]:
 def requested_contract_values(filters: dict[str, object], suffix: str = "") -> set[str]:
     values = requested_values(filters, f"contract{suffix}")
     return {"PERP" if value == "PERPETUAL" else value for value in values}
+
+
+def requested_financing_keys(
+    filters: dict[str, object], suffix: str = ""
+) -> set[str]:
+    values = requested_values(filters, f"financing{suffix}")
+    for value in values:
+        venue, separator, product = value.partition(":")
+        if not separator or not venue or product not in {"MARGIN", "LOAN"}:
+            raise ValueError(
+                "FINANCING must use VENUE:MARGIN or VENUE:LOAN, "
+                "for example BINANCE:MARGIN"
+            )
+    return values
 
 
 class SQLiteStore:
@@ -486,6 +500,285 @@ class SQLiteStore:
             self.finish_collection_run(collection_run_id)
         return run_id
 
+    def apply_financing_snapshot(
+        self,
+        snapshot: FinancingSnapshot,
+        *,
+        collection_run_id: str | None = None,
+    ) -> str:
+        """Apply one complete public financing universe without account data."""
+        snapshot.validate()
+        self.migrate()
+        own_collection_run = collection_run_id is None
+        if collection_run_id is None:
+            collection_run_id = self.start_collection_run(
+                scope=snapshot.venue, venues=[snapshot.venue]
+            )
+        run_id = str(uuid.uuid4())
+        seen_ids = {record.financing_id for record in snapshot.records}
+        with self.transaction() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO venues(venue, display_name) VALUES (?, ?)",
+                (snapshot.venue, snapshot.venue.title()),
+            )
+            conn.execute(
+                """
+                INSERT INTO ingest_runs(
+                    run_id, source, venue, market_type, product, started_at,
+                    status, complete, record_count, collection_run_id
+                ) VALUES (?, ?, ?, 'FINANCING', ?, ?, 'RUNNING', 0, 0, ?)
+                """,
+                (
+                    run_id,
+                    snapshot.source,
+                    snapshot.venue,
+                    snapshot.product,
+                    snapshot.observed_at,
+                    collection_run_id,
+                ),
+            )
+            previous_rows = {
+                row["financing_id"]: dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM financing_products WHERE source = ?",
+                    (snapshot.source,),
+                )
+            }
+            for record in snapshot.records:
+                rates_json = canonical_json(record.rates)
+                terms_json = canonical_json(record.terms)
+                limits_json = canonical_json(record.limits)
+                pair_symbols_json = canonical_json(record.pair_symbols)
+                raw_json = canonical_json(record.raw)
+                content_hash = hashlib.sha256(raw_json.encode()).hexdigest()
+                previous = previous_rows.get(record.financing_id)
+                conn.execute(
+                    """
+                    INSERT INTO financing_products(
+                        financing_id, source, venue, product, asset_role,
+                        raw_asset_symbol, eligible, status, active,
+                        regular_user_tier, rates_json, terms_json, limits_json,
+                        pair_symbols_json, first_seen_at, last_seen_at,
+                        raw_json, content_hash
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(financing_id) DO UPDATE SET
+                        eligible=excluded.eligible,
+                        status=excluded.status,
+                        active=1,
+                        regular_user_tier=excluded.regular_user_tier,
+                        rates_json=excluded.rates_json,
+                        terms_json=excluded.terms_json,
+                        limits_json=excluded.limits_json,
+                        pair_symbols_json=excluded.pair_symbols_json,
+                        last_seen_at=excluded.last_seen_at,
+                        raw_json=excluded.raw_json,
+                        content_hash=excluded.content_hash
+                    """,
+                    (
+                        record.financing_id,
+                        record.source,
+                        record.venue,
+                        record.product,
+                        record.asset_role,
+                        record.raw_asset_symbol,
+                        int(record.eligible),
+                        record.status,
+                        record.regular_user_tier,
+                        rates_json,
+                        terms_json,
+                        limits_json,
+                        pair_symbols_json,
+                        snapshot.observed_at,
+                        snapshot.observed_at,
+                        raw_json,
+                        content_hash,
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO financing_observations(
+                        run_id, financing_id, observed_at, eligible, status,
+                        content_hash, rates_json, terms_json, limits_json,
+                        pair_symbols_json, raw_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        record.financing_id,
+                        snapshot.observed_at,
+                        int(record.eligible),
+                        record.status,
+                        content_hash,
+                        rates_json,
+                        terms_json,
+                        limits_json,
+                        pair_symbols_json,
+                        raw_json,
+                    ),
+                )
+                if previous is None:
+                    self._insert_financing_event(
+                        conn, run_id, record.financing_id, "DISCOVERED", None,
+                        record.status, snapshot.observed_at,
+                    )
+                elif not previous["active"]:
+                    self._insert_financing_event(
+                        conn, run_id, record.financing_id, "ACTIVATED", "MISSING",
+                        record.status, snapshot.observed_at,
+                    )
+                else:
+                    if bool(previous["eligible"]) != record.eligible:
+                        self._insert_financing_event(
+                            conn, run_id, record.financing_id, "ELIGIBILITY_CHANGED",
+                            str(bool(previous["eligible"])).lower(),
+                            str(record.eligible).lower(), snapshot.observed_at,
+                        )
+                    if previous["status"] != record.status:
+                        self._insert_financing_event(
+                            conn, run_id, record.financing_id, "STATUS_CHANGED",
+                            previous["status"], record.status, snapshot.observed_at,
+                        )
+
+            for financing_id, previous in previous_rows.items():
+                if financing_id in seen_ids or not previous["active"]:
+                    continue
+                conn.execute(
+                    "UPDATE financing_products SET active = 0 WHERE financing_id = ?",
+                    (financing_id,),
+                )
+                self._insert_financing_event(
+                    conn, run_id, financing_id, "MISSING", previous["status"],
+                    "MISSING", snapshot.observed_at,
+                )
+            conn.execute(
+                """
+                UPDATE ingest_runs
+                SET completed_at = ?, status = 'SUCCEEDED', complete = 1,
+                    record_count = ?
+                WHERE run_id = ?
+                """,
+                (utc_now(), len(snapshot.records), run_id),
+            )
+        self.rebuild_financing_mappings()
+        if own_collection_run:
+            self.finish_collection_run(collection_run_id)
+        return run_id
+
+    @staticmethod
+    def _insert_financing_event(
+        conn, run_id, financing_id, event_type, old_value, new_value, observed_at
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO financing_lifecycle_events(
+                event_id, financing_id, run_id, event_type, old_value,
+                new_value, observed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(uuid.uuid4()), financing_id, run_id, event_type,
+                old_value, new_value, observed_at,
+            ),
+        )
+
+    def rebuild_financing_mappings(self) -> None:
+        """Map financing symbols only through same-venue market mappings."""
+        self.migrate()
+        now = utc_now()
+        with self.transaction() as conn:
+            candidates: dict[tuple[str, str], dict[str, dict]] = defaultdict(dict)
+            for row in conn.execute(
+                """
+                SELECT m.venue, m.base_symbol, map.asset_id,
+                       map.normalized_symbol, map.method AS market_method,
+                       map.confidence AS market_confidence
+                FROM markets m
+                JOIN market_asset_mappings map ON map.market_id = m.market_id
+                """
+            ):
+                key = (str(row["venue"]), str(row["base_symbol"]).upper())
+                candidates[key][str(row["asset_id"])] = dict(row)
+            for financing in conn.execute(
+                """
+                SELECT financing_id, venue, raw_asset_symbol
+                FROM financing_products
+                WHERE active = 1
+                """
+            ):
+                financing_id = str(financing["financing_id"])
+                options = candidates.get(
+                    (str(financing["venue"]), str(financing["raw_asset_symbol"]).upper()),
+                    {},
+                )
+                if len(options) != 1:
+                    conn.execute(
+                        "DELETE FROM financing_asset_mappings WHERE financing_id = ?",
+                        (financing_id,),
+                    )
+                    continue
+                selected = next(iter(options.values()))
+                evidence = canonical_json({
+                    "venue": financing["venue"],
+                    "financing_symbol": financing["raw_asset_symbol"],
+                    "matched_market_symbol": selected["base_symbol"],
+                    "market_mapping_method": selected["market_method"],
+                    "market_mapping_confidence": selected["market_confidence"],
+                })
+                current = (
+                    selected["asset_id"],
+                    financing["raw_asset_symbol"],
+                    selected["normalized_symbol"],
+                    "SAME_VENUE_MARKET_SYMBOL",
+                    float(selected["market_confidence"]),
+                    MATCHER_VERSION,
+                    evidence,
+                )
+                previous = conn.execute(
+                    """
+                    SELECT asset_id, venue_symbol, normalized_symbol, method,
+                           confidence, matcher_version, evidence_json
+                    FROM financing_asset_mappings WHERE financing_id = ?
+                    """,
+                    (financing_id,),
+                ).fetchone()
+                if previous is None or tuple(previous) != current:
+                    conn.execute(
+                        """
+                        INSERT INTO financing_asset_mapping_revisions(
+                            revision_id, financing_id, asset_id, venue_symbol,
+                            normalized_symbol, method, confidence, matcher_version,
+                            evidence_json, recorded_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (str(uuid.uuid4()), financing_id, *current, now),
+                    )
+                conn.execute(
+                    """
+                    INSERT INTO financing_asset_mappings(
+                        financing_id, asset_id, venue_symbol, normalized_symbol,
+                        method, confidence, matcher_version, evidence_json, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(financing_id) DO UPDATE SET
+                        asset_id=excluded.asset_id,
+                        venue_symbol=excluded.venue_symbol,
+                        normalized_symbol=excluded.normalized_symbol,
+                        method=excluded.method,
+                        confidence=excluded.confidence,
+                        matcher_version=excluded.matcher_version,
+                        evidence_json=excluded.evidence_json,
+                        updated_at=excluded.updated_at
+                    """,
+                    (financing_id, *current, now),
+                )
+            conn.execute(
+                """
+                DELETE FROM financing_asset_mappings
+                WHERE financing_id IN (
+                    SELECT financing_id FROM financing_products WHERE active = 0
+                )
+                """
+            )
+
     @staticmethod
     def _insert_event(conn, run_id, market_id, event_type, old_value, new_value, observed_at) -> None:
         conn.execute(
@@ -724,6 +1017,8 @@ class SQLiteStore:
                         row["mapping_evidence_json"],
                     ),
                 )
+
+        self.rebuild_financing_mappings()
 
     def rebuild_asset_tags(self, *, run_id: str, observed_at: str) -> None:
         """Project provider metadata onto canonical assets and version changes."""
@@ -1170,6 +1465,71 @@ class SQLiteStore:
             "results": results,
         }
 
+    def list_financing(self, filters: dict[str, object]) -> dict:
+        """Return public venue-level margin and crypto-loan metadata."""
+        self.migrate()
+        clauses = ["f.active = 1"]
+        params: list[object] = []
+        products = requested_values(filters, "product")
+        roles = requested_values(filters, "role")
+        invalid_products = products - {"CROSS_MARGIN", "CRYPTO_LOAN"}
+        invalid_roles = roles - {"BORROWABLE", "COLLATERAL"}
+        if invalid_products:
+            raise ValueError(
+                f"PRODUCT has unknown value(s): {', '.join(sorted(invalid_products))}"
+            )
+        if invalid_roles:
+            raise ValueError(
+                f"ROLE has unknown value(s): {', '.join(sorted(invalid_roles))}"
+            )
+        for column, key in (
+            ("f.venue", "venue"),
+            ("f.product", "product"),
+            ("f.asset_role", "role"),
+            ("f.raw_asset_symbol", "symbol"),
+        ):
+            values = requested_values(filters, key)
+            if values:
+                placeholders = ",".join("?" for _ in values)
+                clauses.append(f"{column} IN ({placeholders})")
+                params.extend(sorted(values))
+        if filters.get("eligible") not in (None, ""):
+            value = str(filters["eligible"]).strip().lower()
+            if value not in {"true", "false", "1", "0"}:
+                raise ValueError("ELIGIBLE must be true or false")
+            clauses.append("f.eligible = ?")
+            params.append(1 if value in {"true", "1"} else 0)
+        limit = min(max(int(filters.get("limit") or 5000), 1), 5000)
+        offset = max(int(filters.get("offset") or 0), 0)
+        where = " AND ".join(clauses)
+        with self.readonly() as conn:
+            total = int(conn.execute(
+                f"SELECT COUNT(*) FROM financing_products f WHERE {where}", params
+            ).fetchone()[0])
+            rows = [dict(row) for row in conn.execute(
+                f"""
+                SELECT f.*, map.asset_id, a.canonical_symbol,
+                       map.method AS match_method,
+                       map.confidence AS match_confidence,
+                       map.matcher_version
+                FROM financing_products f
+                LEFT JOIN financing_asset_mappings map
+                  ON map.financing_id = f.financing_id
+                LEFT JOIN assets a ON a.asset_id = map.asset_id
+                WHERE {where}
+                ORDER BY f.venue, f.product, f.asset_role, f.raw_asset_symbol
+                LIMIT ? OFFSET ?
+                """,
+                [*params, limit, offset],
+            )]
+        for row in rows:
+            for field in ("rates", "terms", "limits", "pair_symbols"):
+                row[field] = json.loads(row.pop(f"{field}_json"))
+            row["raw"] = json.loads(row.pop("raw_json"))
+            row["eligible"] = bool(row["eligible"])
+            row["active"] = bool(row["active"])
+        return {"count": total, "financing": rows}
+
     def list_assets(self, filters: dict[str, object]) -> dict:
         """Build the active asset -> venue symbol -> market projection."""
         self.migrate()
@@ -1215,6 +1575,19 @@ class SQLiteStore:
                 FROM asset_tags
                 WHERE active = 1
                 ORDER BY provider, tag
+                """
+            )]
+            financing_rows = [dict(row) for row in conn.execute(
+                """
+                SELECT f.financing_id, f.venue, f.product, f.asset_role,
+                       f.raw_asset_symbol, f.status, f.regular_user_tier,
+                       f.rates_json, f.terms_json, f.limits_json,
+                       f.pair_symbols_json, f.last_seen_at, map.asset_id
+                FROM financing_products f
+                JOIN financing_asset_mappings map
+                  ON map.financing_id = f.financing_id
+                WHERE f.active = 1 AND f.eligible = 1
+                ORDER BY f.venue, f.product, f.asset_role, f.raw_asset_symbol
                 """
             )]
 
@@ -1264,6 +1637,8 @@ class SQLiteStore:
             raise ValueError(f"FUTURES requires and excludes the same venue: {', '.join(sorted(overlap))}")
         requested_tags = requested_tag_keys(filters.get("tags") or [])
         excluded_tags = requested_tag_keys(filters.get("tags_not") or [])
+        requested_financing = requested_financing_keys(filters)
+        excluded_financing = requested_financing_keys(filters, "_not")
 
         def stock_values(name: str) -> set[bool]:
             values = requested_values(filters, name)
@@ -1293,9 +1668,42 @@ class SQLiteStore:
                     "key": f"{tag_row['provider']}:{tag_row['tag']}",
                 }
             )
+        financing_by_asset: dict[str, list[dict]] = {}
+        for financing_row in financing_rows:
+            rates = json.loads(financing_row.pop("rates_json"))
+            terms = json.loads(financing_row.pop("terms_json"))
+            limits = json.loads(financing_row.pop("limits_json"))
+            pair_symbols = json.loads(financing_row.pop("pair_symbols_json"))
+            regular_rates = [rate for rate in rates if rate.get("regular_user")]
+            preferred_rate = next(
+                (rate for rate in regular_rates if rate.get("rate_type") == "FLEXIBLE"),
+                regular_rates[0] if regular_rates else None,
+            )
+            financing_by_asset.setdefault(financing_row["asset_id"], []).append(
+                {
+                    **financing_row,
+                    "regular_rate": preferred_rate,
+                    "rate_count": len(rates),
+                    "terms": terms,
+                    "limits": limits,
+                    "pair_symbols": pair_symbols,
+                }
+            )
         for asset in grouped.values():
             all_markets = asset["markets"]
             asset_tags = tags_by_asset.get(asset["asset_id"], [])
+            asset_financing = financing_by_asset.get(asset["asset_id"], [])
+            borrow_eligibility = [
+                row for row in asset_financing if row["asset_role"] == "BORROWABLE"
+            ]
+            financing_keys = {
+                f"{row['venue']}:{'MARGIN' if row['product'] == 'CROSS_MARGIN' else 'LOAN'}"
+                for row in borrow_eligibility
+            }
+            if not requested_financing.issubset(financing_keys):
+                continue
+            if excluded_financing & financing_keys:
+                continue
             asset_tag_keys = {(item["provider"], item["tag"]) for item in asset_tags}
             if not requested_tags.issubset(asset_tag_keys):
                 continue
@@ -1400,11 +1808,16 @@ class SQLiteStore:
                 target = venue["spot"] if market["market_type"] == "SPOT" else venue["futures"]
                 target.append(market)
 
+            for financing in borrow_eligibility:
+                if financing["venue"] in venues:
+                    venues[financing["venue"]].setdefault("financing", []).append(financing)
+
             venue_rows = []
             for venue in sorted(venues.values(), key=lambda item: item["venue"]):
                 venue["symbols"] = sorted(venue["symbols"])
                 venue["spot"].sort(key=lambda item: (item["product"], item["raw_symbol"]))
                 venue["futures"].sort(key=lambda item: (item["product"], item["raw_symbol"]))
+                venue.setdefault("financing", [])
                 venue_rows.append(venue)
 
             spot_venues = [
@@ -1454,6 +1867,8 @@ class SQLiteStore:
                     "active_market_count": len(markets),
                     "is_stock": is_stock,
                     "tags": asset_tags,
+                    "financing": asset_financing,
+                    "borrow_eligibility": borrow_eligibility,
                 }
             )
             assets.append(asset)
@@ -1499,6 +1914,20 @@ class SQLiteStore:
                 FROM asset_tags
                 WHERE active = 1
                 ORDER BY provider || ':' || tag
+                """
+            )]
+            financing = [str(row[0]) for row in conn.execute(
+                """
+                SELECT DISTINCT
+                    venue || ':' ||
+                    CASE product
+                        WHEN 'CROSS_MARGIN' THEN 'MARGIN'
+                        ELSE 'LOAN'
+                    END
+                FROM financing_products
+                WHERE active = 1 AND eligible = 1
+                  AND asset_role = 'BORROWABLE'
+                ORDER BY 1
                 """
             )]
 
@@ -1560,6 +1989,10 @@ class SQLiteStore:
                 ),
                 "STOCK": enum(["0", "1"], "Canonical asset stock classification."),
                 "TAG": enum(tags, "Provider-scoped canonical asset tag."),
+                "FINANCING": enum(
+                    financing,
+                    "Provider-scoped cross-margin or crypto-loan eligibility.",
+                ),
                 "VENUE": enum(active_values("venue"), "Trading venue."),
                 "SYMBOL": {
                     "kind": "text", "wildcard": "*", "operators": ["=", "!="],

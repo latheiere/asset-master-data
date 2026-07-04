@@ -1,0 +1,4 @@
+[
+  {"name": "BTC", "rate": "0.0001", "min_borrow_amount": "0.001", "total_max_borrow_amount": "1000000", "loanable": true, "status": 1},
+  {"name": "ETH", "rate": "0.0002", "min_borrow_amount": "0.01", "total_max_borrow_amount": "500000", "loanable": false, "status": 1}
+]

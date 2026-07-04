@@ -4,6 +4,7 @@ from mdv.connectors.bybit import bybit_connectors
 from mdv.connectors.gate import gate_connectors
 from mdv.connectors.mexc import mexc_connectors
 from mdv.connectors.registry import (
+    default_collection_connectors,
     default_connectors,
     market_metadata,
     market_trade_url,
@@ -17,6 +18,7 @@ __all__ = [
     "gate_connectors",
     "mexc_connectors",
     "default_connectors",
+    "default_collection_connectors",
     "market_metadata",
     "market_trade_url",
     "supported_venues",

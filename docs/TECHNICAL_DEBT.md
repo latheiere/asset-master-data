@@ -1,6 +1,6 @@
 # Technical Debt Implementation Request
 
-This request covers known gaps in the current `0.2.1` implementation relative to
+This request covers known gaps in the current `0.3.0` implementation relative to
 the durable, provider-neutral service described in the README. It is not a list
 of already implemented features.
 
@@ -113,6 +113,24 @@ Add tests that prove:
 - Empty, partial, malformed, and failed snapshots cannot mark markets missing.
 - Migrations work from empty DB and schema 12 with representative history.
 - All supported connectors parse recorded fixtures before optional live tests.
+
+### 7. Complete public financing coverage
+
+Current financing discovery intentionally covers only documented,
+credential-free catalogs: Binance, Bitget, Bybit, and Gate cross margin, plus
+Bitget and Bybit crypto loans. Remaining work:
+
+- Add Binance crypto-loan catalogs only if Binance publishes a credential-free
+  enumeration source. Do not introduce exchange credentials into this
+  repository.
+- Add MEXC cross-margin or crypto-loan catalogs only when a documented public
+  enumeration API exists. Announcements and logged-in product pages are not a
+  complete snapshot contract.
+- Confirm and normalize Gate's venue-native loan-rate unit before presenting it
+  as an APR or hourly rate.
+- Add inventory/availability only as non-user-specific venue state. Account
+  balances, credit, personalized limits, and positions belong in a separate
+  service.
 
 ## Constraints
 

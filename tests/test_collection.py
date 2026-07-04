@@ -5,7 +5,7 @@ import pytest
 from mdv.cli import build_parser
 from mdv.collection import CollectionService
 from mdv.db import SQLiteStore
-from mdv.models import MarketRecord, MarketSnapshot
+from mdv.models import FinancingRecord, FinancingSnapshot, MarketRecord, MarketSnapshot
 
 
 class FakeConnector:
@@ -41,6 +41,30 @@ class FakeConnector:
             product="SPOT",
             observed_at="2026-07-03T00:00:00+00:00",
             markets=(market,),
+        )
+
+
+class FakeFinancingConnector:
+    source = "BYBIT_CROSS_MARGIN"
+    venue = "BYBIT"
+    market_type = "FINANCING"
+    product = "CROSS_MARGIN"
+
+    def __init__(self, *, fail: bool = False):
+        self.fail = fail
+
+    async def fetch(self, _client):
+        if self.fail:
+            raise RuntimeError("margin endpoint unavailable")
+        record = FinancingRecord(
+            source=self.source, venue=self.venue, product=self.product,
+            asset_role="BORROWABLE", raw_asset_symbol="BTC", eligible=True,
+            status="ENABLED", regular_user_tier="No VIP", rates=(), terms=(),
+            limits={}, pair_symbols=(), raw={"currency": "BTC"},
+        )
+        return FinancingSnapshot(
+            source=self.source, venue=self.venue, product=self.product,
+            observed_at="2026-07-05T00:00:00+00:00", records=(record,),
         )
 
 
@@ -92,3 +116,17 @@ def test_collect_cli_accepts_venue_scope():
     args = build_parser().parse_args(["collect", "--venue", "MEXC"])
     assert args.command == "collect"
     assert args.venue == "MEXC"
+
+
+def test_failed_financing_collection_preserves_last_complete_snapshot(tmp_path):
+    store = SQLiteStore(tmp_path / "mdv.sqlite3")
+    success = CollectionService(store, connectors=[FakeFinancingConnector()])
+    failure = CollectionService(store, connectors=[FakeFinancingConnector(fail=True)])
+
+    first = asyncio.run(success.collect_all())
+    second = asyncio.run(failure.collect_all())
+
+    assert first[0].ok is True
+    assert second[0].ok is False
+    assert store.list_financing({})["count"] == 1
+    assert store.list_financing({})["financing"][0]["raw_asset_symbol"] == "BTC"

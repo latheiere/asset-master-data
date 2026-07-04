@@ -1,0 +1,20 @@
+{
+  "margin": {
+    "code": "00000", "msg": "success",
+    "data": [
+      {"symbol": "BTCUSDT", "baseCoin": "BTC", "quoteCoin": "USDT", "isCrossBorrowable": true, "status": "1"},
+      {"symbol": "ETHUSDT", "baseCoin": "ETH", "quoteCoin": "USDT", "isCrossBorrowable": false, "status": "1"}
+    ]
+  },
+  "loan": {
+    "code": "00000", "msg": "success",
+    "data": {
+      "loanInfos": [
+        {"coin": "BTC", "rate7D": "0.05", "rate30D": "0.06", "min": "0.001", "max": "10"}
+      ],
+      "pledgeInfos": [
+        {"coin": "ETH", "initRate": "0.7", "supRate": "0.8", "forceRate": "0.9"}
+      ]
+    }
+  }
+}

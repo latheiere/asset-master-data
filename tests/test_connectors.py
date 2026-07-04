@@ -3,12 +3,23 @@ import json
 from pathlib import Path
 
 import httpx
+import pytest
 
 from mdv.connectors.binance import BinanceConnector
 from mdv.connectors.bitget import BitgetFutureConnector, BitgetSpotConnector, bitget_connectors
 from mdv.connectors.bybit import BybitConnector, bybit_connectors
 from mdv.connectors.gate import GateFutureConnector, GateSpotConnector, gate_connectors
+from mdv.connectors.financing import (
+    BitgetCrossMarginConnector,
+    BitgetCryptoLoanConnector,
+    BinanceCrossMarginPublicConnector,
+    BybitCrossMarginConnector,
+    BybitCryptoLoanConnector,
+    GateCrossMarginConnector,
+    financing_connectors,
+)
 from mdv.connectors.mexc import MexcFutureConnector, MexcSpotConnector
+from mdv.connectors.registry import default_collection_connectors
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -392,3 +403,71 @@ def test_bitget_parsers_accept_spot_and_all_future_product_shapes():
     assert future.markets[1].product == "DATED"
     assert future.markets[1].expiry_cycle == "Q"
     assert future.markets[1].expires_at == "2026-06-26T07:59:59+00:00"
+
+
+def test_financing_parsers_keep_margin_and_crypto_loan_separate():
+    bybit = fixture("bybit_financing.json")
+    bitget = fixture("bitget_financing.json")
+    binance_margin = BinanceCrossMarginPublicConnector().parse(
+        fixture("binance_financing.json"), observed_at="2026-07-05T00:00:00+00:00"
+    )
+    observed_at = "2026-07-05T00:00:00+00:00"
+
+    bybit_margin = BybitCrossMarginConnector().parse(
+        bybit["margin"], observed_at=observed_at
+    )
+    bybit_loan = BybitCryptoLoanConnector().parse(
+        bybit["loan"], bybit["collateral"], observed_at=observed_at
+    )
+    bitget_margin = BitgetCrossMarginConnector().parse(
+        bitget["margin"], observed_at=observed_at
+    )
+    bitget_loan = BitgetCryptoLoanConnector().parse(
+        bitget["loan"], observed_at=observed_at
+    )
+    gate_margin = GateCrossMarginConnector().parse(
+        fixture("gate_financing.json"), observed_at=observed_at
+    )
+
+    assert len(financing_connectors()) == 6
+    assert {row.raw_asset_symbol for row in binance_margin.records} == {"BTC", "USDT"}
+    assert all(row.status == "ENABLED" for row in binance_margin.records)
+    assert binance_margin.records[0].raw["evidence_granularity"] == "PAIR"
+    assert bybit_margin.product == "CROSS_MARGIN"
+    assert bybit_margin.records[0].regular_user_tier == "No VIP"
+    assert bybit_margin.records[0].rates[0]["rate_unit"] == "HOURLY"
+    assert bybit_margin.records[1].eligible is False
+    assert bybit_loan.product == "CRYPTO_LOAN"
+    assert {row.asset_role for row in bybit_loan.records} == {"BORROWABLE", "COLLATERAL"}
+    assert bybit_loan.records[0].rates[0]["rate_type"] == "FLEXIBLE"
+    assert {row.raw_asset_symbol for row in bitget_margin.records} == {"BTC", "USDT"}
+    assert bitget_margin.records[0].raw["evidence_granularity"] == "PAIR"
+    assert {row.asset_role for row in bitget_loan.records} == {"BORROWABLE", "COLLATERAL"}
+    assert gate_margin.records[0].eligible is True
+    assert gate_margin.records[1].eligible is False
+
+    sources = {connector.source for connector in default_collection_connectors()}
+    assert {
+        "BINANCE_CROSS_MARGIN_PUBLIC", "BYBIT_CROSS_MARGIN", "BYBIT_CRYPTO_LOAN",
+        "BITGET_CROSS_MARGIN", "BITGET_CRYPTO_LOAN", "GATE_CROSS_MARGIN",
+    }.issubset(sources)
+    assert not any(
+        source.startswith("MEXC_") and source.endswith(("MARGIN", "LOAN"))
+        for source in sources
+    )
+
+
+def test_financing_parsers_reject_recorded_malformed_payloads():
+    malformed = fixture("financing_malformed.json")
+    observed_at = "2026-07-05T00:00:00+00:00"
+
+    with pytest.raises(ValueError):
+        BinanceCrossMarginPublicConnector().parse(
+            malformed["binance"], observed_at=observed_at
+        )
+    with pytest.raises(ValueError):
+        BybitCrossMarginConnector().parse(malformed["bybit"], observed_at=observed_at)
+    with pytest.raises(ValueError):
+        BitgetCrossMarginConnector().parse(malformed["bitget"], observed_at=observed_at)
+    with pytest.raises(ValueError):
+        GateCrossMarginConnector().parse(malformed["gate"], observed_at=observed_at)

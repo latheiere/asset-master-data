@@ -6,7 +6,7 @@ from typing import Any, Protocol
 
 import httpx
 
-from mdv.models import MarketSnapshot
+from mdv.models import FinancingSnapshot, MarketSnapshot
 
 
 def utc_now() -> str:
@@ -19,7 +19,9 @@ class Connector(Protocol):
     market_type: str
     product: str
 
-    async def fetch(self, client: httpx.AsyncClient) -> MarketSnapshot: ...
+    async def fetch(
+        self, client: httpx.AsyncClient
+    ) -> MarketSnapshot | FinancingSnapshot: ...
 
 
 async def fetch_json(client: httpx.AsyncClient, url: str, *, attempts: int = 3) -> Any:

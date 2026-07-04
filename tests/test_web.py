@@ -8,7 +8,7 @@ from mdv.auth import hash_password
 from mdv.collection import CollectionResult
 from mdv.config import Settings
 from mdv.db import SQLiteStore
-from mdv.models import MarketRecord, MarketSnapshot
+from mdv.models import FinancingRecord, FinancingSnapshot, MarketRecord, MarketSnapshot
 from mdv.web import create_app
 
 
@@ -42,6 +42,20 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
             markets=(market,),
         )
     )
+    store.apply_financing_snapshot(FinancingSnapshot(
+        source="BYBIT_CRYPTO_LOAN",
+        venue="BYBIT",
+        product="CRYPTO_LOAN",
+        observed_at="2026-07-05T00:00:00+00:00",
+        records=(FinancingRecord(
+            source="BYBIT_CRYPTO_LOAN", venue="BYBIT", product="CRYPTO_LOAN",
+            asset_role="BORROWABLE", raw_asset_symbol="SOL", eligible=True,
+            status="ENABLED", regular_user_tier="VIP0",
+            rates=({"tier": "VIP0", "regular_user": True, "rate_type": "FLEXIBLE", "rate_unit": "APR", "value": "0.04"},),
+            terms=({"type": "FLEXIBLE", "enabled": True},), limits={},
+            pair_symbols=(), raw={"currency": "SOL"},
+        ),),
+    ))
     binance_market = MarketRecord(
         source="BINANCE_FUTURE",
         venue="BINANCE",
@@ -196,9 +210,18 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
             "/mdv?FUTURES%21=MEXC",
             follow_redirects=False,
         )
+        financing_not_redirect = client.get(
+            "/mdv?FINANCING%21=BYBIT%3ALOAN",
+            follow_redirects=False,
+        )
         response = client.get("/mdv?TYPE=FUTURE")
         api_response = client.get("/api/v1/markets?TYPE=FUTURE")
         asset_response = client.get("/api/v1/assets?TYPE=FUTURE")
+        financing_response = client.get("/api/v1/financing?PRODUCT=CRYPTO_LOAN&SYMBOL=SOL")
+        invalid_financing_response = client.get("/api/v1/financing?PRODUCT=MARGIN")
+        financing_assets = client.get("/api/v1/assets?FINANCING=BYBIT:LOAN")
+        financing_page = client.get("/mdv?FINANCING=BYBIT:LOAN")
+        without_financing = client.get("/api/v1/assets?FINANCING!=BYBIT:LOAN")
         without_perpetuals = client.get("/api/v1/assets?PRODUCT!=PERP")
         without_spot = client.get("/api/v1/assets?TYPE!=SPOT")
         metadata_response = client.get("/api/v1/metadata")
@@ -246,6 +269,8 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
     assert canonical_redirect.headers["location"] == "/mdv?TAG=BINANCE%3AMONITORING"
     assert futures_not_redirect.status_code == 307
     assert futures_not_redirect.headers["location"] == "/mdv?FUTURES!=MEXC"
+    assert financing_not_redirect.status_code == 307
+    assert financing_not_redirect.headers["location"] == "/mdv?FINANCING!=BYBIT%3ALOAN"
     assert response.status_code == 200
     assert "BTC_USDT" in response.text
     assert "MEXC" in response.text
@@ -260,6 +285,8 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
     assert 'id="column-settings-toggle"' in response.text
     assert 'data-column-option="asset"' in response.text
     assert 'data-column-option="markets"' in response.text
+    assert 'data-column-option="financing"' in response.text
+    assert "BYBIT · LOAN · 4.0% APR" in response.text
     assert 'draggable="true"' in response.text
     assert 'tabindex="0"' in response.text
     assert "mdv_columns" in response.text
@@ -269,6 +296,25 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
     assert api_response.json()["count"] == 3
     assert api_response.json()["markets"][2]["max_market_order_size"] == "5000000"
     assert asset_response.json()["count"] == 3
+    sol_asset = next(
+        asset for asset in asset_response.json()["assets"]
+        if asset["canonical_symbol"] == "SOL"
+    )
+    assert sol_asset["borrow_eligibility"][0]["product"] == "CRYPTO_LOAN"
+    assert "raw" not in sol_asset["borrow_eligibility"][0]
+    assert financing_response.status_code == 200
+    assert financing_response.json()["count"] == 1
+    assert financing_response.json()["financing"][0]["raw"]["currency"] == "SOL"
+    assert invalid_financing_response.status_code == 422
+    assert [
+        asset["canonical_symbol"] for asset in financing_assets.json()["assets"]
+    ] == ["SOL"]
+    assert financing_page.status_code == 200
+    assert '<option value="BYBIT:LOAN" selected>' in financing_page.text
+    assert all(
+        asset["canonical_symbol"] != "SOL"
+        for asset in without_financing.json()["assets"]
+    )
     assert {
         asset["canonical_symbol"] for asset in without_perpetuals.json()["assets"]
     } == {"SOL", "WIF"}
@@ -282,6 +328,9 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
     assert metadata_response.json()["filters"]["TAG"]["values"] == [
         "BINANCE:MONITORING",
         "BINANCE:SEED",
+    ]
+    assert metadata_response.json()["filters"]["FINANCING"]["values"] == [
+        "BYBIT:LOAN"
     ]
     assert metadata_response.json()["filters"]["FUTURES"]["operators"] == ["=", "!="]
     assert "FUTURES!" not in metadata_response.json()["filters"]
@@ -306,7 +355,7 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
     assert 'id="market-filter-group" class="filter-group" hidden' in logs_response.text
     assert 'id="tag-filter-group" class="filter-group" hidden' in logs_response.text
     assert logs_api_response.status_code == 200
-    assert logs_api_response.json()["count"] == 4
+    assert logs_api_response.json()["count"] == 5
     assert {run["scope"] for run in logs_api_response.json()["runs"]} == {
         "BINANCE",
         "BYBIT",

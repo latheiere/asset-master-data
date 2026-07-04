@@ -5,9 +5,10 @@ from dataclasses import asdict, dataclass
 
 import httpx
 
-from mdv.connectors import default_connectors
+from mdv.connectors import default_collection_connectors
 from mdv.connectors.base import Connector
 from mdv.db import SQLiteStore
+from mdv.models import FinancingSnapshot
 
 
 @dataclass(frozen=True)
@@ -24,7 +25,7 @@ class CollectionService:
     def __init__(self, store: SQLiteStore, *, timeout_seconds: float = 20, connectors: list[Connector] | None = None):
         self.store = store
         self.timeout_seconds = timeout_seconds
-        self.connectors = connectors or default_connectors()
+        self.connectors = connectors or default_collection_connectors()
 
     async def collect_all(self) -> list[CollectionResult]:
         return await self.collect()
@@ -70,7 +71,11 @@ class CollectionService:
                 results.append(CollectionResult(connector.source, False, 0, run_id, collection_run_id, error))
                 continue
             try:
-                run_id = self.store.apply_snapshot(value, collection_run_id=collection_run_id)
+                run_id = (
+                    self.store.apply_financing_snapshot(value, collection_run_id=collection_run_id)
+                    if isinstance(value, FinancingSnapshot)
+                    else self.store.apply_snapshot(value, collection_run_id=collection_run_id)
+                )
             except Exception as exc:
                 error = f"{type(exc).__name__}: {exc}"
                 run_id = self.store.record_failed_run(
@@ -83,7 +88,8 @@ class CollectionService:
                 )
                 results.append(CollectionResult(connector.source, False, 0, run_id, collection_run_id, error))
                 continue
-            results.append(CollectionResult(connector.source, True, len(value.markets), run_id, collection_run_id))
+            record_count = len(value.records) if isinstance(value, FinancingSnapshot) else len(value.markets)
+            results.append(CollectionResult(connector.source, True, record_count, run_id, collection_run_id))
         self.store.finish_collection_run(collection_run_id)
         return results
 

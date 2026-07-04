@@ -1,0 +1,6 @@
+{
+  "binance": {"timezone": "UTC", "symbols": "not-an-array"},
+  "bybit": {"retCode": 0, "result": {"vipCoinList": [{"vipLevel": "No VIP", "list": "not-an-array"}]}},
+  "bitget": {"code": "00000", "msg": "success", "data": null},
+  "gate": {"unexpected": "object-instead-of-array"}
+}

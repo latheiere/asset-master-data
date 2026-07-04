@@ -10,6 +10,12 @@ from mdv.connectors.binance import binance_connectors
 from mdv.connectors.bitget import bitget_connectors
 from mdv.connectors.bybit import bybit_connectors
 from mdv.connectors.gate import gate_connectors
+from mdv.connectors.financing import (
+    binance_financing_connectors,
+    bitget_financing_connectors,
+    bybit_financing_connectors,
+    gate_financing_connectors,
+)
 from mdv.connectors.mexc import mexc_connectors
 from mdv.matching import AliasHint, normalize_asset_symbol
 
@@ -30,6 +36,7 @@ class VenueIntegration:
     venue: str
     connector_factory: ConnectorFactory
     trade_url_builder: TradeUrlBuilder
+    financing_factory: ConnectorFactory | None = None
 
 
 def _encoded_market(market: dict) -> tuple[str, str, str, str, str]:
@@ -99,10 +106,22 @@ def _mexc_trade_url(market: dict) -> str | None:
 INTEGRATIONS = {
     integration.venue: integration
     for integration in (
-        VenueIntegration("BINANCE", binance_connectors, _binance_trade_url),
-        VenueIntegration("BITGET", bitget_connectors, _bitget_trade_url),
-        VenueIntegration("BYBIT", bybit_connectors, _bybit_trade_url),
-        VenueIntegration("GATE", gate_connectors, _gate_trade_url),
+        VenueIntegration(
+            "BINANCE", binance_connectors, _binance_trade_url,
+            binance_financing_connectors,
+        ),
+        VenueIntegration(
+            "BITGET", bitget_connectors, _bitget_trade_url,
+            bitget_financing_connectors,
+        ),
+        VenueIntegration(
+            "BYBIT", bybit_connectors, _bybit_trade_url,
+            bybit_financing_connectors,
+        ),
+        VenueIntegration(
+            "GATE", gate_connectors, _gate_trade_url,
+            gate_financing_connectors,
+        ),
         VenueIntegration("MEXC", mexc_connectors, _mexc_trade_url),
     )
 }
@@ -113,6 +132,21 @@ def default_connectors() -> list[Connector]:
         connector
         for integration in INTEGRATIONS.values()
         for connector in integration.connector_factory()
+    ]
+
+
+def default_collection_connectors() -> list[Connector]:
+    return [
+        connector
+        for integration in INTEGRATIONS.values()
+        for connector in (
+            integration.connector_factory()
+            + (
+                integration.financing_factory()
+                if integration.financing_factory is not None
+                else []
+            )
+        )
     ]
 
 

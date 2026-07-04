@@ -91,6 +91,7 @@
               ('tags', 'Tags'),
               ('venue-symbols', 'Venue symbols'),
               ('spot-venues', 'Spot venues'),
+              ('financing', 'Financing'),
               ('futures-venues', 'Futures venues'),
               ('futures-coverage', 'Futures coverage'),
               ('active-markets', 'Active markets'),
@@ -187,6 +188,14 @@
       <label>Quote<input name="QUOTE" value="{{ filters.quote|join(',') }}" placeholder="USDT" autocomplete="off"></label>
       <label>Settle<input name="SETTLE" value="{{ filters.settle|join(',') }}" placeholder="USDC" autocomplete="off"></label>
       <label>Tag<input name="TAG" value="{{ filters.tags|join(',') }}" placeholder="BINANCE:MONITORING" autocomplete="off"></label>
+      <label>Financing
+        <select name="FINANCING">
+          <option value="">Any</option>
+          {% for financing in filter_metadata.FINANCING['values'] %}
+          <option value="{{ financing }}" {% if financing in filters.financing %}selected{% endif %}>{{ financing }}</option>
+          {% endfor %}
+        </select>
+      </label>
       <label>Asset or venue symbol<input name="SYMBOL" value="{{ filters.symbol|join(',') }}" placeholder="BTC*" autocomplete="off"></label>
       <button type="submit">Apply</button>
       <a class="button-link secondary" href="/mdv">Clear</a>
@@ -195,7 +204,7 @@
       {% if asset_view.assets %}
       <table id="asset-table">
         <thead>
-          <tr><th data-column="asset">Asset</th><th data-column="tags">Tags</th><th data-column="venue-symbols">Venue symbols</th><th data-column="spot-venues">Spot venues</th><th data-column="futures-venues">Futures venues</th><th data-column="futures-coverage">Futures coverage</th><th class="count" data-column="active-markets">Active markets</th><th data-column="markets">Markets</th></tr>
+          <tr><th data-column="asset">Asset</th><th data-column="tags">Tags</th><th data-column="venue-symbols">Venue symbols</th><th data-column="spot-venues">Spot venues</th><th data-column="financing">Financing</th><th data-column="futures-venues">Futures venues</th><th data-column="futures-coverage">Futures coverage</th><th class="count" data-column="active-markets">Active markets</th><th data-column="markets">Markets</th></tr>
         </thead>
         {% for asset in asset_view.assets %}
         <tbody>
@@ -214,6 +223,13 @@
                 {% for item in asset.spot_venues %}<span class="badge">{{ item.venue }} · {{ item.count }}</span>{% else %}<span class="muted">None</span>{% endfor %}
               </div>
             </td>
+            <td data-column="financing">
+              <div class="badge-list">
+                {% for item in asset.borrow_eligibility %}
+                  <span class="badge">{{ item.venue }} · {{ 'MARGIN' if item.product == 'CROSS_MARGIN' else 'LOAN' }}{% if item.regular_rate and item.regular_rate.rate_unit == 'APR' %} · {{ ((item.regular_rate.value|float) * 100)|round(2) }}% APR{% endif %}</span>
+                {% else %}<span class="muted">None</span>{% endfor %}
+              </div>
+            </td>
             <td data-column="futures-venues">
               <div class="badge-list">
                 {% for item in asset.future_venues %}<span class="badge">{{ item.venue }} · {{ item.products|join(', ') }}</span>{% else %}<span class="muted">None</span>{% endfor %}
@@ -224,7 +240,7 @@
             <td data-column="markets"><button class="secondary market-toggle" type="button" data-target="asset-details-{{ loop.index }}" aria-expanded="false">Show</button></td>
           </tr>
           <tr class="details-row" id="asset-details-{{ loop.index }}" hidden>
-            <td colspan="8" data-details-cell>
+            <td colspan="9" data-details-cell>
               <div class="details-content">
                 <div class="venue-grid">
                 {% for venue in asset.venues %}
@@ -275,6 +291,7 @@
       'tags',
       'venue-symbols',
       'spot-venues',
+      'financing',
       'futures-venues',
       'futures-coverage',
       'active-markets',

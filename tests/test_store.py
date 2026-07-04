@@ -4,7 +4,7 @@ from importlib import resources
 import pytest
 
 from mdv.db import SQLiteStore, market_trade_url
-from mdv.models import MarketRecord, MarketSnapshot
+from mdv.models import FinancingRecord, FinancingSnapshot, MarketRecord, MarketSnapshot
 
 
 def snapshot(*, active: bool = True, status: str = "TRADING") -> MarketSnapshot:
@@ -431,6 +431,49 @@ def test_collection_run_migration_backfills_previous_ingest_runs(tmp_path):
     assert {
         "venue_product", "venue_status", "contract_direction", "expiry_cycle"
     }.issubset(market_columns)
+
+
+def test_financing_migration_upgrades_schema_12_without_rewriting_market_data(tmp_path):
+    path = tmp_path / "schema12.sqlite3"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, filename TEXT NOT NULL, applied_at TEXT NOT NULL)"
+    )
+    migration_dir = resources.files("mdv.migrations")
+    for version in range(1, 13):
+        entry = next(
+            item for item in migration_dir.iterdir()
+            if item.name.startswith(f"{version:03d}_")
+        )
+        conn.executescript(entry.read_text(encoding="utf-8"))
+        conn.execute(
+            "INSERT INTO schema_migrations(version, filename, applied_at) VALUES (?, ?, ?)",
+            (version, entry.name, "2026-07-03T00:00:00+00:00"),
+        )
+    conn.execute("INSERT INTO venues(venue, display_name) VALUES ('BYBIT', 'Bybit')")
+    conn.commit()
+    conn.close()
+
+    store = SQLiteStore(path)
+    store.migrate()
+
+    with store.readonly() as migrated:
+        versions = [row[0] for row in migrated.execute(
+            "SELECT version FROM schema_migrations ORDER BY version"
+        )]
+        tables = {row[0] for row in migrated.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )}
+        venue = migrated.execute(
+            "SELECT display_name FROM venues WHERE venue = 'BYBIT'"
+        ).fetchone()[0]
+    assert versions[-1] == 13
+    assert {
+        "financing_products", "financing_observations",
+        "financing_lifecycle_events", "financing_asset_mappings",
+        "financing_asset_mapping_revisions",
+    }.issubset(tables)
+    assert venue == "Bybit"
 
 
 def test_asset_view_groups_active_markets_and_reports_cross_venue_futures(tmp_path):
@@ -967,3 +1010,93 @@ def test_generic_provider_tags_are_projected_and_remain_provider_scoped(tmp_path
         "BITGET:RWA",
         "GATE:ST",
     ]
+
+
+def test_financing_snapshots_map_by_venue_and_project_separate_products(tmp_path):
+    store = SQLiteStore(tmp_path / "mdv.sqlite3")
+    apply_market(store, market(
+        source="BYBIT_BTC_SPOT", venue="BYBIT", market_type="SPOT",
+        raw_symbol="BTCUSDT", base_symbol="BTC",
+    ))
+    records = (
+        FinancingRecord(
+            source="BYBIT_CROSS_MARGIN", venue="BYBIT", product="CROSS_MARGIN",
+            asset_role="BORROWABLE", raw_asset_symbol="BTC", eligible=True,
+            status="ENABLED", regular_user_tier="No VIP",
+            rates=({"tier": "No VIP", "regular_user": True, "rate_type": "VARIABLE", "rate_unit": "HOURLY", "value": "0.000001"},),
+            terms=(), limits={}, pair_symbols=(), raw={"currency": "BTC"},
+        ),
+    )
+    store.apply_financing_snapshot(FinancingSnapshot(
+        source="BYBIT_CROSS_MARGIN", venue="BYBIT", product="CROSS_MARGIN",
+        observed_at="2026-07-05T00:00:00+00:00", records=records,
+    ))
+    loan_record = FinancingRecord(
+        source="BYBIT_CRYPTO_LOAN", venue="BYBIT", product="CRYPTO_LOAN",
+        asset_role="BORROWABLE", raw_asset_symbol="BTC", eligible=True,
+        status="ENABLED", regular_user_tier="VIP0",
+        rates=({"tier": "VIP0", "regular_user": True, "rate_type": "FLEXIBLE", "rate_unit": "APR", "value": "0.04"},),
+        terms=({"type": "FLEXIBLE", "enabled": True},),
+        limits={"platform_max": "10"}, pair_symbols=(), raw={"currency": "BTC"},
+    )
+    store.apply_financing_snapshot(FinancingSnapshot(
+        source="BYBIT_CRYPTO_LOAN", venue="BYBIT", product="CRYPTO_LOAN",
+        observed_at="2026-07-05T00:01:00+00:00", records=(loan_record,),
+    ))
+
+    financing = store.list_financing({})
+    asset = store.list_assets({"symbol": "BTC"})["assets"][0]
+
+    assert financing["count"] == 2
+    assert {row["product"] for row in financing["financing"]} == {
+        "CROSS_MARGIN", "CRYPTO_LOAN"
+    }
+    assert all(row["canonical_symbol"] == "BTC" for row in financing["financing"])
+    assert {row["product"] for row in asset["borrow_eligibility"]} == {
+        "CROSS_MARGIN", "CRYPTO_LOAN"
+    }
+    assert asset["borrow_eligibility"][1]["regular_rate"]["value"] == "0.04"
+    assert "raw" not in asset["borrow_eligibility"][0]
+    assert store.list_assets({"financing": ["BYBIT:MARGIN"]})["count"] == 1
+    assert store.list_assets({"financing": ["BYBIT:LOAN"]})["count"] == 1
+    assert store.list_assets(
+        {"financing": ["BYBIT:MARGIN", "BYBIT:LOAN"]}
+    )["count"] == 1
+    assert store.list_assets({"financing_not": ["BYBIT:LOAN"]})["count"] == 0
+    assert store.filter_metadata()["filters"]["FINANCING"]["values"] == [
+        "BYBIT:LOAN", "BYBIT:MARGIN"
+    ]
+    with pytest.raises(ValueError, match="FINANCING must use"):
+        store.list_assets({"financing": ["MARGIN"]})
+
+
+def test_financing_complete_snapshot_marks_absent_records_inactive(tmp_path):
+    store = SQLiteStore(tmp_path / "mdv.sqlite3")
+    record = FinancingRecord(
+        source="GATE_CROSS_MARGIN", venue="GATE", product="CROSS_MARGIN",
+        asset_role="BORROWABLE", raw_asset_symbol="BTC", eligible=True,
+        status="ENABLED", regular_user_tier=None, rates=(), terms=(), limits={},
+        pair_symbols=(), raw={"name": "BTC"},
+    )
+    store.apply_financing_snapshot(FinancingSnapshot(
+        source=record.source, venue=record.venue, product=record.product,
+        observed_at="2026-07-05T00:00:00+00:00", records=(record,),
+    ))
+    replacement = FinancingRecord(
+        source=record.source, venue=record.venue, product=record.product,
+        asset_role="BORROWABLE", raw_asset_symbol="ETH", eligible=True,
+        status="ENABLED", regular_user_tier=None, rates=(), terms=(), limits={},
+        pair_symbols=(), raw={"name": "ETH"},
+    )
+    store.apply_financing_snapshot(FinancingSnapshot(
+        source=record.source, venue=record.venue, product=record.product,
+        observed_at="2026-07-05T01:00:00+00:00", records=(replacement,),
+    ))
+
+    assert [row["raw_asset_symbol"] for row in store.list_financing({})["financing"]] == ["ETH"]
+    with store.readonly() as conn:
+        event = conn.execute(
+            "SELECT event_type FROM financing_lifecycle_events WHERE financing_id = ? ORDER BY observed_at DESC LIMIT 1",
+            (record.financing_id,),
+        ).fetchone()
+    assert event[0] == "MISSING"

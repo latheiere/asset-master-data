@@ -72,6 +72,7 @@ Common filters:
 | `FUTURES` | Required futures venue coverage at canonical-asset level |
 | `STOCK` | `1` for equity-classified assets, `0` otherwise |
 | `TAG` | Provider-scoped tag, for example `BINANCE:MONITORING` |
+| `FINANCING` | Provider-scoped eligibility, for example `BINANCE:MARGIN` or `BYBIT:LOAN` |
 | `VENUE` | Trading venue |
 | `SYMBOL` | Canonical, venue-base, or raw symbol; `*` wildcard supported |
 | `STATUS` | Normalized market status |
@@ -79,11 +80,13 @@ Common filters:
 | `OFFSET` | Zero-based result offset |
 
 Asset filters are `TYPE`, `PRODUCT`, `CONTRACT`, `EXPIRY`, `DIRECTION`, `QUOTE`,
-`SETTLE`, `FUTURES`, `STOCK`, `TAG`, `VENUE`, `SYMBOL`, `STATUS`, `LIMIT`, and
-`OFFSET`. Raw-market filters are the same except they omit asset-level
-`FUTURES` and `STOCK` and add `ACTIVE=true|false`. Asset projections are always
-active-only. Use `GET /api/v1/metadata` to discover accepted values from the
-current database instead of hardcoding venue or enum lists.
+`SETTLE`, `FUTURES`, `STOCK`, `TAG`, `FINANCING`, `VENUE`, `SYMBOL`, `STATUS`,
+`LIMIT`, and `OFFSET`. Multiple included `FINANCING` values require all named
+capabilities. Raw-market filters are the same except they omit asset-level
+`FUTURES`, `STOCK`, and `FINANCING`, and add `ACTIVE=true|false`. Asset
+projections are always active-only. Use `GET /api/v1/metadata` to discover
+accepted values from the current database instead of hardcoding venue or enum
+lists.
 
 ## Endpoints
 
@@ -94,7 +97,7 @@ Authenticated liveness and database reachability check.
 ```json
 {
   "status": "ok",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "revision": "0123456789abcdef0123456789abcdef01234567",
   "markets": 12500
 }
@@ -126,6 +129,8 @@ Returns the active asset-first hierarchy. Supports all common filters except
       "active_market_count": 5,
       "is_stock": false,
       "tags": [],
+      "financing": [],
+      "borrow_eligibility": [],
       "venues": []
     }
   ],
@@ -138,6 +143,74 @@ Returns the active asset-first hierarchy. Supports all common filters except
 arrays. Market rows include normalized fields, source fields, timestamps,
 `underlying_unit`, and `trade_url`; they do not include `raw_json`. `count` is
 the filtered total before `LIMIT`/`OFFSET`.
+
+`financing` contains compact, active, eligible financing records mapped through
+an exact same-venue market symbol. `borrow_eligibility` is its `BORROWABLE`
+subset; `COLLATERAL` records remain in `financing`. Compact rows include venue,
+`CROSS_MARGIN` or `CRYPTO_LOAN`, asset role, regular-user rate when published,
+rate count, terms, platform limits, pair symbols, and observation time. Raw
+payloads and full rate tiers are omitted here to bound the asset response; use
+the financing endpoint for the complete record. `FINANCING` filters asset
+selection; financing metadata never changes active-market counts.
+
+### `GET /api/v1/financing`
+
+Returns public venue financing catalogs independently from spot and futures
+markets. Defaults to current records, including eligible and disabled entries.
+
+Filters:
+
+| Filter | Values |
+| --- | --- |
+| `VENUE` | Provider venue key |
+| `PRODUCT` | `CROSS_MARGIN` or `CRYPTO_LOAN` |
+| `ROLE` | `BORROWABLE` or `COLLATERAL` |
+| `SYMBOL` | Exact provider asset symbol |
+| `ELIGIBLE` | `true` or `false` |
+| `LIMIT` | Default/max 5000 |
+| `OFFSET` | Zero-based offset |
+
+```json
+{
+  "count": 1,
+  "financing": [
+    {
+      "financing_id": "BYBIT_CRYPTO_LOAN:CRYPTO_LOAN:BORROWABLE:BTC",
+      "source": "BYBIT_CRYPTO_LOAN",
+      "venue": "BYBIT",
+      "product": "CRYPTO_LOAN",
+      "asset_role": "BORROWABLE",
+      "raw_asset_symbol": "BTC",
+      "eligible": true,
+      "status": "ENABLED",
+      "active": true,
+      "regular_user_tier": "VIP0",
+      "rates": [
+        {
+          "tier": "VIP0",
+          "regular_user": true,
+          "rate_type": "FLEXIBLE",
+          "rate_unit": "APR",
+          "value": "0.04"
+        }
+      ],
+      "terms": [{"type": "FLEXIBLE", "enabled": true}],
+      "limits": {"min_flexible": "0.001", "platform_max": "10"},
+      "pair_symbols": [],
+      "canonical_symbol": "BTC",
+      "match_method": "SAME_VENUE_MARKET_SYMBOL",
+      "raw": {"currency": "BTC"}
+    }
+  ]
+}
+```
+
+`count` is the pre-pagination total. `canonical_symbol` and mapping fields are
+null when the financing symbol has no unique exact same-venue market mapping.
+Rates are decimal values: `0.04` APR means 4%. `VENUE_NATIVE` means the provider
+does not document a safe cross-venue rate unit; consumers must not compare it
+as APR. Limits are public product limits only. They are not balances, current
+inventory, credit decisions, or personalized maximum-borrow values.
 
 ### `GET /api/v1/markets`
 

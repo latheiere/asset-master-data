@@ -1,0 +1,38 @@
+{
+  "margin": {
+    "retCode": 0,
+    "result": {
+      "vipCoinList": [
+        {"vipLevel": "No VIP", "list": [
+          {"currency": "BTC", "borrowable": true, "hourlyBorrowRate": "0.000001", "maxBorrowingAmount": "10"},
+          {"currency": "ETH", "borrowable": false, "hourlyBorrowRate": "", "maxBorrowingAmount": ""}
+        ]},
+        {"vipLevel": "VIP-1", "list": [
+          {"currency": "BTC", "borrowable": true, "hourlyBorrowRate": "0.0000008", "maxBorrowingAmount": "20"},
+          {"currency": "ETH", "borrowable": true, "hourlyBorrowRate": "0.000002", "maxBorrowingAmount": "100"}
+        ]}
+      ]
+    }
+  },
+  "loan": {
+    "retCode": 0,
+    "result": {"list": [
+      {
+        "currency": "BTC", "vipLevel": "VIP0",
+        "flexibleBorrowable": true, "fixedBorrowable": true,
+        "flexibleAnnualizedInterestRate": "0.04",
+        "annualizedInterestRate7D": "0.05", "annualizedInterestRate30D": "0.06",
+        "minFlexibleBorrowingAmount": "0.001", "minFixedBorrowingAmount": "0.01",
+        "maxBorrowingAmount": "10"
+      }
+    ]}
+  },
+  "collateral": {
+    "retCode": 0,
+    "result": {"vipCoinList": [
+      {"vipLevel": "VIP0", "list": [
+        {"currency": "ETH", "initialLTV": "0.8", "marginCallLTV": "0.85", "liquidationLTV": "0.9"}
+      ]}
+    ]}
+  }
+}

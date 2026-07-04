@@ -1,0 +1,21 @@
+{
+  "timezone": "UTC",
+  "symbols": [
+    {
+      "symbol": "BTCUSDT",
+      "status": "TRADING",
+      "baseAsset": "BTC",
+      "quoteAsset": "USDT",
+      "permissions": [],
+      "permissionSets": [["SPOT", "MARGIN"]]
+    },
+    {
+      "symbol": "ETHUSDT",
+      "status": "TRADING",
+      "baseAsset": "ETH",
+      "quoteAsset": "USDT",
+      "permissions": [],
+      "permissionSets": [["SPOT"]]
+    }
+  ]
+}

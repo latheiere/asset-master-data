@@ -1,13 +1,14 @@
 # Asset Master Data
 
-Asset Master Data is a local-first service that turns public exchange market
-catalogs into one auditable view of canonical assets and their spot and futures
-markets.
+Asset Master Data is a local-first service that turns public exchange catalogs
+into one auditable view of canonical assets, spot and futures markets, and
+financing eligibility.
 
 It answers questions such as:
 
 - Which venues currently trade an asset?
 - Which active perpetual or dated contracts exist for it?
+- Which assets are eligible for cross margin or crypto loans?
 - How did a venue symbol map to the canonical asset?
 - When did a market appear, disappear, or change status?
 
@@ -18,7 +19,7 @@ routing service.
 
 > Development disclosure: this repository has been developed primarily through
 > Codex-assisted “vibe coding,” with human direction and test-based review. The
-> current release is `0.2.1`; audit behavior, security, and operational controls
+> current release is `0.3.0`; audit behavior, security, and operational controls
 > before relying on it in a production or risk-sensitive system.
 
 ## What it provides
@@ -40,6 +41,7 @@ authenticated HTML and JSON APIs
 - Normalized product, settlement, direction, expiry, status, and size fields.
 - Evidence-based asset matching with candidate decisions and mapping revisions.
 - Provider-scoped, versioned asset tags.
+- Separate cross-margin and crypto-loan eligibility catalogs.
 - Asset-first UI, collection log, metadata view, and consumer API.
 - Local SQLite storage with WAL, foreign keys, transactions, and migrations.
 
@@ -68,13 +70,19 @@ Set `server.refresh_on_startup: never` to disable it, or run `mdv serve
 
 ## Supported universes
 
-| Venue | Spot | Futures |
-| --- | --- | --- |
-| Binance | Spot | USD-M and COIN-M |
-| Bitget | Spot | USDT-M, USDC-M, and Coin-M |
-| Bybit | Spot | Linear and inverse perpetuals and dated futures |
-| Gate.com | Spot | USDT/BTC perpetuals and USDT delivery futures |
-| MEXC | Spot | Perpetuals |
+| Venue | Spot | Futures | Cross margin | Crypto loans |
+| --- | --- | --- | --- | --- |
+| Binance | Spot | USD-M and COIN-M | Margin-enabled pairs | — |
+| Bitget | Spot | USDT-M, USDC-M, and Coin-M | Pair eligibility | Loan and collateral assets |
+| Bybit | Spot | Linear and inverse perpetuals and dated futures | Asset eligibility and rate tiers | Loan and collateral assets |
+| Gate.com | Spot | USDT/BTC perpetuals and USDT delivery futures | Asset eligibility | — |
+| MEXC | Spot | Perpetuals | — | — |
+
+Binance eligibility comes from the public `MARGIN` permission on spot pairs;
+Bitget also publishes pair-level evidence. Bybit and Gate publish asset-level
+catalogs. Binance does not expose a credential-free crypto-loan catalog, and
+MEXC does not expose a documented public margin or loan catalog, so those
+universes are not collected.
 
 Venue-specific parsing and trade-link rules live behind a shared connector
 registry. Collection, API validation, and CLI help derive from that registry;
@@ -89,14 +97,31 @@ The primary view is asset-first:
 canonical asset → venue base symbols → active spot/futures markets
 ```
 
+Public financing catalogs are stored separately from trading markets:
+
+```text
+canonical asset → venue → CROSS_MARGIN or CRYPTO_LOAN → eligibility metadata
+```
+
+Cross-margin borrowing and collateralized crypto loans remain separate products.
+Financing records retain asset roles (`BORROWABLE` or `COLLATERAL`), published
+rates and tiers, terms, platform limits, source evidence, observations, and
+lifecycle history. Regular-user rates are the preferred summary value.
+
+Financing symbols map to canonical assets only through an existing exact
+same-venue market symbol. Unmapped records remain available from the financing
+API without creating or merging an asset. Account eligibility, personalized
+limits, balances, positions, credit, and real-time inventory are out of scope.
+
 Raw venue symbols and source fields are retained. Connector-added derived
 metadata uses a reserved `_metadata` namespace; it does not replace venue
 fields. Canonical changes update versioned mappings instead of rewriting market
 history. Renamed and delisted markets remain available for audit.
 
-Only complete successful snapshots can mark previously active markets missing.
-A partial, empty, failed, or malformed response records an error and preserves
-the previous current view. Snapshot application is transactional.
+Only complete successful snapshots can mark previously active markets or
+financing records missing. A partial, empty, failed, or malformed response
+records an error and preserves the previous current view. Each market and
+financing catalog is applied transactionally and independently.
 
 Normalized dimensions remain independent:
 
@@ -159,16 +184,19 @@ http://127.0.0.1:8090/mdv?PRODUCT=PERP&FUTURES=BINANCE,MEXC
 http://127.0.0.1:8090/mdv?PRODUCT=PERP&FUTURES=BINANCE&FUTURES!=MEXC
 http://127.0.0.1:8090/mdv?PRODUCT=PERP&SETTLE=USDC
 http://127.0.0.1:8090/mdv?TAG=BINANCE:MONITORING
+http://127.0.0.1:8090/mdv?FINANCING=BINANCE:MARGIN
 http://127.0.0.1:8090/mdv?TYPE=SPOT&VENUE=BINANCE
 http://127.0.0.1:8090/mdv?SYMBOL=BTC*
 ```
 
-`/mdv` shows active markets only. Expand an asset to inspect venue symbols and
-markets, including exact venue trading links. `/logs` shows collection outcomes
-and lifecycle/tag changes, with action, provider-scoped tag, and inclusive UTC
-change-date filters. The log form exposes tag selection for tag actions and
-venue, symbol, and normalized `PERP`/`DATED`/`SPOT` filters for listing or
-removal actions. `/metadata` describes filter meanings and current values.
+`/mdv` shows active markets and compact `MARGIN`/`LOAN` badges for mapped
+financing records. Full rates, tiers, terms, limits, collateral roles, raw
+evidence, and unmapped records stay in the JSON API. Expand an asset to inspect
+venue symbols, markets, and trading links.
+
+`/logs` shows collection outcomes and lifecycle/tag changes. It supports
+action, provider-scoped tag, venue, symbol, product, and inclusive UTC date
+filters. `/metadata` describes filter meanings and current values.
 
 Every data filter supports `=` and `!=`. Values may be repeated or
 comma-separated. `SYMBOL` supports `*` wildcards. The Columns control changes

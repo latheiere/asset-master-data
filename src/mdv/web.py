@@ -48,6 +48,7 @@ def _query_filters(request: Request) -> dict[str, object]:
         ("FUTURES", "futures"),
         ("STOCK", "stock"),
         ("TAG", "tags"),
+        ("FINANCING", "financing"),
         ("VENUE", "venue"),
         ("QUOTE", "quote"),
         ("SETTLE", "settle"),
@@ -84,6 +85,19 @@ def _log_query_filters(request: Request) -> dict[str, object]:
         "product": value("PRODUCT"),
         "date_from": value("DATE_FROM"),
         "date_to": value("DATE_TO"),
+    }
+
+
+def _financing_query_filters(request: Request) -> dict[str, object]:
+    query = request.query_params
+    return {
+        "venue": query.get("VENUE") or query.get("venue"),
+        "product": query.get("PRODUCT") or query.get("product"),
+        "role": query.get("ROLE") or query.get("role"),
+        "symbol": query.get("SYMBOL") or query.get("symbol"),
+        "eligible": query.get("ELIGIBLE") or query.get("eligible"),
+        "limit": query.get("LIMIT") or query.get("limit") or 5000,
+        "offset": query.get("OFFSET") or query.get("offset") or 0,
     }
 
 
@@ -226,6 +240,13 @@ def create_app(
     async def api_assets(request: Request):
         try:
             return store.list_assets(_query_filters(request))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/api/v1/financing")
+    def api_financing(request: Request):
+        try:
+            return store.list_financing(_financing_query_filters(request))
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
