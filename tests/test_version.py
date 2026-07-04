@@ -41,6 +41,7 @@ def test_deploy_requires_clean_annotated_release_tag():
         encoding="utf-8"
     )
     assert "git status --porcelain --untracked-files=normal" in script
+    assert "MDV_DEPLOY_REEXEC=1" in script
     assert 'git cat-file -t "$RELEASE_TAG"' in script
     assert 'git rev-list -n 1 "$RELEASE_TAG"' in script
 

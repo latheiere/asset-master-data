@@ -4,7 +4,10 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$PROJECT_DIR"
 
-git pull --ff-only origin main
+if [[ "${MDV_DEPLOY_REEXEC:-0}" != "1" ]]; then
+  git pull --ff-only origin main
+  exec env MDV_DEPLOY_REEXEC=1 bash "$PROJECT_DIR/deploy/systemd/deploy.sh"
+fi
 git fetch --tags origin
 if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
   echo "deployment requires a clean Git worktree" >&2
