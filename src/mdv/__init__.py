@@ -1,3 +1,5 @@
 """Asset master-data service."""
 
-__version__ = "0.1.0"
+from mdv.version import __version__, build_revision
+
+__all__ = ["__version__", "build_revision"]

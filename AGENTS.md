@@ -79,6 +79,24 @@ implemented behavior.
 - Update `docs/TECHNICAL_DEBT.md` when a documented invariant is intentionally
   deferred. Remove items only after code, migration, tests, and docs agree.
 
+## Release versioning
+
+- Use Semantic Versioning at release boundaries, not per commit.
+- `project.version` in `pyproject.toml` is the sole editable version source.
+  Runtime, CLI, OpenAPI, and health output must derive it from installed package
+  metadata; never add another literal application version.
+- Keep runtime version/package-metadata consistency covered by tests. Report the
+  release version and deployed Git SHA separately.
+- Before `1.0.0`, use patch for compatible fixes and minor for features or
+  compatibility-breaking releases. After `1.0.0`, use major for incompatible
+  public API changes.
+- Every production deploy is a release: bump the version, update the README
+  release disclosure, commit, create and push an annotated immutable `vX.Y.Z`
+  tag on `main` HEAD, then deploy. Never move or reuse a release tag.
+- Deployment must fail when the worktree is dirty, `main` HEAD is untagged, the
+  tag is lightweight, or the tag/version/commit disagree. Verify `/health`
+  version and revision after deployment.
+
 ## Workflow
 
 1. Run `git status --short --branch`.
@@ -91,7 +109,8 @@ implemented behavior.
 7. Do not create an origin, push, deploy, or expose the service publicly unless
    explicitly requested.
 8. After an authorized production deploy, verify the deployed commit, schema,
-   collection result, API service, refresh timer, and authentication boundary.
+   release version/revision, collection result, API service, refresh timer, and
+   authentication boundary.
 
 ## Data safety
 

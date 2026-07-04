@@ -5,6 +5,7 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CONFIG_PATH="$PROJECT_DIR/config/config.yaml"
 SYSTEMD_DIR="/etc/systemd/system"
 CURRENT_USER="$(id -un)"
+GIT_SHA="$(git -C "$PROJECT_DIR" rev-parse --verify HEAD)"
 START_SERVICE=false
 
 if [[ "${1:-}" == "--start-service" ]]; then
@@ -24,6 +25,10 @@ if [[ ! -f "$CONFIG_PATH" ]]; then
 fi
 if [[ ! -f "$PROJECT_DIR/config/entitlements.yaml" ]]; then
   echo "missing entitlements: $PROJECT_DIR/config/entitlements.yaml" >&2
+  exit 1
+fi
+if [[ ! "$GIT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "unable to determine deployed Git revision" >&2
   exit 1
 fi
 
@@ -48,6 +53,7 @@ install_unit() {
     -e "s|__PROJECT_DIR__|$PROJECT_DIR|g" \
     -e "s|__CONFIG_PATH__|$CONFIG_PATH|g" \
     -e "s|__USER__|$CURRENT_USER|g" \
+    -e "s|__GIT_SHA__|$GIT_SHA|g" \
     -e "s|__ON_CALENDAR__|$COLLECTION_SCHEDULE|g" \
     "$template_path" > "$temporary"
   sudo install -m 0644 "$temporary" "$SYSTEMD_DIR/$output_name"

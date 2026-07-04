@@ -3,6 +3,7 @@ import base64
 import yaml
 from fastapi.testclient import TestClient
 
+from mdv import __version__
 from mdv.auth import hash_password
 from mdv.collection import CollectionResult
 from mdv.config import Settings
@@ -12,6 +13,8 @@ from mdv.web import create_app
 
 
 def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
+    revision = "a" * 40
+    monkeypatch.setenv("MDV_GIT_SHA", revision)
     store = SQLiteStore(tmp_path / "mdv.sqlite3")
     market = MarketRecord(
         source="MEXC_FUTURE",
@@ -183,6 +186,8 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
         client.headers["Authorization"] = "Basic " + base64.b64encode(
             b"admin:password"
         ).decode("ascii")
+        health_response = client.get("/health")
+        openapi_response = client.get("/openapi.json")
         canonical_redirect = client.get(
             "/mdv?TYPE=&CONTRACT=&STOCK=&FUTURES=&FUTURES%21=&VENUE=&PRODUCT=&TAG=BINANCE%3AMONITORING&SYMBOL=",
             follow_redirects=False,
@@ -222,6 +227,13 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
     assert unauthenticated_api.headers["www-authenticate"] == 'Basic realm="asset-master-data"'
     assert favicon_response.status_code == 204
     assert "max-age=86400" in favicon_response.headers["cache-control"]
+    assert health_response.json() == {
+        "status": "ok",
+        "version": __version__,
+        "revision": revision,
+        "markets": 4,
+    }
+    assert openapi_response.json()["info"]["version"] == __version__
     assert login_redirect.status_code == 303
     assert login_redirect.headers["location"].startswith("/login?next=")
     assert failed_login.status_code == 401

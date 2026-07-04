@@ -11,6 +11,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
+from mdv import __version__, build_revision
 from mdv.auth import Entitlements, basic_credentials
 from mdv.collection import CollectionService, collection_json
 from mdv.config import Settings
@@ -110,7 +111,7 @@ def create_app(
             await CollectionService(store, timeout_seconds=settings.http_timeout_seconds).collect_all()
         yield
 
-    app = FastAPI(title="Asset Master Data", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Asset Master Data", version=__version__, lifespan=lifespan)
     app.state.store = store
     app.state.settings = settings
     app.state.entitlements = entitlements
@@ -206,7 +207,12 @@ def create_app(
 
     @app.get("/health")
     async def health():
-        return {"status": "ok", "markets": store.market_count()}
+        return {
+            "status": "ok",
+            "version": __version__,
+            "revision": build_revision(),
+            "markets": store.market_count(),
+        }
 
     @app.get("/api/v1/markets")
     async def api_markets(request: Request):

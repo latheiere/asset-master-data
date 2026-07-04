@@ -9,6 +9,7 @@ from pathlib import Path
 
 import yaml
 
+from mdv import __version__
 from mdv.auth import hash_password
 from mdv.collection import CollectionService, collection_json, results_json
 from mdv.connectors import supported_venues
@@ -18,6 +19,7 @@ from mdv.db import SQLiteStore
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mdv", description="Asset master-data service")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(
         "--config",
         default=str(DEFAULT_CONFIG_PATH),

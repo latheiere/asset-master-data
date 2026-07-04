@@ -18,7 +18,7 @@ routing service.
 
 > Development disclosure: this repository has been developed primarily through
 > Codex-assisted “vibe coding,” with human direction and test-based review. The
-> current release is `0.1.0`; audit behavior, security, and operational controls
+> current release is `0.2.0`; audit behavior, security, and operational controls
 > before relying on it in a production or risk-sensitive system.
 
 ## What it provides
@@ -212,8 +212,9 @@ auth:
   session_cookie_secure: false
 ```
 
-Use `mdv --config PATH ...` for another YAML file. Runtime environment variables
-do not override YAML, so interactive and systemd runs consume the same settings.
+Use `mdv --config PATH ...` for another YAML file. Environment variables do not
+override behavioral YAML settings, so interactive and systemd runs consume the
+same configuration. Systemd injects `MDV_GIT_SHA` only as deployment identity.
 Runtime data defaults to `.data/` and remains ignored by Git.
 
 ## CLI and development
@@ -231,6 +232,29 @@ Contributor and coding-agent constraints, migration rules, extension points,
 and required validation reporting live in [AGENTS.md](AGENTS.md). Keep
 human-facing setup and behavior here; keep external API contracts in
 [docs/API.md](docs/API.md).
+
+## Releases and versioning
+
+Releases use Semantic Versioning. `project.version` in `pyproject.toml` is the
+only editable version source; runtime code, OpenAPI, and `mdv --version` read the
+installed package metadata. `/health` reports both the release version and the
+exact deployed Git revision.
+
+Version commits use an annotated immutable `vX.Y.Z` tag. Production deployment
+accepts only `main` HEAD when that tag matches `project.version`:
+
+```bash
+# Replace X.Y.Z after updating project.version, release notes, and tests:
+git commit -m "chore(release): prepare X.Y.Z"
+git tag -a vX.Y.Z -m "Release X.Y.Z"
+git push origin main
+git push origin vX.Y.Z
+make deploy-prod
+```
+
+Do not bump for every commit. Bump once per release: patch for compatible fixes,
+minor for compatible features, and major for incompatible public API changes.
+Before `1.0.0`, use a minor bump for feature or compatibility-breaking releases.
 
 ## Unix/systemd deployment
 
@@ -253,6 +277,9 @@ Complete dependency sync, migration, initial collection, and API start:
 ```bash
 bash deploy/systemd/deploy.sh
 ```
+
+The deploy script refuses dirty worktrees, untagged commits, mismatched versions,
+lightweight tags, and tags that do not identify current `main` HEAD.
 
 Deployment does not overwrite configuration, entitlements, or an existing
 SQLite database. Inspect it with:

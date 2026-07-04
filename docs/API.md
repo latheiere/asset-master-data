@@ -92,10 +92,18 @@ current database instead of hardcoding venue or enum lists.
 Authenticated liveness and database reachability check.
 
 ```json
-{"status":"ok","markets":12500}
+{
+  "status": "ok",
+  "version": "0.2.0",
+  "revision": "0123456789abcdef0123456789abcdef01234567",
+  "markets": 12500
+}
 ```
 
-`markets` is the total stored market count, including inactive records.
+`version` is the installed release version. `revision` is the exact 40-character
+Git commit injected by the deployment unit, or `unknown` outside a validated
+deployment. The release version is independent of the `/api/v1` contract
+version. `markets` includes inactive records.
 
 ### `GET /api/v1/assets`
 

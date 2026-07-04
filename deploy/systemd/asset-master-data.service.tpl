@@ -10,6 +10,7 @@ Type=simple
 User=__USER__
 WorkingDirectory=__PROJECT_DIR__
 Environment=PYTHONUNBUFFERED=1
+Environment=MDV_GIT_SHA=__GIT_SHA__
 ExecStart=__PROJECT_DIR__/.venv/bin/python -m mdv.cli --config __CONFIG_PATH__ serve
 Restart=on-failure
 RestartSec=5

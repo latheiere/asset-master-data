@@ -1,6 +1,6 @@
 # Technical Debt Implementation Request
 
-This request covers known gaps between the current `0.1.0` implementation and
+This request covers known gaps in the current `0.2.0` implementation relative to
 the durable, provider-neutral service described in the README. It is not a list
 of already implemented features.
 
