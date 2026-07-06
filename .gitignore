@@ -12,3 +12,5 @@ config/entitlements.yaml
 dist/
 build/
 *.egg-info/
+.local/
+Makefile.local

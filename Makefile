@@ -1,5 +1,8 @@
 PYTHON ?= .venv/bin/python
 PYTHON_BOOTSTRAP ?= python3.13
+COLLECT_COMMAND ?= $(PYTHON) -m mdv.cli --config config/config.yaml collect
+
+-include Makefile.local
 
 .PHONY: install test collect serve install-systemd deploy-prod clean-data
 
@@ -11,7 +14,7 @@ test:
 	$(PYTHON) -m pytest -q
 
 collect:
-	$(PYTHON) -m mdv.cli --config config/config.yaml collect
+	$(COLLECT_COMMAND)
 
 serve:
 	$(PYTHON) -m mdv.cli --config config/config.yaml serve

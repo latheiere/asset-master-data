@@ -1,0 +1,14 @@
+{
+  "rc": 0,
+  "mc": "SUCCESS",
+  "result": {
+    "symbols": [
+      {
+        "symbol": "broken_usdt",
+        "baseCurrency": "broken",
+        "state": "ONLINE",
+        "tradingEnabled": true
+      }
+    ]
+  }
+}

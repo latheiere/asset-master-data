@@ -1,0 +1,35 @@
+{
+  "rc": 0,
+  "mc": "SUCCESS",
+  "ma": [],
+  "result": {
+    "time": 1783328400000,
+    "version": "recorded",
+    "symbols": [
+      {
+        "id": 640,
+        "symbol": "xt_usdt",
+        "displayName": "XT/USDT",
+        "baseCurrency": "xt",
+        "quoteCurrency": "usdt",
+        "state": "ONLINE",
+        "tradingEnabled": true,
+        "openapiEnabled": true,
+        "type": "normal",
+        "tags": ["HOT"]
+      },
+      {
+        "id": 641,
+        "symbol": "old_usdt",
+        "displayName": "OLD/USDT",
+        "baseCurrency": "old",
+        "quoteCurrency": "usdt",
+        "state": "OFFLINE",
+        "tradingEnabled": false,
+        "openapiEnabled": false,
+        "type": "normal",
+        "tags": []
+      }
+    ]
+  }
+}

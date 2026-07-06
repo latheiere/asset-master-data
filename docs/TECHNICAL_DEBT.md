@@ -117,8 +117,8 @@ Add tests that prove:
 ### 7. Complete public financing coverage
 
 Current financing discovery intentionally covers only documented,
-credential-free catalogs: Binance, Bitget, Bybit, and Gate cross margin, plus
-Bitget and Bybit crypto loans. Remaining work:
+credential-free catalogs: Binance, Bitget, Bybit, Gate, and XT cross margin,
+plus Bitget, Bybit, and XT crypto loans. Remaining work:
 
 - Add Binance crypto-loan catalogs only if Binance publishes a credential-free
   enumeration source. Do not introduce exchange credentials into this

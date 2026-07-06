@@ -33,17 +33,41 @@ class CollectionService:
     async def collect_venue(self, venue: str) -> list[CollectionResult]:
         return await self.collect(venue=venue)
 
-    async def collect(self, *, venue: str | None = None) -> list[CollectionResult]:
+    async def collect(
+        self,
+        *,
+        venue: str | None = None,
+        exclude_venues: list[str] | tuple[str, ...] | None = None,
+    ) -> list[CollectionResult]:
         requested_venue = str(venue or "").strip().upper()
         available_venues = sorted({connector.venue for connector in self.connectors})
         if requested_venue and requested_venue not in available_venues:
             raise ValueError(f"VENUE must be one of: {', '.join(available_venues)}")
+        excluded = {
+            str(item or "").strip().upper()
+            for item in (exclude_venues or ())
+            if str(item or "").strip()
+        }
+        unknown_excluded = excluded.difference(available_venues)
+        if unknown_excluded:
+            raise ValueError(f"VENUE must be one of: {', '.join(available_venues)}")
+        if requested_venue and excluded:
+            raise ValueError("--venue and --exclude-venue cannot be used together")
         connectors = [
             connector for connector in self.connectors
-            if not requested_venue or connector.venue == requested_venue
+            if (not requested_venue or connector.venue == requested_venue)
+            and connector.venue not in excluded
         ]
-        scope = requested_venue or "ALL"
-        venues = [requested_venue] if requested_venue else available_venues
+        if not connectors:
+            raise ValueError("collection selection contains no venues")
+        scope = requested_venue or (
+            "ALL_EXCEPT_" + "_".join(sorted(excluded)) if excluded else "ALL"
+        )
+        venues = (
+            [requested_venue]
+            if requested_venue
+            else [item for item in available_venues if item not in excluded]
+        )
         collection_run_id = self.store.start_collection_run(scope=scope, venues=venues)
         timeout = httpx.Timeout(self.timeout_seconds)
         # Some public venue CDNs reject generic library User-Agent values.

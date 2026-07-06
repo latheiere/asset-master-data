@@ -17,6 +17,7 @@ from mdv.connectors.financing import (
     gate_financing_connectors,
 )
 from mdv.connectors.mexc import mexc_connectors
+from mdv.connectors.xt import xt_connectors, xt_financing_connectors
 from mdv.matching import AliasHint, normalize_asset_symbol
 
 
@@ -103,6 +104,15 @@ def _mexc_trade_url(market: dict) -> str | None:
     return None
 
 
+def _xt_trade_url(market: dict) -> str | None:
+    raw, _, _, _, _ = _encoded_market(market)
+    if market.get("market_type") == "FUTURE":
+        return f"https://www.xt.com/en/futures/trade/{raw.lower()}"
+    if market.get("market_type") == "SPOT":
+        return f"https://www.xt.com/en/trade/{raw.lower()}"
+    return None
+
+
 INTEGRATIONS = {
     integration.venue: integration
     for integration in (
@@ -123,6 +133,7 @@ INTEGRATIONS = {
             gate_financing_connectors,
         ),
         VenueIntegration("MEXC", mexc_connectors, _mexc_trade_url),
+        VenueIntegration("XT", xt_connectors, _xt_trade_url, xt_financing_connectors),
     )
 }
 

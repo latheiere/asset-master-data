@@ -1,0 +1,21 @@
+{
+  "rc": 0,
+  "mc": "SUCCESS",
+  "ma": [],
+  "result": [
+    {
+      "symbolId": 640,
+      "symbol": "xt_usdt",
+      "buyCurrencyId": 11,
+      "buyCurrency": "usdt",
+      "sellCurrencyId": 128,
+      "sellCurrency": "xt",
+      "maxLoanAmountBuy": "100000000",
+      "maxLoanAmountSell": "100000000",
+      "maxLeverage": 20,
+      "dailyInterestRate": "0.0003",
+      "liquidationRate": "1.02",
+      "tipsRate": "1.03"
+    }
+  ]
+}

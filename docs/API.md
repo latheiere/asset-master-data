@@ -97,7 +97,7 @@ Authenticated liveness and database reachability check.
 ```json
 {
   "status": "ok",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "revision": "0123456789abcdef0123456789abcdef01234567",
   "markets": 12500
 }
@@ -124,9 +124,9 @@ Returns the active asset-first hierarchy. Supports all common filters except
       "future_venues": [
         {"venue": "BINANCE", "count": 2, "products": ["DATED", "PERP"]}
       ],
-      "future_coverage": "ALL · 5/5",
+      "future_coverage": "ALL · 6/6",
       "future_coverage_kind": "all",
-      "active_market_count": 5,
+      "active_market_count": 6,
       "is_stock": false,
       "tags": [],
       "financing": [],
@@ -135,7 +135,7 @@ Returns the active asset-first hierarchy. Supports all common filters except
     }
   ],
   "count": 1,
-  "supported_future_venues": ["BINANCE", "BITGET", "BYBIT", "GATE", "MEXC"]
+  "supported_future_venues": ["BINANCE", "BITGET", "BYBIT", "GATE", "MEXC", "XT"]
 }
 ```
 

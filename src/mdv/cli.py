@@ -11,6 +11,12 @@ import yaml
 
 from mdv import __version__
 from mdv.auth import hash_password
+from mdv.bundles import (
+    apply_collection_bundle,
+    bundle_succeeded,
+    canonical_json,
+    export_collection_bundle,
+)
 from mdv.collection import CollectionService, collection_json, results_json
 from mdv.connectors import supported_venues
 from mdv.config import DEFAULT_CONFIG_PATH, Settings, load_config_value
@@ -32,6 +38,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--venue",
         help=f"refresh one venue: {', '.join(supported_venues())}",
     )
+    collect.add_argument(
+        "--exclude-venue",
+        action="append",
+        default=[],
+        help="exclude one venue from an all-venue refresh; may be repeated",
+    )
+    bundle_export = subparsers.add_parser(
+        "bundle-export", help="fetch one venue and write a portable collection bundle"
+    )
+    bundle_export.add_argument("--venue", required=True)
+    bundle_export.add_argument("--output", required=True, help="output file or - for stdout")
+    bundle_import = subparsers.add_parser(
+        "bundle-import", help="validate and apply a portable collection bundle"
+    )
+    bundle_import.add_argument("path", help="bundle file path")
     subparsers.add_parser("stats", help="print collection statistics")
     serve = subparsers.add_parser("serve", help="serve HTML and JSON API")
     serve.add_argument("--host")
@@ -62,7 +83,43 @@ def main(argv: list[str] | None = None) -> int:
         _set_entitlement(settings.entitlements_path, args.username, password)
         print(json.dumps({"ok": True, "username": args.username, "path": str(settings.entitlements_path)}))
         return 0
+    if args.command == "bundle-export":
+        try:
+            bundle = asyncio.run(
+                export_collection_bundle(
+                    venue=args.venue,
+                    timeout_seconds=settings.http_timeout_seconds,
+                )
+            )
+        except ValueError as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}, indent=2))
+            return 2
+        encoded = canonical_json(bundle) + "\n"
+        if args.output == "-":
+            print(encoded, end="")
+        else:
+            output = Path(args.output).expanduser()
+            output.parent.mkdir(parents=True, exist_ok=True)
+            temporary = output.with_suffix(output.suffix + ".tmp")
+            temporary.write_text(encoded, encoding="utf-8")
+            os.chmod(temporary, 0o600)
+            temporary.replace(output)
+        return 0 if bundle_succeeded(bundle) else 1
     store = SQLiteStore(settings.db_path)
+    if args.command == "bundle-import":
+        try:
+            payload = json.loads(Path(args.path).read_text(encoding="utf-8"))
+            results = apply_collection_bundle(store, payload)
+        except (OSError, ValueError) as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}, indent=2))
+            return 2
+        print(
+            json.dumps(
+                collection_json(results, scope=str(payload.get("scope") or "BUNDLE")),
+                indent=2,
+            )
+        )
+        return 0 if all(result.ok for result in results) else 1
     if args.command == "init":
         store.migrate()
         print(json.dumps({"ok": True, "database": str(store.path)}))
@@ -72,6 +129,7 @@ def main(argv: list[str] | None = None) -> int:
             results = asyncio.run(
                 CollectionService(store, timeout_seconds=settings.http_timeout_seconds).collect(
                     venue=args.venue,
+                    exclude_venues=args.exclude_venue,
                 )
             )
         except ValueError as exc:
@@ -79,7 +137,21 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         print(
             json.dumps(
-                collection_json(results, scope=str(args.venue or "ALL").strip().upper()),
+                collection_json(
+                    results,
+                    scope=(
+                        str(args.venue).strip().upper()
+                        if args.venue
+                        else (
+                            "ALL_EXCEPT_"
+                            + "_".join(
+                                sorted({item.strip().upper() for item in args.exclude_venue})
+                            )
+                            if args.exclude_venue
+                            else "ALL"
+                        )
+                    ),
+                ),
                 indent=2,
             )
         )

@@ -118,6 +118,36 @@ def test_collect_cli_accepts_venue_scope():
     assert args.venue == "MEXC"
 
 
+def test_collection_service_supports_generic_venue_exclusion(tmp_path):
+    store = SQLiteStore(tmp_path / "mdv.sqlite3")
+    service = CollectionService(
+        store,
+        connectors=[
+            FakeConnector(source="BINANCE_SPOT", venue="BINANCE"),
+            FakeConnector(source="XT_SPOT", venue="XT"),
+        ],
+    )
+
+    results = asyncio.run(service.collect(exclude_venues=["xt"]))
+
+    assert [result.source for result in results] == ["BINANCE_SPOT"]
+    assert store.list_collection_runs()["runs"][0]["scope"] == "ALL_EXCEPT_XT"
+
+
+def test_collect_cli_accepts_repeatable_excluded_venues_and_bundle_commands():
+    collect = build_parser().parse_args(
+        ["collect", "--exclude-venue", "XT", "--exclude-venue", "MEXC"]
+    )
+    export = build_parser().parse_args(
+        ["bundle-export", "--venue", "XT", "--output", "-"]
+    )
+    imported = build_parser().parse_args(["bundle-import", "bundle.json"])
+
+    assert collect.exclude_venue == ["XT", "MEXC"]
+    assert export.output == "-"
+    assert imported.path == "bundle.json"
+
+
 def test_failed_financing_collection_preserves_last_complete_snapshot(tmp_path):
     store = SQLiteStore(tmp_path / "mdv.sqlite3")
     success = CollectionService(store, connectors=[FakeFinancingConnector()])

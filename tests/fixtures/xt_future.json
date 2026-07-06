@@ -1,0 +1,64 @@
+{
+  "returnCode": 0,
+  "msgInfo": "success",
+  "error": null,
+  "result": {
+    "time": 1783328400000,
+    "version": "recorded",
+    "symbols": [
+      {
+        "id": 8,
+        "symbol": "btc_usdt",
+        "pair": "btc_usdt",
+        "baseCoin": "btc",
+        "quoteCoin": "usdt",
+        "contractSize": "0.0001",
+        "contractType": "PERPETUAL",
+        "productType": "perpetual",
+        "underlyingType": "U_BASED",
+        "state": 0,
+        "openSwitch": true,
+        "tradeSwitch": true,
+        "deliveryCompletion": false,
+        "deliveryDate": null,
+        "maxMarketOrderQty": "250",
+        "labels": ["HOT"]
+      },
+      {
+        "id": 1244,
+        "symbol": "btc_usdt_260925",
+        "pair": "btc_usdt",
+        "baseCoin": "btc",
+        "quoteCoin": "usdt",
+        "contractSize": "0.001",
+        "contractType": "CURRENT_QUARTER",
+        "productType": "futures",
+        "underlyingType": "U_BASED",
+        "state": 0,
+        "openSwitch": true,
+        "tradeSwitch": true,
+        "deliveryCompletion": false,
+        "deliveryDate": 1790323200000,
+        "maxMarketOrderQty": null,
+        "labels": []
+      },
+      {
+        "id": 223,
+        "symbol": "btc_usdt_230630",
+        "pair": "btc_usdt",
+        "baseCoin": "btc",
+        "quoteCoin": "usdt",
+        "contractSize": "0.001",
+        "contractType": "CURRENT_QUARTER",
+        "productType": "futures",
+        "underlyingType": "U_BASED",
+        "state": 0,
+        "openSwitch": true,
+        "tradeSwitch": false,
+        "deliveryCompletion": true,
+        "deliveryDate": 1688112000000,
+        "labels": []
+      }
+    ]
+  }
+}

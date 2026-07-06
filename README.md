@@ -19,7 +19,7 @@ routing service.
 
 > Development disclosure: this repository has been developed primarily through
 > Codex-assisted “vibe coding,” with human direction and test-based review. The
-> current release is `0.3.0`; audit behavior, security, and operational controls
+> current release is `0.4.0`; audit behavior, security, and operational controls
 > before relying on it in a production or risk-sensitive system.
 
 ## What it provides
@@ -77,12 +77,14 @@ Set `server.refresh_on_startup: never` to disable it, or run `mdv serve
 | Bybit | Spot | Linear and inverse perpetuals and dated futures | Asset eligibility and rate tiers | Loan and collateral assets |
 | Gate.com | Spot | USDT/BTC perpetuals and USDT delivery futures | Asset eligibility | — |
 | MEXC | Spot | Perpetuals | — | — |
+| XT | Spot | Linear perpetuals and dated futures | Pair eligibility and rates | Loan and collateral assets |
 
 Binance eligibility comes from the public `MARGIN` permission on spot pairs;
-Bitget also publishes pair-level evidence. Bybit and Gate publish asset-level
-catalogs. Binance does not expose a credential-free crypto-loan catalog, and
-MEXC does not expose a documented public margin or loan catalog, so those
-universes are not collected.
+Bitget and XT also publish pair-level evidence. Bybit and Gate publish
+asset-level margin catalogs. XT publishes public loan and collateral catalogs
+with regular-user rates, terms, limits, and pledge thresholds. Binance does not
+expose a credential-free crypto-loan catalog, and MEXC does not expose a
+documented public margin or loan catalog, so those universes are not collected.
 
 Venue-specific parsing and trade-link rules live behind a shared connector
 registry. Collection, API validation, and CLI help derive from that registry;
@@ -251,10 +253,25 @@ Runtime data defaults to `.data/` and remains ignored by Git.
 mdv --config config/config.yaml init
 mdv --config config/config.yaml collect
 mdv --config config/config.yaml collect --venue BINANCE
+mdv --config config/config.yaml collect --exclude-venue XT
+mdv --config config/config.yaml bundle-export --venue XT --output xt-bundle.json
+mdv --config config/config.yaml bundle-import xt-bundle.json
 mdv --config config/config.yaml stats
 mdv --config config/config.yaml serve --host 127.0.0.1 --port 8090
 make test
 ```
+
+Collection bundles provide a transport-neutral path for venues that are not
+reachable from the database host. Export fetches every registered universe for
+one venue without touching a database. Import checks the bundle format,
+checksum, registry metadata, complete source set, and each snapshot before
+applying successful universes transactionally. Failed universes are recorded
+without marking their previous records missing. `--output -` writes a bundle to
+standard output for an external SSH or file-transfer wrapper.
+
+The Makefile accepts an ignored `Makefile.local` override of `COLLECT_COMMAND`
+for host-specific collection orchestration. Remote host names and transfer
+policy remain outside the package and tracked repository.
 
 Contributor and coding-agent constraints, migration rules, extension points,
 and required validation reporting live in [AGENTS.md](AGENTS.md). Keep

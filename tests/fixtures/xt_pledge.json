@@ -1,0 +1,21 @@
+{
+  "rc": 0,
+  "mc": "SUCCESS",
+  "ma": [],
+  "result": {
+    "hasPrev": false,
+    "hasNext": false,
+    "items": [
+      {
+        "id": 8,
+        "currencyType": "PLEDGE_CURRENCY",
+        "currencyId": 11,
+        "currency": "usdt",
+        "initialPledgeRate": 0.8,
+        "earlyWarningPledgeRate": 0.88,
+        "forceLiquidatePledgeRate": 0.95,
+        "individualCap": 1000000.0
+      }
+    ]
+  }
+}
