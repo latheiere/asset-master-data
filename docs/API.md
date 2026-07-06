@@ -135,7 +135,7 @@ Returns the active asset-first hierarchy. Supports all common filters except
     }
   ],
   "count": 1,
-  "supported_future_venues": ["BINANCE", "BITGET", "BYBIT", "GATE", "MEXC", "XT"]
+  "supported_future_venues": ["BINANCE", "BITGET", "BYBIT", "GATE", "HTX", "HYPERLIQUID", "KUCOIN", "MEXC", "OKX", "WHITEBIT", "XT"]
 }
 ```
 

@@ -10,6 +10,8 @@ from mdv.connectors.binance import binance_connectors
 from mdv.connectors.bitget import bitget_connectors
 from mdv.connectors.bybit import bybit_connectors
 from mdv.connectors.gate import gate_connectors
+from mdv.connectors.htx import htx_connectors
+from mdv.connectors.hyperliquid import hyperliquid_connectors
 from mdv.connectors.financing import (
     binance_financing_connectors,
     bitget_financing_connectors,
@@ -17,6 +19,9 @@ from mdv.connectors.financing import (
     gate_financing_connectors,
 )
 from mdv.connectors.mexc import mexc_connectors
+from mdv.connectors.kucoin import kucoin_connectors
+from mdv.connectors.okx import okx_connectors
+from mdv.connectors.whitebit import whitebit_connectors
 from mdv.connectors.xt import xt_connectors, xt_financing_connectors
 from mdv.matching import AliasHint, normalize_asset_symbol
 
@@ -113,6 +118,51 @@ def _xt_trade_url(market: dict) -> str | None:
     return None
 
 
+def _okx_trade_url(market: dict) -> str | None:
+    raw, _, _, _, venue_product = _encoded_market(market)
+    section = {
+        "SPOT": "trade-spot",
+        "SWAP": "trade-swap",
+        "FUTURES": "trade-futures",
+    }.get(venue_product)
+    return f"https://www.okx.com/{section}/{raw.lower()}" if section else None
+
+
+def _hyperliquid_trade_url(market: dict) -> str | None:
+    raw, _, _, _, _ = _encoded_market(market)
+    return f"https://app.hyperliquid.xyz/trade/{raw}" if raw else None
+
+
+def _htx_trade_url(market: dict) -> str | None:
+    raw, base, quote_symbol, _, venue_product = _encoded_market(market)
+    if market.get("market_type") == "SPOT":
+        return f"https://www.htx.com/trade/{base.lower()}_{quote_symbol.lower()}?type=spot"
+    if market.get("market_type") != "FUTURE":
+        return None
+    if venue_product.startswith("USDT-M"):
+        contract_type = "futures" if venue_product.endswith("FUTURES") else "swap"
+        return (
+            "https://www.htx.com/futures/linear_swap/exchange"
+            f"#contract_code={raw}&contract_type={contract_type}&type=cross"
+        )
+    section = "coin_future" if venue_product.endswith("FUTURES") else "coin_swap"
+    return f"https://www.htx.com/futures/{section}/exchange#contract_code={raw}"
+
+
+def _kucoin_trade_url(market: dict) -> str | None:
+    raw, _, _, _, _ = _encoded_market(market)
+    if market.get("market_type") == "FUTURE":
+        return f"https://www.kucoin.com/futures/trade/{raw}"
+    if market.get("market_type") == "SPOT":
+        return f"https://www.kucoin.com/trade/{raw}"
+    return None
+
+
+def _whitebit_trade_url(market: dict) -> str | None:
+    raw, _, _, _, _ = _encoded_market(market)
+    return f"https://whitebit.com/trade/{raw}" if raw else None
+
+
 INTEGRATIONS = {
     integration.venue: integration
     for integration in (
@@ -133,6 +183,13 @@ INTEGRATIONS = {
             gate_financing_connectors,
         ),
         VenueIntegration("MEXC", mexc_connectors, _mexc_trade_url),
+        VenueIntegration("OKX", okx_connectors, _okx_trade_url),
+        VenueIntegration(
+            "HYPERLIQUID", hyperliquid_connectors, _hyperliquid_trade_url
+        ),
+        VenueIntegration("HTX", htx_connectors, _htx_trade_url),
+        VenueIntegration("KUCOIN", kucoin_connectors, _kucoin_trade_url),
+        VenueIntegration("WHITEBIT", whitebit_connectors, _whitebit_trade_url),
         VenueIntegration("XT", xt_connectors, _xt_trade_url, xt_financing_connectors),
     )
 }

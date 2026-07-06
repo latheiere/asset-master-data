@@ -1,0 +1,153 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+import httpx
+
+from mdv.connectors.base import fetch_json, utc_now
+from mdv.models import MarketRecord, MarketSnapshot
+from mdv.normalization import contract_direction, normalize_status
+
+
+def _data(payload: object, *, source: str) -> list:
+    if not isinstance(payload, dict) or str(payload.get("code")) != "200000":
+        raise ValueError(f"{source}: unsuccessful or malformed response")
+    rows = payload.get("data")
+    if not isinstance(rows, list):
+        raise ValueError(f"{source}: response has no data array")
+    return rows
+
+
+def _required(row: dict, name: str, *, source: str) -> str:
+    value = str(row.get(name) or "").strip()
+    if not value:
+        raise ValueError(f"{source}: instrument has no {name}")
+    return value
+
+
+class KucoinSpotConnector:
+    source = "KUCOIN_SPOT"
+    venue = "KUCOIN"
+    market_type = "SPOT"
+    product = "SPOT"
+    url = "https://api.kucoin.com/api/v2/symbols"
+
+    async def fetch(self, client: httpx.AsyncClient) -> MarketSnapshot:
+        return self.parse(await fetch_json(client, self.url), observed_at=utc_now())
+
+    def parse(self, payload: object, *, observed_at: str) -> MarketSnapshot:
+        markets = []
+        for row in _data(payload, source=self.source):
+            if not isinstance(row, dict):
+                raise ValueError(f"{self.source}: symbol is not an object")
+            active = row.get("enableTrading") is True
+            raw = dict(row)
+            if row.get("st") is True:
+                raw["_metadata"] = {
+                    "ASSET_TAGS": [
+                        {
+                            "provider": self.venue,
+                            "tag": "ST",
+                            "raw_tag": "st",
+                            "source": "KUCOIN_SPOT_SYMBOL",
+                        }
+                    ]
+                }
+            venue_status = "ENABLED" if active else "DISABLED"
+            markets.append(
+                MarketRecord(
+                    self.source,
+                    self.venue,
+                    self.market_type,
+                    self.product,
+                    _required(row, "symbol", source=self.source),
+                    _required(row, "baseCurrency", source=self.source).upper(),
+                    _required(row, "quoteCurrency", source=self.source).upper(),
+                    None,
+                    "SPOT",
+                    normalize_status(venue_status),
+                    active,
+                    None,
+                    raw,
+                    max_market_order_size=(
+                        str(row["baseMaxSize"]) if row.get("baseMaxSize") is not None else None
+                    ),
+                    venue_product=self.product,
+                    venue_status=venue_status,
+                )
+            )
+        snapshot = MarketSnapshot(
+            self.source, self.venue, self.market_type, self.product, observed_at, tuple(markets)
+        )
+        snapshot.validate()
+        return snapshot
+
+
+class KucoinFutureConnector:
+    source = "KUCOIN_FUTURE"
+    venue = "KUCOIN"
+    market_type = "FUTURE"
+    product = "FUTURES"
+    url = "https://api-futures.kucoin.com/api/v1/contracts/active"
+
+    async def fetch(self, client: httpx.AsyncClient) -> MarketSnapshot:
+        return self.parse(await fetch_json(client, self.url), observed_at=utc_now())
+
+    def parse(self, payload: object, *, observed_at: str) -> MarketSnapshot:
+        markets = []
+        for row in _data(payload, source=self.source):
+            if not isinstance(row, dict):
+                raise ValueError(f"{self.source}: contract is not an object")
+            venue_status = _required(row, "status", source=self.source).upper()
+            contract_type = "DATED" if row.get("expireDate") not in (None, "", 0, "0") else "PERP"
+            base_symbol = _required(row, "baseCurrency", source=self.source).upper()
+            quote_symbol = _required(row, "quoteCurrency", source=self.source).upper()
+            settle_symbol = _required(row, "settleCurrency", source=self.source).upper()
+            markets.append(
+                MarketRecord(
+                    self.source,
+                    self.venue,
+                    self.market_type,
+                    contract_type,
+                    _required(row, "symbol", source=self.source),
+                    base_symbol,
+                    quote_symbol,
+                    settle_symbol,
+                    contract_type,
+                    normalize_status(venue_status),
+                    venue_status == "OPEN",
+                    str(row["multiplier"]) if row.get("multiplier") is not None else None,
+                    dict(row),
+                    expires_at=self._expires_at(row.get("expireDate")),
+                    max_market_order_size=(
+                        str(row["marketMaxOrderQty"])
+                        if row.get("marketMaxOrderQty") is not None
+                        else None
+                    ),
+                    venue_product=str(row.get("type") or self.product).upper(),
+                    venue_status=venue_status,
+                    contract_direction=contract_direction(
+                        market_type=self.market_type,
+                        base_symbol=base_symbol,
+                        quote_symbol=quote_symbol,
+                        settle_symbol=settle_symbol,
+                    ),
+                )
+            )
+        snapshot = MarketSnapshot(
+            self.source, self.venue, self.market_type, self.product, observed_at, tuple(markets)
+        )
+        snapshot.validate()
+        return snapshot
+
+    def _expires_at(self, value: object) -> str | None:
+        if value in (None, "", 0, "0"):
+            return None
+        try:
+            return datetime.fromtimestamp(int(str(value)) / 1000, timezone.utc).isoformat()
+        except (OverflowError, TypeError, ValueError) as exc:
+            raise ValueError(f"{self.source}: invalid expireDate {value!r}") from exc
+
+
+def kucoin_connectors() -> list[KucoinSpotConnector | KucoinFutureConnector]:
+    return [KucoinSpotConnector(), KucoinFutureConnector()]

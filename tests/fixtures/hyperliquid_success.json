@@ -1,0 +1,17 @@
+{
+  "spot": [
+    {
+      "tokens": [
+        {"name": "USDC", "szDecimals": 8, "weiDecimals": 8, "index": 0, "tokenId": "0x00", "isCanonical": true},
+        {"name": "PURR", "szDecimals": 0, "weiDecimals": 5, "index": 1, "tokenId": "0x01", "isCanonical": true},
+        {"name": "USDT0", "szDecimals": 8, "weiDecimals": 8, "index": 360, "tokenId": "0x02", "isCanonical": true}
+      ],
+      "universe": [{"tokens": [1, 0], "name": "PURR/USDC", "index": 0, "isCanonical": true}]
+    },
+    [{}]
+  ],
+  "perps": [
+    {"universe": [{"name": "BTC", "szDecimals": 5, "maxLeverage": 40}], "marginTables": [], "collateralToken": 0},
+    {"universe": [{"name": "flx:TSLA", "szDecimals": 2, "maxLeverage": 10, "isDelisted": true}], "marginTables": [], "collateralToken": 360}
+  ]
+}

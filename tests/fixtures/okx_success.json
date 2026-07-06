@@ -1,0 +1,5 @@
+{
+  "spot": {"code": "0", "msg": "", "data": [{"instType": "SPOT", "instId": "BTC-USDT", "baseCcy": "BTC", "quoteCcy": "USDT", "state": "live", "maxMktSz": "100"}]},
+  "swap": {"code": "0", "msg": "", "data": [{"instType": "SWAP", "instId": "BTC-USDT-SWAP", "uly": "BTC-USDT", "settleCcy": "USDT", "ctVal": "0.01", "state": "live", "maxMktSz": "500"}]},
+  "futures": {"code": "0", "msg": "", "data": [{"instType": "FUTURES", "instId": "BTC-USD-260925", "uly": "BTC-USD", "settleCcy": "BTC", "ctVal": "100", "state": "live", "alias": "quarter", "expTime": "1790323200000", "maxMktSz": "250"}]}
+}

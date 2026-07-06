@@ -36,3 +36,23 @@ async def fetch_json(client: httpx.AsyncClient, url: str, *, attempts: int = 3) 
             if attempt + 1 < attempts:
                 await asyncio.sleep(0.5 * (2**attempt))
     raise RuntimeError(f"GET {url} failed after {attempts} attempts: {last_error}")
+
+
+async def post_json(
+    client: httpx.AsyncClient,
+    url: str,
+    payload: dict[str, Any],
+    *,
+    attempts: int = 3,
+) -> Any:
+    last_error: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            response = await client.post(url, json=payload)
+            response.raise_for_status()
+            return response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            last_error = exc
+            if attempt + 1 < attempts:
+                await asyncio.sleep(0.5 * (2**attempt))
+    raise RuntimeError(f"POST {url} failed after {attempts} attempts: {last_error}")

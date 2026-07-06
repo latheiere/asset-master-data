@@ -1,0 +1,7 @@
+{
+  "spot": {"data": [{"state": "online", "te": true, "sc": "btcusdt", "bc": "btc", "qc": "usdt", "bcdn": "BTC", "qcdn": "USDT"}]},
+  "linearSwap": {"status": "ok", "data": [{"symbol": "BTC", "contract_code": "BTC-USDT", "contract_size": 0.001, "delivery_time": "", "contract_status": 1, "business_type": "swap", "pair": "BTC-USDT", "contract_type": "swap"}]},
+  "linearFuture": {"status": "ok", "data": [{"symbol": "BTC", "contract_code": "BTC-USDT-260710", "contract_size": 0.001, "delivery_time": "1783670400000", "contract_status": 1, "business_type": "futures", "pair": "BTC-USDT", "contract_type": "this_week"}]},
+  "coinSwap": {"status": "ok", "data": [{"symbol": "BTC", "contract_code": "BTC-USD", "contract_size": 100, "delivery_time": "", "contract_status": 3}]},
+  "coinFuture": {"status": "ok", "data": [{"symbol": "BTC", "contract_code": "BTC260925", "contract_type": "quarter", "contract_size": 100, "delivery_time": "1790323200000", "contract_status": 1}]}
+}

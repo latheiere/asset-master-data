@@ -1,0 +1,5 @@
+[
+  {"name": "BTC_USDT", "stock": "BTC", "money": "USDT", "tradesEnabled": true, "type": "spot", "maxTotal": "100000", "isCollateral": true, "delistedAt": null},
+  {"name": "BTC_PERP", "stock": "BTC", "money": "USDT", "tradesEnabled": true, "type": "futures", "maxTotal": "100000000", "isCollateral": true, "isTradFiFutures": false, "delistedAt": null},
+  {"name": "TSLA_PERP", "stock": "TSLA", "money": "USDT", "tradesEnabled": false, "type": "tradfiFutures", "maxTotal": "1000000", "isCollateral": true, "isTradFiFutures": true, "delistedAt": 1780000000000}
+]
