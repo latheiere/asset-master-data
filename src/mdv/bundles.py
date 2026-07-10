@@ -106,6 +106,9 @@ def apply_collection_bundle(
     scope = metadata["scope"]
     collection_run_id = store.start_collection_run(scope=scope, venues=[scope])
     results = []
+    tag_run_id: str | None = None
+    tag_observed_at: str | None = None
+    tag_result_index: int | None = None
     for entry in entries:
         if entry["status"] == "FAILED":
             error = entry["error"]
@@ -126,9 +129,13 @@ def apply_collection_bundle(
         snapshot = entry["snapshot"]
         try:
             run_id = (
-                store.apply_financing_snapshot(snapshot, collection_run_id=collection_run_id)
+                store.apply_financing_snapshot(
+                    snapshot, collection_run_id=collection_run_id, rebuild=False
+                )
                 if isinstance(snapshot, FinancingSnapshot)
-                else store.apply_snapshot(snapshot, collection_run_id=collection_run_id)
+                else store.apply_snapshot(
+                    snapshot, collection_run_id=collection_run_id, rebuild=False
+                )
             )
             count = (
                 len(snapshot.records)
@@ -140,6 +147,12 @@ def apply_collection_bundle(
                     entry["source"], True, count, run_id, collection_run_id
                 )
             )
+            if not isinstance(snapshot, FinancingSnapshot) and (
+                tag_observed_at is None or snapshot.observed_at > tag_observed_at
+            ):
+                tag_run_id = run_id
+                tag_observed_at = snapshot.observed_at
+                tag_result_index = len(results) - 1
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
             run_id = store.record_failed_run(
@@ -155,7 +168,27 @@ def apply_collection_bundle(
                     entry["source"], False, 0, run_id, collection_run_id, error
                 )
             )
-    store.finish_collection_run(collection_run_id)
+    projection_error: str | None = None
+    if any(result.ok for result in results):
+        try:
+            store.rebuild_collection_projections(
+                tag_run_id=tag_run_id, tag_observed_at=tag_observed_at
+            )
+        except Exception as exc:
+            projection_error = f"projection rebuild failed: {type(exc).__name__}: {exc}"
+            failed_index = tag_result_index
+            if failed_index is None:
+                failed_index = next(index for index, result in enumerate(results) if result.ok)
+            completed = results[failed_index]
+            results[failed_index] = CollectionResult(
+                completed.source,
+                False,
+                completed.records,
+                completed.run_id,
+                completed.collection_run_id,
+                projection_error,
+            )
+    store.finish_collection_run(collection_run_id, error=projection_error)
     return results
 
 

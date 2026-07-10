@@ -68,6 +68,21 @@ class FakeFinancingConnector:
         )
 
 
+class ConcurrentFakeConnector(FakeConnector):
+    def __init__(self, *, source: str, venue: str, state: dict[str, int]):
+        super().__init__(source=source, venue=venue)
+        self.state = state
+
+    async def fetch(self, client):
+        self.state["active"] += 1
+        self.state["peak"] = max(self.state["peak"], self.state["active"])
+        try:
+            await asyncio.sleep(0.01)
+            return await super().fetch(client)
+        finally:
+            self.state["active"] -= 1
+
+
 def test_collection_service_saves_parent_run_and_supports_venue_scope(tmp_path):
     store = SQLiteStore(tmp_path / "mdv.sqlite3")
     service = CollectionService(
@@ -160,3 +175,30 @@ def test_failed_financing_collection_preserves_last_complete_snapshot(tmp_path):
     assert second[0].ok is False
     assert store.list_financing({})["count"] == 1
     assert store.list_financing({})["financing"][0]["raw_asset_symbol"] == "BTC"
+
+
+def test_collection_bounds_fetches_and_rebuilds_projections_once(tmp_path, monkeypatch):
+    state = {"active": 0, "peak": 0}
+    connectors = [
+        ConcurrentFakeConnector(source=f"VENUE{index}_SPOT", venue=f"VENUE{index}", state=state)
+        for index in range(5)
+    ]
+    store = SQLiteStore(tmp_path / "mdv.sqlite3")
+    rebuild_calls = []
+    original_rebuild = store.rebuild_collection_projections
+
+    def rebuild(**kwargs):
+        rebuild_calls.append(kwargs)
+        return original_rebuild(**kwargs)
+
+    monkeypatch.setattr(store, "rebuild_collection_projections", rebuild)
+    results = asyncio.run(
+        CollectionService(
+            store, connectors=connectors, max_concurrent_fetches=2
+        ).collect_all()
+    )
+
+    assert [result.source for result in results] == [connector.source for connector in connectors]
+    assert state["peak"] == 2
+    assert len(rebuild_calls) == 1
+    assert store.market_count() == 5

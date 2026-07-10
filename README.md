@@ -19,7 +19,7 @@ routing service.
 
 > Development disclosure: this repository has been developed primarily through
 > Codex-assisted “vibe coding,” with human direction and test-based review. The
-> current release is `0.5.0`; audit behavior, security, and operational controls
+> current release is `0.5.1`; audit behavior, security, and operational controls
 > before relying on it in a production or risk-sensitive system.
 
 ## What it provides
@@ -36,7 +36,8 @@ canonical asset → venue base symbols → active markets
 authenticated HTML and JSON APIs
 ```
 
-- Complete-snapshot collection with failure isolation per venue universe.
+- Complete-snapshot collection with failure isolation per venue universe, bounded
+  fetch concurrency, and one derived-mapping rebuild after each refresh.
 - Raw venue fields, observation timestamps, and inactive-market history.
 - Normalized product, settlement, direction, expiry, status, and size fields.
 - Evidence-based asset matching with candidate decisions and mapping revisions.

@@ -303,7 +303,13 @@ class SQLiteStore:
             self.finish_collection_run(collection_run_id)
         return run_id
 
-    def apply_snapshot(self, snapshot: MarketSnapshot, *, collection_run_id: str | None = None) -> str:
+    def apply_snapshot(
+        self,
+        snapshot: MarketSnapshot,
+        *,
+        collection_run_id: str | None = None,
+        rebuild: bool = True,
+    ) -> str:
         snapshot.validate()
         self.migrate()
         own_collection_run = collection_run_id is None
@@ -494,8 +500,10 @@ class SQLiteStore:
                 (utc_now(), len(snapshot.markets), run_id),
             )
 
-        self.rebuild_symbol_matches()
-        self.rebuild_asset_tags(run_id=run_id, observed_at=snapshot.observed_at)
+        if rebuild:
+            self.rebuild_collection_projections(
+                tag_run_id=run_id, tag_observed_at=snapshot.observed_at
+            )
         if own_collection_run:
             self.finish_collection_run(collection_run_id)
         return run_id
@@ -505,6 +513,7 @@ class SQLiteStore:
         snapshot: FinancingSnapshot,
         *,
         collection_run_id: str | None = None,
+        rebuild: bool = True,
     ) -> str:
         """Apply one complete public financing universe without account data."""
         snapshot.validate()
@@ -659,10 +668,22 @@ class SQLiteStore:
                 """,
                 (utc_now(), len(snapshot.records), run_id),
             )
-        self.rebuild_financing_mappings()
+        if rebuild:
+            self.rebuild_financing_mappings()
         if own_collection_run:
             self.finish_collection_run(collection_run_id)
         return run_id
+
+    def rebuild_collection_projections(
+        self,
+        *,
+        tag_run_id: str | None = None,
+        tag_observed_at: str | None = None,
+    ) -> None:
+        """Rebuild derived mappings once after a complete collection batch."""
+        self.rebuild_symbol_matches()
+        if tag_run_id is not None and tag_observed_at is not None:
+            self.rebuild_asset_tags(run_id=tag_run_id, observed_at=tag_observed_at)
 
     @staticmethod
     def _insert_financing_event(

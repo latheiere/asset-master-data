@@ -22,10 +22,20 @@ class CollectionResult:
 
 
 class CollectionService:
-    def __init__(self, store: SQLiteStore, *, timeout_seconds: float = 20, connectors: list[Connector] | None = None):
+    def __init__(
+        self,
+        store: SQLiteStore,
+        *,
+        timeout_seconds: float = 20,
+        connectors: list[Connector] | None = None,
+        max_concurrent_fetches: int = 4,
+    ):
+        if max_concurrent_fetches <= 0:
+            raise ValueError("max_concurrent_fetches must be positive")
         self.store = store
         self.timeout_seconds = timeout_seconds
         self.connectors = connectors or default_collection_connectors()
+        self.max_concurrent_fetches = max_concurrent_fetches
 
     async def collect_all(self) -> list[CollectionResult]:
         return await self.collect()
@@ -72,35 +82,87 @@ class CollectionService:
         timeout = httpx.Timeout(self.timeout_seconds)
         # Some public venue CDNs reject generic library User-Agent values.
         headers = {"User-Agent": "Mozilla/5.0 (compatible; AssetMasterData/0.1)"}
+        results: list[CollectionResult | None] = [None] * len(connectors)
+        tag_run_id: str | None = None
+        tag_observed_at: str | None = None
+        tag_result_index: int | None = None
+
+        async def fetch(index: int, connector: Connector, client: httpx.AsyncClient):
+            try:
+                async with semaphore:
+                    return index, connector, await connector.fetch(client)
+            except Exception as exc:
+                return index, connector, exc
+
+        semaphore = asyncio.Semaphore(self.max_concurrent_fetches)
         try:
             async with httpx.AsyncClient(timeout=timeout, headers=headers, follow_redirects=True) as client:
-                snapshots = await asyncio.gather(
-                    *(connector.fetch(client) for connector in connectors),
-                    return_exceptions=True,
-                )
+                pending = {
+                    asyncio.create_task(fetch(index, connector, client))
+                    for index, connector in enumerate(connectors)
+                }
+                while pending:
+                    completed, pending = await asyncio.wait(
+                        pending, return_when=asyncio.FIRST_COMPLETED
+                    )
+                    for task in completed:
+                        index, connector, value = task.result()
+                        if isinstance(value, BaseException):
+                            error = f"{type(value).__name__}: {value}"
+                            run_id = self.store.record_failed_run(
+                                source=connector.source,
+                                venue=connector.venue,
+                                market_type=connector.market_type,
+                                product=connector.product,
+                                error=error,
+                                collection_run_id=collection_run_id,
+                            )
+                            results[index] = CollectionResult(
+                                connector.source, False, 0, run_id, collection_run_id, error
+                            )
+                            continue
+                        try:
+                            run_id = (
+                                self.store.apply_financing_snapshot(
+                                    value, collection_run_id=collection_run_id, rebuild=False
+                                )
+                                if isinstance(value, FinancingSnapshot)
+                                else self.store.apply_snapshot(
+                                    value, collection_run_id=collection_run_id, rebuild=False
+                                )
+                            )
+                        except Exception as exc:
+                            error = f"{type(exc).__name__}: {exc}"
+                            run_id = self.store.record_failed_run(
+                                source=connector.source,
+                                venue=connector.venue,
+                                market_type=connector.market_type,
+                                product=connector.product,
+                                error=error,
+                                collection_run_id=collection_run_id,
+                            )
+                            results[index] = CollectionResult(
+                                connector.source, False, 0, run_id, collection_run_id, error
+                            )
+                            continue
+                        if not isinstance(value, FinancingSnapshot) and (
+                            tag_observed_at is None or value.observed_at > tag_observed_at
+                        ):
+                            tag_run_id = run_id
+                            tag_observed_at = value.observed_at
+                            tag_result_index = index
+                        record_count = (
+                            len(value.records)
+                            if isinstance(value, FinancingSnapshot)
+                            else len(value.markets)
+                        )
+                        results[index] = CollectionResult(
+                            connector.source, True, record_count, run_id, collection_run_id
+                        )
         except Exception as exc:
-            snapshots = [exc for _ in connectors]
-        results = []
-        for connector, value in zip(connectors, snapshots, strict=True):
-            if isinstance(value, BaseException):
-                error = f"{type(value).__name__}: {value}"
-                run_id = self.store.record_failed_run(
-                    source=connector.source,
-                    venue=connector.venue,
-                    market_type=connector.market_type,
-                    product=connector.product,
-                    error=error,
-                    collection_run_id=collection_run_id,
-                )
-                results.append(CollectionResult(connector.source, False, 0, run_id, collection_run_id, error))
-                continue
-            try:
-                run_id = (
-                    self.store.apply_financing_snapshot(value, collection_run_id=collection_run_id)
-                    if isinstance(value, FinancingSnapshot)
-                    else self.store.apply_snapshot(value, collection_run_id=collection_run_id)
-                )
-            except Exception as exc:
+            for index, connector in enumerate(connectors):
+                if results[index] is not None:
+                    continue
                 error = f"{type(exc).__name__}: {exc}"
                 run_id = self.store.record_failed_run(
                     source=connector.source,
@@ -110,12 +172,36 @@ class CollectionService:
                     error=error,
                     collection_run_id=collection_run_id,
                 )
-                results.append(CollectionResult(connector.source, False, 0, run_id, collection_run_id, error))
-                continue
-            record_count = len(value.records) if isinstance(value, FinancingSnapshot) else len(value.markets)
-            results.append(CollectionResult(connector.source, True, record_count, run_id, collection_run_id))
-        self.store.finish_collection_run(collection_run_id)
-        return results
+                results[index] = CollectionResult(
+                    connector.source, False, 0, run_id, collection_run_id, error
+                )
+        projection_error: str | None = None
+        if any(result is not None and result.ok for result in results):
+            try:
+                self.store.rebuild_collection_projections(
+                    tag_run_id=tag_run_id, tag_observed_at=tag_observed_at
+                )
+            except Exception as exc:
+                projection_error = f"projection rebuild failed: {type(exc).__name__}: {exc}"
+                failed_index = tag_result_index
+                if failed_index is None:
+                    failed_index = next(
+                        index
+                        for index, result in enumerate(results)
+                        if result is not None and result.ok
+                    )
+                completed = results[failed_index]
+                assert completed is not None
+                results[failed_index] = CollectionResult(
+                    completed.source,
+                    False,
+                    completed.records,
+                    completed.run_id,
+                    completed.collection_run_id,
+                    projection_error,
+                )
+        self.store.finish_collection_run(collection_run_id, error=projection_error)
+        return [result for result in results if result is not None]
 
 
 def results_json(results: list[CollectionResult]) -> list[dict]:
