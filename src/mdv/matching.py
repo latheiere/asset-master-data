@@ -5,7 +5,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 
 
-MATCHER_VERSION = "evidence-v2"
+MATCHER_VERSION = "evidence-v3"
 UNIT_PREFIXES = ("1000000", "10000", "1000")
 
 

@@ -373,6 +373,10 @@ matching runs before pagination.
 
 Universe rows contain source, market type, venue product, timing, completion,
 record count, and error. Changes contain lifecycle or tag event details.
+`MARKET_DISCOVERED` means no earlier same-venue market for that asset and market
+type was recorded. `MARKET_LISTED` means a new instrument was listed after such
+a market existed; both match `ACTION=LISTING`. A log entry is not evidence that
+the asset class itself is new.
 Filter options include historical tags, including tags no longer active, and
 venues represented in collection history.
 

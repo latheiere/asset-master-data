@@ -227,6 +227,15 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
         metadata_response = client.get("/api/v1/metadata")
         metadata_html_response = client.get("/metadata")
         logs_response = client.get("/logs")
+        manual_actions_response = client.get("/manual-actions")
+        manual_action_create_response = client.post(
+            "/manual-actions",
+            data={
+                "action_type": "OTHER", "venue": "", "source_symbol": "",
+                "target_symbol": "", "note": "operator note", "enabled": "on",
+            },
+            follow_redirects=False,
+        )
         logs_api_response = client.get("/api/v1/logs")
         mexc_logs_api_response = client.get("/api/v1/logs?VENUE=MEXC")
         filtered_logs_response = client.get(
@@ -342,6 +351,11 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
     assert "Normalized instrument product" in metadata_html_response.text
     assert logs_response.status_code == 200
     assert "Collection Log" in logs_response.text
+    assert manual_actions_response.status_code == 200
+    assert "Manual asset actions" in manual_actions_response.text
+    assert "mexc-tsemstock-to-tsem" in manual_actions_response.text
+    assert manual_action_create_response.status_code == 303
+    assert manual_action_create_response.headers["location"] == "/manual-actions"
     assert 'id="timezone-select"' in logs_response.text
     assert "mdv_timezone" in logs_response.text
     assert "Venues updated:" in logs_response.text

@@ -19,6 +19,7 @@ from mdv.connectors.financing import (
     financing_connectors,
 )
 from mdv.connectors.mexc import MexcFutureConnector, MexcSpotConnector
+from mdv.connectors.kucoin import KucoinFutureConnector
 from mdv.connectors.registry import default_collection_connectors
 
 
@@ -63,6 +64,26 @@ def test_binance_future_parser_preserves_market_fields():
     assert market.venue_product == "USD-M"
     assert market.contract_direction == "LINEAR"
     assert market.max_market_order_size == "250.000"
+
+
+def test_kucoin_perpetual_delisting_timestamp_is_not_a_contract_expiry():
+    snapshot = KucoinFutureConnector().parse(
+        {
+            "code": "200000",
+            "data": [{
+                "symbol": "NFPUSDTM", "type": "FFWCSX",
+                "expireDate": 1783494000000, "baseCurrency": "NFP",
+                "quoteCurrency": "USDT", "settleCurrency": "USDT",
+                "marketMaxOrderQty": 1000000, "multiplier": 1, "status": "Open",
+            }],
+        },
+        observed_at="2026-07-08T06:00:00+00:00",
+    )
+
+    market = snapshot.markets[0]
+    assert market.contract_type == "PERP"
+    assert market.product == "PERP"
+    assert market.expires_at is None
 
 
 def test_binance_spot_parser_preserves_product_metadata_tags():

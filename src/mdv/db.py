@@ -158,8 +158,175 @@ class SQLiteStore:
                     f"VALUES ({version}, '{filename}', '{applied_at}');\n"
                     "COMMIT;"
                 )
+            self._sync_delivery_manual_actions(conn)
         finally:
             conn.close()
+
+    @staticmethod
+    def _normalize_manual_symbol(value: object, *, field: str, required: bool = True) -> str | None:
+        raw = str(value or "").strip()
+        if not raw:
+            if required:
+                raise ValueError(f"{field} is required")
+            return None
+        return normalize_asset_symbol(raw, allow_unit_prefix=False).symbol
+
+    @classmethod
+    def _delivery_manual_actions(cls) -> list[dict]:
+        try:
+            payload = json.loads(
+                resources.files("mdv").joinpath("manual_asset_actions.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+        except (OSError, ValueError) as exc:
+            raise RuntimeError("invalid bundled manual asset actions") from exc
+        if not isinstance(payload, list):
+            raise RuntimeError("bundled manual asset actions must be an array")
+        return [cls._validated_manual_action(item, delivery=True) for item in payload]
+
+    @classmethod
+    def _validated_manual_action(cls, payload: object, *, delivery: bool = False) -> dict:
+        if not isinstance(payload, dict):
+            raise ValueError("manual action must be an object")
+        action_type = str(payload.get("action_type") or "").strip().upper()
+        if action_type not in {"MAP_SYMBOL", "RENAME_ASSET", "OTHER"}:
+            raise ValueError("action_type must be MAP_SYMBOL, RENAME_ASSET, or OTHER")
+        action_id = str(payload.get("action_id") or "").strip()
+        if delivery and not action_id:
+            raise ValueError("delivery manual action requires action_id")
+        venue = str(payload.get("venue") or "").strip().upper() or None
+        source_symbol = cls._normalize_manual_symbol(
+            payload.get("source_symbol"), field="source_symbol", required=action_type != "OTHER"
+        )
+        target_symbol = cls._normalize_manual_symbol(
+            payload.get("target_symbol"), field="target_symbol", required=action_type != "OTHER"
+        )
+        if action_type == "MAP_SYMBOL" and not venue:
+            raise ValueError("MAP_SYMBOL requires venue")
+        if action_type == "RENAME_ASSET" and venue:
+            raise ValueError("RENAME_ASSET must not set venue")
+        return {
+            "action_id": action_id,
+            "action_type": action_type,
+            "venue": venue,
+            "source_symbol": source_symbol,
+            "target_symbol": target_symbol,
+            "note": str(payload.get("note") or "").strip()[:2000],
+            "enabled": int(bool(payload.get("enabled", True))),
+        }
+
+    def _sync_delivery_manual_actions(self, conn: sqlite3.Connection) -> None:
+        """Reconcile tracked overrides without overwriting local CRUD changes."""
+        actions = self._delivery_manual_actions()
+        action_ids = {action["action_id"] for action in actions}
+        now = utc_now()
+        tombstoned = {
+            str(row[0])
+            for row in conn.execute("SELECT action_id FROM manual_asset_action_tombstones")
+        }
+        for action in actions:
+            if action["action_id"] in tombstoned:
+                continue
+            existing = conn.execute(
+                "SELECT origin FROM manual_asset_actions WHERE action_id = ?",
+                (action["action_id"],),
+            ).fetchone()
+            if existing is not None and existing["origin"] == "LOCAL":
+                continue
+            conn.execute(
+                """
+                INSERT INTO manual_asset_actions(
+                    action_id, action_type, venue, source_symbol, target_symbol,
+                    note, enabled, origin, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'DELIVERY', ?, ?)
+                ON CONFLICT(action_id) DO UPDATE SET
+                    action_type=excluded.action_type, venue=excluded.venue,
+                    source_symbol=excluded.source_symbol, target_symbol=excluded.target_symbol,
+                    note=excluded.note, enabled=excluded.enabled,
+                    origin='DELIVERY', updated_at=excluded.updated_at
+                """,
+                (
+                    action["action_id"], action["action_type"], action["venue"],
+                    action["source_symbol"], action["target_symbol"], action["note"],
+                    action["enabled"], now, now,
+                ),
+            )
+        delivery_rows = [str(row[0]) for row in conn.execute(
+            "SELECT action_id FROM manual_asset_actions WHERE origin = 'DELIVERY'"
+        )]
+        for action_id in delivery_rows:
+            if action_id not in action_ids:
+                conn.execute("DELETE FROM manual_asset_actions WHERE action_id = ?", (action_id,))
+
+    def list_manual_asset_actions(self) -> list[dict]:
+        self.migrate()
+        with self.readonly() as conn:
+            return [dict(row) for row in conn.execute(
+                """
+                SELECT action_id, action_type, venue, source_symbol, target_symbol,
+                       note, enabled, origin, created_at, updated_at
+                FROM manual_asset_actions
+                ORDER BY action_type, venue, source_symbol, action_id
+                """
+            )]
+
+    def create_manual_asset_action(self, payload: dict) -> dict:
+        self.migrate()
+        action = self._validated_manual_action(payload)
+        action_id = str(uuid.uuid4())
+        now = utc_now()
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO manual_asset_actions(
+                    action_id, action_type, venue, source_symbol, target_symbol,
+                    note, enabled, origin, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'LOCAL', ?, ?)
+                """,
+                (action_id, action["action_type"], action["venue"], action["source_symbol"],
+                 action["target_symbol"], action["note"], action["enabled"], now, now),
+            )
+        self.rebuild_symbol_matches()
+        return next(row for row in self.list_manual_asset_actions() if row["action_id"] == action_id)
+
+    def update_manual_asset_action(self, action_id: str, payload: dict) -> dict:
+        self.migrate()
+        action = self._validated_manual_action(payload)
+        now = utc_now()
+        with self.transaction() as conn:
+            if not conn.execute(
+                "SELECT 1 FROM manual_asset_actions WHERE action_id = ?", (action_id,)
+            ).fetchone():
+                raise ValueError("manual action not found")
+            conn.execute(
+                """
+                UPDATE manual_asset_actions
+                SET action_type=?, venue=?, source_symbol=?, target_symbol=?, note=?,
+                    enabled=?, origin='LOCAL', updated_at=?
+                WHERE action_id=?
+                """,
+                (action["action_type"], action["venue"], action["source_symbol"],
+                 action["target_symbol"], action["note"], action["enabled"], now, action_id),
+            )
+        self.rebuild_symbol_matches()
+        return next(row for row in self.list_manual_asset_actions() if row["action_id"] == action_id)
+
+    def delete_manual_asset_action(self, action_id: str) -> None:
+        self.migrate()
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT origin FROM manual_asset_actions WHERE action_id = ?", (action_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError("manual action not found")
+            conn.execute("DELETE FROM manual_asset_actions WHERE action_id = ?", (action_id,))
+            if row["origin"] == "DELIVERY":
+                conn.execute(
+                    "INSERT OR REPLACE INTO manual_asset_action_tombstones(action_id, deleted_at) VALUES (?, ?)",
+                    (action_id, utc_now()),
+                )
+        self.rebuild_symbol_matches()
 
     def market_count(self) -> int:
         self.migrate()
@@ -816,6 +983,23 @@ class SQLiteStore:
         self.migrate()
         now = utc_now()
         with self.transaction() as conn:
+            manual_actions = [dict(row) for row in conn.execute(
+                """
+                SELECT action_id, action_type, venue, source_symbol, target_symbol, note
+                FROM manual_asset_actions
+                WHERE enabled = 1
+                """
+            )]
+            manual_maps = {
+                (str(action["venue"]), str(action["source_symbol"])): action
+                for action in manual_actions
+                if action["action_type"] == "MAP_SYMBOL"
+            }
+            manual_renames = {
+                str(action["source_symbol"]): action
+                for action in manual_actions
+                if action["action_type"] == "RENAME_ASSET"
+            }
             markets = [dict(row) for row in conn.execute(
                 """
                 SELECT market_id, venue, market_type, base_symbol, active, raw_json
@@ -903,6 +1087,21 @@ class SQLiteStore:
                         multiplier = 1
                         mapping_evidence = alias_candidate.evidence
 
+                manual_action = manual_maps.get((market["venue"], raw_symbol.symbol))
+                if manual_action is None:
+                    manual_action = manual_renames.get(canonical_symbol)
+                if manual_action is not None:
+                    canonical_symbol = str(manual_action["target_symbol"])
+                    identity_method = f"MANUAL_{manual_action['action_type']}"
+                    multiplier = 1
+                    mapping_evidence = {
+                        "action_id": manual_action["action_id"],
+                        "action_type": manual_action["action_type"],
+                        "note": manual_action["note"],
+                        "raw_base_symbol": market["base_symbol"],
+                        "canonical_symbol": canonical_symbol,
+                    }
+
                 for candidate in candidates:
                     candidate_id = str(uuid.uuid5(
                         uuid.NAMESPACE_URL,
@@ -960,7 +1159,10 @@ class SQLiteStore:
                 asset_id = stable_asset_id(canonical_symbol)
                 group_method, confidence = scores[canonical_symbol]
                 method = group_method
-                if row["normalizer_method"] != "EXACT_SYMBOL":
+                if row["normalizer_method"].startswith("MANUAL_"):
+                    method = f"{row['normalizer_method']}+{group_method}"
+                    confidence = 1.0
+                elif row["normalizer_method"] != "EXACT_SYMBOL":
                     method = f"{row['normalizer_method']}+{group_method}"
                     confidence = min(max(confidence, row["evidence_score"]), 0.99)
                 conn.execute(
@@ -2242,7 +2444,19 @@ class SQLiteStore:
                 SELECT ir.collection_run_id, ir.run_id, ir.venue, ir.source,
                        e.event_type, e.old_value, e.new_value, e.observed_at,
                        m.raw_symbol, m.base_symbol, m.product,
-                       COALESCE(a.canonical_symbol, m.base_symbol) AS canonical_symbol
+                       COALESCE(a.canonical_symbol, m.base_symbol) AS canonical_symbol,
+                       EXISTS(
+                           SELECT 1
+                           FROM markets prior_market
+                           LEFT JOIN market_asset_mappings prior_mapping
+                             ON prior_mapping.market_id = prior_market.market_id
+                           WHERE prior_market.market_id != m.market_id
+                             AND prior_market.venue = m.venue
+                             AND prior_market.market_type = m.market_type
+                             AND prior_market.first_seen_at < m.first_seen_at
+                             AND COALESCE(prior_mapping.asset_id, prior_market.base_symbol) =
+                                 COALESCE(map.asset_id, m.base_symbol)
+                       ) AS has_prior_similar_market
                 FROM market_lifecycle_events e
                 JOIN ingest_runs ir ON ir.run_id = e.run_id
                 JOIN markets m ON m.market_id = e.market_id
@@ -2282,13 +2496,17 @@ class SQLiteStore:
         for row in lifecycle_rows:
             event_type = row["event_type"]
             asset = row["canonical_symbol"]
+            kind = f"MARKET_{event_type}"
             if event_type == "STATUS_CHANGED":
                 message = f"{asset} status changed from {row['old_value']} to {row['new_value']}"
             else:
                 message = f"{asset} {lifecycle_labels.get(event_type, event_type.lower().replace('_', ' '))}"
+            if event_type == "DISCOVERED" and row["has_prior_similar_market"]:
+                kind = "MARKET_LISTED"
+                message = f"{asset} listed"
             changes_by_run.setdefault(row["collection_run_id"], []).append(
                 {
-                    "kind": f"MARKET_{event_type}",
+                    "kind": kind,
                     "venue": row["venue"],
                     "source": row["source"],
                     "run_id": row["run_id"],
@@ -2321,15 +2539,17 @@ class SQLiteStore:
             )
 
         if change_filters_active:
-            expected_kind = {
-                "LISTING": "MARKET_DISCOVERED",
+            expected_kinds = {
+                "LISTING": {"MARKET_DISCOVERED", "MARKET_LISTED"},
                 "REMOVAL": "MARKET_MISSING",
                 "TAG_ADDED": "TAG_ADDED",
                 "TAG_REMOVED": "TAG_REMOVED",
             }.get(requested_action)
 
             def selected_change(change: dict) -> bool:
-                if expected_kind and change["kind"] != expected_kind:
+                if expected_kinds and change["kind"] not in (
+                    expected_kinds if isinstance(expected_kinds, set) else {expected_kinds}
+                ):
                     return False
                 if requested_tag and change["new_value"] != ":".join(requested_tag):
                     return False

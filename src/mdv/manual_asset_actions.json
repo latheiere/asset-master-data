@@ -1,0 +1,11 @@
+[
+  {
+    "action_id": "mexc-tsemstock-to-tsem",
+    "action_type": "MAP_SYMBOL",
+    "venue": "MEXC",
+    "source_symbol": "TSEMSTOCK",
+    "target_symbol": "TSEM",
+    "note": "Verified venue symbol alias: MEXC TSEMSTOCK represents TSEM.",
+    "enabled": true
+  }
+]

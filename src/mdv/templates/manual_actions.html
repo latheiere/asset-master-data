@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Manual asset actions · Asset Master Data</title>
+  <style>
+    :root { color-scheme:light; --bg:#f5f7fa; --panel:#fff; --line:#d8dee8; --text:#182230; --muted:#607086; --accent:#2057d4; --red:#b42318; }
+    * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 ui-sans-serif,system-ui,sans-serif; }
+    header, main { max-width:1320px; margin:auto; padding-left:28px; padding-right:28px; } header { padding-top:22px; display:flex; justify-content:space-between; gap:16px; align-items:end; }
+    h1 { margin:0; font-size:24px; } h2 { margin:22px 0 10px; font-size:16px; } .muted { color:var(--muted); } .actions { display:flex; gap:8px; flex-wrap:wrap; }
+    input, select, textarea, button, .button-link { width:100%; min-height:36px; border:1px solid var(--line); border-radius:6px; background:#fff; padding:7px 9px; color:var(--text); font:inherit; }
+    textarea { min-height:54px; resize:vertical; } button, .button-link { cursor:pointer; font-weight:650; } button.primary, .button-link { color:#fff; background:var(--accent); border-color:var(--accent); text-decoration:none; display:inline-flex; align-items:center; justify-content:center; width:auto; }
+    button.danger { color:var(--red); border-color:#e7b3af; } .panel { margin-top:14px; padding:14px; background:var(--panel); border:1px solid var(--line); border-radius:8px; }
+    .form-grid { display:grid; grid-template-columns:150px 130px 1fr 1fr 2fr 70px auto; gap:10px; align-items:end; } label { display:grid; gap:4px; color:var(--muted); font-size:12px; } label.check { display:flex; align-items:center; gap:6px; min-height:36px; } label.check input { width:auto; min-height:auto; }
+    table { width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--line); } th, td { padding:9px; text-align:left; vertical-align:top; border-bottom:1px solid var(--line); } th { background:#eef2f7; color:var(--muted); font-size:12px; } code { background:#eef2f7; padding:2px 4px; border-radius:4px; } details summary { cursor:pointer; color:var(--accent); font-weight:650; } .row-form { display:grid; grid-template-columns:140px 120px 1fr 1fr 2fr 70px auto; gap:8px; margin-top:10px; } .inline { display:flex; gap:6px; align-items:center; } .error { margin-top:14px; color:var(--red); }
+    @media (max-width:900px) { header, main { padding-left:12px; padding-right:12px; } header { align-items:flex-start; flex-direction:column; } .form-grid, .row-form { grid-template-columns:1fr; } table, thead, tbody, tr, th, td { display:block; } thead { display:none; } td { border-bottom:0; padding:5px 9px; } tr { border-bottom:1px solid var(--line); } }
+  </style>
+</head>
+<body>
+  <header>
+    <div><h1>Manual asset actions</h1><div class="muted">Delivery actions ship in tracked package data. Local edits override delivery rows on this installation.</div></div>
+    <div class="actions"><a class="button-link" href="/mdv">Asset view</a><a class="button-link" href="/logs">Collection log</a></div>
+  </header>
+  <main>
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    <section class="panel">
+      <h2>Add action</h2>
+      <form method="post" action="/manual-actions" class="form-grid">
+        <label>Action type<select name="action_type"><option value="MAP_SYMBOL">Map symbol</option><option value="RENAME_ASSET">Rename asset</option><option value="OTHER">Other</option></select></label>
+        <label>Venue<input name="venue" placeholder="MEXC"></label>
+        <label>Source symbol<input name="source_symbol" placeholder="TSEMSTOCK"></label>
+        <label>Target symbol<input name="target_symbol" placeholder="TSEM"></label>
+        <label>Note<textarea name="note" placeholder="Evidence and reason"></textarea></label>
+        <label class="check"><input type="checkbox" name="enabled" checked> Enabled</label>
+        <button class="primary" type="submit">Add</button>
+      </form>
+    </section>
+    <h2>All manual entries</h2>
+    <table>
+      <thead><tr><th>Type</th><th>Venue</th><th>Source → target</th><th>Note</th><th>State</th><th>Origin</th><th>CRUD</th></tr></thead>
+      <tbody>
+      {% for action in actions %}
+        <tr>
+          <td><code>{{ action.action_type }}</code></td><td>{{ action.venue or '—' }}</td><td><code>{{ action.source_symbol or '—' }}</code> → <code>{{ action.target_symbol or '—' }}</code></td><td>{{ action.note or '—' }}</td><td>{{ 'enabled' if action.enabled else 'disabled' }}</td><td>{{ action.origin }}</td>
+          <td><details><summary>Edit</summary><form method="post" action="/manual-actions/{{ action.action_id }}" class="row-form"><select name="action_type"><option value="MAP_SYMBOL"{% if action.action_type == 'MAP_SYMBOL' %} selected{% endif %}>Map symbol</option><option value="RENAME_ASSET"{% if action.action_type == 'RENAME_ASSET' %} selected{% endif %}>Rename asset</option><option value="OTHER"{% if action.action_type == 'OTHER' %} selected{% endif %}>Other</option></select><input name="venue" value="{{ action.venue or '' }}" placeholder="Venue"><input name="source_symbol" value="{{ action.source_symbol or '' }}" placeholder="Source"><input name="target_symbol" value="{{ action.target_symbol or '' }}" placeholder="Target"><textarea name="note">{{ action.note }}</textarea><label class="check"><input type="checkbox" name="enabled"{% if action.enabled %} checked{% endif %}> Enabled</label><button class="primary" type="submit">Save</button></form></details><form method="post" action="/manual-actions/{{ action.action_id }}/delete" class="inline"><button class="danger" type="submit">Delete</button></form></td>
+        </tr>
+      {% else %}<tr><td colspan="7" class="muted">No manual actions.</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </main>
+</body>
+</html>

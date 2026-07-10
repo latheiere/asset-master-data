@@ -285,6 +285,62 @@ def create_app(
             context={"metadata": store.filter_metadata()},
         )
 
+    def manual_action_payload(form: dict) -> dict:
+        return {
+            "action_type": form.get("action_type"),
+            "venue": form.get("venue"),
+            "source_symbol": form.get("source_symbol"),
+            "target_symbol": form.get("target_symbol"),
+            "note": form.get("note"),
+            "enabled": form.get("enabled") in {"1", "true", "on"},
+        }
+
+    async def manual_action_form(request: Request) -> dict[str, str]:
+        content_type = request.headers.get("content-type", "").split(";", 1)[0]
+        if content_type != "application/x-www-form-urlencoded":
+            raise HTTPException(status_code=415, detail="form must be URL encoded")
+        parsed = parse_qs((await request.body()).decode("utf-8"), keep_blank_values=True)
+        return {name: values[-1] for name, values in parsed.items()}
+
+    @app.get("/manual-actions", response_class=HTMLResponse, include_in_schema=False)
+    async def manual_actions(request: Request):
+        return templates.TemplateResponse(
+            request=request,
+            name="manual_actions.html",
+            context={"actions": store.list_manual_asset_actions(), "error": None},
+        )
+
+    @app.post("/manual-actions", response_class=HTMLResponse, include_in_schema=False)
+    async def create_manual_action(request: Request):
+        form = await manual_action_form(request)
+        try:
+            store.create_manual_asset_action(manual_action_payload(form))
+        except ValueError as exc:
+            return templates.TemplateResponse(
+                request=request,
+                name="manual_actions.html",
+                context={"actions": store.list_manual_asset_actions(), "error": str(exc)},
+                status_code=422,
+            )
+        return RedirectResponse("/manual-actions", status_code=303)
+
+    @app.post("/manual-actions/{action_id}", include_in_schema=False)
+    async def update_manual_action(action_id: str, request: Request):
+        form = await manual_action_form(request)
+        try:
+            store.update_manual_asset_action(action_id, manual_action_payload(form))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return RedirectResponse("/manual-actions", status_code=303)
+
+    @app.post("/manual-actions/{action_id}/delete", include_in_schema=False)
+    async def delete_manual_action(action_id: str):
+        try:
+            store.delete_manual_asset_action(action_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return RedirectResponse("/manual-actions", status_code=303)
+
     @app.post("/api/v1/refresh")
     async def api_refresh(request: Request):
         venue = request.query_params.get("VENUE") or request.query_params.get("venue")

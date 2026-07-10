@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "asset-master-data"
-version = "0.6.0"
+version = "0.7.0"
 description = "Local-first master view of crypto assets and exchange markets"
 readme = "README.md"
 license = "Apache-2.0"
@@ -30,7 +30,7 @@ mdv = "mdv.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-mdv = ["templates/*.html", "migrations/*.sql"]
+mdv = ["templates/*.html", "migrations/*.sql", "manual_asset_actions.json"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

@@ -19,7 +19,7 @@ routing service.
 
 > Development disclosure: this repository has been developed primarily through
 > Codex-assisted “vibe coding,” with human direction and test-based review. The
-> current release is `0.6.0`; audit behavior, security, and operational controls
+> current release is `0.7.0`; audit behavior, security, and operational controls
 > before relying on it in a production or risk-sensitive system.
 
 ## What it provides
@@ -174,6 +174,10 @@ Current evidence rules are:
 - Provider alias hints, such as a `STOCK` suffix: accepted only when display
   symbol, asset classification, declared reference venue, active reference
   market, and reference classification all agree.
+- Delivery-managed manual actions can map a reviewed venue symbol, rename a
+  canonical asset, or retain another review note. They are packaged as tracked
+  data and reconciled into every installation; local UI edits override the
+  delivered row without being overwritten on upgrade.
 
 Alias corroboration is provider-neutral. It uses the venues declared by source
 metadata rather than requiring a specific venue pair. A suffix alone never
@@ -212,6 +216,16 @@ filters. `/metadata` describes filter meanings and current values.
 Every data filter supports `=` and `!=`. Values may be repeated or
 comma-separated. `SYMBOL` supports `*` wildcards. The Columns control changes
 visibility and order, stored locally in a cookie.
+
+`/manual-actions` provides CRUD for reviewed mapping, name-change, and other
+asset actions. `MAP_SYMBOL` applies to an exact venue base symbol; `RENAME_ASSET`
+applies globally after normal matching; `OTHER` is an auditable note only.
+Bundled actions live in `src/mdv/manual_asset_actions.json` and are reconciled
+on migration. A local edit or delete takes precedence for that installation.
+
+Collection logs distinguish a first observed market (`MARKET_DISCOVERED`) from
+a later listing for an asset that already had a market of that type on the venue
+(`MARKET_LISTED`). Both are returned by `ACTION=LISTING`.
 
 ## Authentication and network boundary
 

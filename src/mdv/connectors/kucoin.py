@@ -99,7 +99,10 @@ class KucoinFutureConnector:
             if not isinstance(row, dict):
                 raise ValueError(f"{self.source}: contract is not an object")
             venue_status = _required(row, "status", source=self.source).upper()
-            contract_type = "DATED" if row.get("expireDate") not in (None, "", 0, "0") else "PERP"
+            # KuCoin can populate expireDate when it schedules a perpetual
+            # delisting. The contract type, not that operational timestamp,
+            # determines whether this is a delivery future.
+            contract_type = self._contract_type(row)
             base_symbol = _required(row, "baseCurrency", source=self.source).upper()
             quote_symbol = _required(row, "quoteCurrency", source=self.source).upper()
             settle_symbol = _required(row, "settleCurrency", source=self.source).upper()
@@ -118,7 +121,11 @@ class KucoinFutureConnector:
                     venue_status == "OPEN",
                     str(row["multiplier"]) if row.get("multiplier") is not None else None,
                     dict(row),
-                    expires_at=self._expires_at(row.get("expireDate")),
+                    expires_at=(
+                        self._expires_at(row.get("expireDate"))
+                        if contract_type == "DATED"
+                        else None
+                    ),
                     max_market_order_size=(
                         str(row["marketMaxOrderQty"])
                         if row.get("marketMaxOrderQty") is not None
@@ -139,6 +146,14 @@ class KucoinFutureConnector:
         )
         snapshot.validate()
         return snapshot
+
+    def _contract_type(self, row: dict) -> str:
+        contract_kind = str(row.get("type") or "").strip().upper()
+        if contract_kind == "FFICSX":
+            return "DATED"
+        if contract_kind:
+            return "PERP"
+        raise ValueError(f"{self.source}: contract has no type")
 
     def _expires_at(self, value: object) -> str | None:
         if value in (None, "", 0, "0"):

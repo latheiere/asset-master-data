@@ -467,13 +467,71 @@ def test_financing_migration_upgrades_schema_12_without_rewriting_market_data(tm
         venue = migrated.execute(
             "SELECT display_name FROM venues WHERE venue = 'BYBIT'"
         ).fetchone()[0]
-    assert versions[-1] == 13
+    assert versions[-1] == 14
     assert {
         "financing_products", "financing_observations",
         "financing_lifecycle_events", "financing_asset_mappings",
         "financing_asset_mapping_revisions",
+        "manual_asset_actions", "manual_asset_action_tombstones",
     }.issubset(tables)
     assert venue == "Bybit"
+
+
+def test_delivery_manual_mapping_applies_and_local_actions_are_crud(tmp_path):
+    store = SQLiteStore(tmp_path / "mdv.sqlite3")
+    apply_market(
+        store,
+        market(
+            source="MEXC_TSEM", venue="MEXC", market_type="FUTURE",
+            raw_symbol="TSEMSTOCK_USDT", base_symbol="TSEMSTOCK",
+        ),
+    )
+
+    assets = store.list_assets({"symbol": "TSEM"})
+    assert assets["assets"][0]["canonical_symbol"] == "TSEM"
+    with store.readonly() as conn:
+        method = conn.execute(
+            "SELECT method FROM market_asset_mappings WHERE market_id = 'MEXC_TSEM:TSEMSTOCK_USDT'"
+        ).fetchone()[0]
+    assert method.startswith("MANUAL_MAP_SYMBOL")
+
+    created = store.create_manual_asset_action({
+        "action_type": "MAP_SYMBOL", "venue": "BITGET",
+        "source_symbol": "LOCALOLD", "target_symbol": "LOCALNEW",
+        "note": "reviewed", "enabled": True,
+    })
+    assert created["origin"] == "LOCAL"
+    updated = store.update_manual_asset_action(created["action_id"], {
+        "action_type": "OTHER", "venue": "", "source_symbol": "",
+        "target_symbol": "", "note": "retired", "enabled": False,
+    })
+    assert updated["action_type"] == "OTHER"
+    store.delete_manual_asset_action(created["action_id"])
+    assert all(row["action_id"] != created["action_id"] for row in store.list_manual_asset_actions())
+
+
+def test_collection_log_marks_follow_on_same_asset_market_as_listed(tmp_path):
+    store = SQLiteStore(tmp_path / "mdv.sqlite3")
+    apply_market(store, market(
+        source="OKX_EXPIRY_FUTURE", venue="OKX", market_type="FUTURE",
+        raw_symbol="INJ-USD_UM_XPERP-300627", base_symbol="INJ",
+        product="DATED", contract_type="DATED",
+    ))
+    store.apply_snapshot(MarketSnapshot(
+        source="OKX_EXPIRY_FUTURE", venue="OKX", market_type="FUTURE",
+        product="DATED", observed_at="2026-07-04T00:00:00+00:00",
+        markets=(market(
+            source="OKX_EXPIRY_FUTURE", venue="OKX", market_type="FUTURE",
+            raw_symbol="INJ-USD_UM_XPERP-310711", base_symbol="INJ",
+            product="DATED", contract_type="DATED",
+        ),),
+    ))
+
+    log = store.list_collection_runs(action="LISTING", venue="OKX")
+    assert any(
+        change["kind"] == "MARKET_LISTED" and change["market"] == "INJ-USD_UM_XPERP-310711"
+        for run in log["runs"] for venue in run["venues"] for change in venue["changes"]
+    )
 
 
 def test_asset_view_groups_active_markets_and_reports_cross_venue_futures(tmp_path):
