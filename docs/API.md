@@ -97,7 +97,7 @@ Authenticated liveness and database reachability check.
 ```json
 {
   "status": "ok",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "revision": "0123456789abcdef0123456789abcdef01234567",
   "markets": 12500
 }
@@ -243,7 +243,7 @@ active markets. Pass `ACTIVE=false` only when inactive history is required.
       "canonical_symbol": "BTC",
       "match_method": "SAME_VENUE_SPOT_FUTURE_SYMBOL",
       "match_confidence": 0.97,
-      "matcher_version": "evidence-v2",
+      "matcher_version": "evidence-v4",
       "raw_json": "{...}"
     }
   ]

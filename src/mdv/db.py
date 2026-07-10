@@ -916,10 +916,22 @@ class SQLiteStore:
                 """
             ):
                 financing_id = str(financing["financing_id"])
-                options = candidates.get(
-                    (str(financing["venue"]), str(financing["raw_asset_symbol"]).upper()),
-                    {},
-                )
+                financing_symbol = normalize_asset_symbol(
+                    str(financing["raw_asset_symbol"]), allow_unit_prefix=False
+                ).symbol
+                matching_symbols = [financing_symbol]
+                if financing_symbol.endswith("STOCK"):
+                    stripped_symbol = financing_symbol.removesuffix("STOCK")
+                    if stripped_symbol:
+                        matching_symbols.append(stripped_symbol)
+                else:
+                    matching_symbols.append(f"{financing_symbol}STOCK")
+                options: dict[str, dict] = {}
+                for symbol in matching_symbols:
+                    for asset_id, candidate in candidates.get(
+                        (str(financing["venue"]), symbol), {}
+                    ).items():
+                        options.setdefault(asset_id, candidate)
                 if len(options) != 1:
                     conn.execute(
                         "DELETE FROM financing_asset_mappings WHERE financing_id = ?",
@@ -927,10 +939,16 @@ class SQLiteStore:
                     )
                     continue
                 selected = next(iter(options.values()))
+                symbol_match = (
+                    "EXACT"
+                    if str(selected["base_symbol"]).upper() == financing_symbol
+                    else "STOCK_SUFFIX_POLICY"
+                )
                 evidence = canonical_json({
                     "venue": financing["venue"],
                     "financing_symbol": financing["raw_asset_symbol"],
                     "matched_market_symbol": selected["base_symbol"],
+                    "symbol_match": symbol_match,
                     "market_mapping_method": selected["market_method"],
                     "market_mapping_confidence": selected["market_confidence"],
                 })
@@ -938,7 +956,11 @@ class SQLiteStore:
                     selected["asset_id"],
                     financing["raw_asset_symbol"],
                     selected["normalized_symbol"],
-                    "SAME_VENUE_MARKET_SYMBOL",
+                    (
+                        "SAME_VENUE_MARKET_SYMBOL"
+                        if symbol_match == "EXACT"
+                        else "SAME_VENUE_MARKET_SYMBOL+STOCK_SUFFIX_POLICY"
+                    ),
                     float(selected["market_confidence"]),
                     MATCHER_VERSION,
                     evidence,
@@ -1109,6 +1131,32 @@ class SQLiteStore:
                         multiplier = 1
                         mapping_evidence = alias_candidate.evidence
 
+                stock_suffix_symbol = (
+                    raw_symbol.symbol.removesuffix("STOCK")
+                    if raw_symbol.symbol.endswith("STOCK")
+                    else ""
+                )
+                if stock_suffix_symbol:
+                    stock_suffix_evidence = {
+                        "rule": "STOCK_SUFFIX_POLICY",
+                        "raw_base_symbol": market["base_symbol"],
+                        "proposed_symbol": stock_suffix_symbol,
+                        "reason": "Explicit STOCK suffix mapping policy",
+                    }
+                    candidates.append(
+                        {
+                            "proposed_symbol": stock_suffix_symbol,
+                            "rule": "STOCK_SUFFIX_POLICY",
+                            "decision": "ACCEPTED",
+                            "score": 1.0,
+                            "evidence": stock_suffix_evidence,
+                        }
+                    )
+                    canonical_symbol = stock_suffix_symbol
+                    identity_method = "STOCK_SUFFIX_POLICY"
+                    multiplier = 1
+                    mapping_evidence = stock_suffix_evidence
+
                 manual_action = manual_maps.get((market["venue"], raw_symbol.symbol))
                 if manual_action is None:
                     manual_action = manual_renames.get(canonical_symbol)
@@ -1181,7 +1229,7 @@ class SQLiteStore:
                 asset_id = stable_asset_id(canonical_symbol)
                 group_method, confidence = scores[canonical_symbol]
                 method = group_method
-                if row["normalizer_method"].startswith("MANUAL_"):
+                if row["normalizer_method"].startswith(("MANUAL_", "STOCK_SUFFIX_POLICY")):
                     method = f"{row['normalizer_method']}+{group_method}"
                     confidence = 1.0
                 elif row["normalizer_method"] != "EXACT_SYMBOL":

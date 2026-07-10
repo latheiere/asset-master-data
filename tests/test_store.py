@@ -752,7 +752,7 @@ def test_unit_prefixed_spot_and_future_symbols_share_one_asset(tmp_path):
     assert view["assets"][0]["future_coverage"] == "BOTH · 2/2"
 
 
-def test_mexc_stock_suffix_maps_to_underlying_without_changing_raw_truth(tmp_path):
+def test_stock_suffix_policy_maps_to_underlying_without_changing_raw_truth(tmp_path):
     store = SQLiteStore(tmp_path / "mdv.sqlite3")
     apply_market(
         store,
@@ -808,28 +808,71 @@ def test_mexc_stock_suffix_maps_to_underlying_without_changing_raw_truth(tmp_pat
             "SELECT COUNT(*) FROM market_asset_mapping_revisions WHERE market_id = 'MEXC_AMAT:AMATSTOCK_USDT'"
         ).fetchone()[0]
     assert tuple(raw_market) == ("AMATSTOCK", "AMATSTOCK_USDT")
-    assert "STOCK_SUFFIX_METADATA" in mapping_method
+    assert mapping_method == "STOCK_SUFFIX_POLICY+CROSS_VENUE_SYMBOL"
     assert revision_count == 1
     assert store.list_assets({"stock": "1"})["count"] == 1
     assert store.list_assets({"stock": "0"})["count"] == 0
 
 
-def test_unverified_stock_suffix_remains_a_separate_candidate(tmp_path):
+def test_stock_suffix_policy_maps_all_market_and_financing_types(tmp_path):
     store = SQLiteStore(tmp_path / "mdv.sqlite3")
-    apply_market(store, market(source="BINANCE_FAKE", venue="BINANCE", market_type="FUTURE", raw_symbol="FAKEUSDT", base_symbol="FAKE"))
     apply_market(store, market(source="MEXC_FAKE", venue="MEXC", market_type="FUTURE", raw_symbol="FAKESTOCK_USDT", base_symbol="FAKESTOCK"))
+    apply_market(store, market(source="HTX_FAKE", venue="HTX", market_type="FUTURE", raw_symbol="FAKESTOCK-USDT", base_symbol="FAKESTOCK"))
+    apply_market(store, market(source="HTX_FAKE_SPOT", venue="HTX", market_type="SPOT", raw_symbol="FAKESTOCKUSDC", base_symbol="FAKESTOCK", quote_symbol="USDC"))
+    financing_record = FinancingRecord(
+        source="HTX_CROSS_MARGIN", venue="HTX", product="CROSS_MARGIN",
+        asset_role="BORROWABLE", raw_asset_symbol="FAKE", eligible=True,
+        status="ENABLED", regular_user_tier=None, rates=(), terms=(), limits={},
+        pair_symbols=(), raw={"asset": "FAKE"},
+    )
+    store.apply_financing_snapshot(FinancingSnapshot(
+        source=financing_record.source, venue=financing_record.venue,
+        product=financing_record.product, observed_at="2026-07-04T00:00:00+00:00",
+        records=(financing_record,),
+    ))
 
-    both = store.list_assets({"contract": "PERP", "futures": ["BINANCE", "MEXC"]})
+    asset_view = store.list_assets({"symbol": "FAKE"})
     with store.readonly() as conn:
-        candidate = conn.execute(
+        candidates = conn.execute(
             """
-            SELECT decision, score FROM asset_match_candidates
-            WHERE source_market_id = 'MEXC_FAKE:FAKESTOCK_USDT'
+            SELECT source_market_id, decision, score, rule FROM asset_match_candidates
+            WHERE rule = 'STOCK_SUFFIX_POLICY'
+            ORDER BY source_market_id
+            """
+        ).fetchall()
+        mappings = conn.execute(
+            """
+            SELECT normalized_symbol, method, confidence FROM market_asset_mappings
+            WHERE market_id IN (
+                'MEXC_FAKE:FAKESTOCK_USDT',
+                'HTX_FAKE:FAKESTOCK-USDT',
+                'HTX_FAKE_SPOT:FAKESTOCKUSDC'
+            )
+            ORDER BY market_id
+            """
+        ).fetchall()
+        financing_mapping = conn.execute(
+            """
+            SELECT normalized_symbol, method, confidence FROM financing_asset_mappings
+            WHERE financing_id = 'HTX_CROSS_MARGIN:CROSS_MARGIN:BORROWABLE:FAKE'
             """
         ).fetchone()
 
-    assert both["count"] == 0
-    assert tuple(candidate) == ("PROPOSED", 0.0)
+    assert asset_view["count"] == 1
+    assert asset_view["assets"][0]["canonical_symbol"] == "FAKE"
+    assert [tuple(candidate) for candidate in candidates] == [
+        ("HTX_FAKE:FAKESTOCK-USDT", "ACCEPTED", 1.0, "STOCK_SUFFIX_POLICY"),
+        ("HTX_FAKE_SPOT:FAKESTOCKUSDC", "ACCEPTED", 1.0, "STOCK_SUFFIX_POLICY"),
+        ("MEXC_FAKE:FAKESTOCK_USDT", "ACCEPTED", 1.0, "STOCK_SUFFIX_POLICY"),
+    ]
+    assert [tuple(mapping) for mapping in mappings] == [
+        ("FAKE", "STOCK_SUFFIX_POLICY+SAME_VENUE_SPOT_FUTURE_SYMBOL", 1.0),
+        ("FAKE", "STOCK_SUFFIX_POLICY+SAME_VENUE_SPOT_FUTURE_SYMBOL", 1.0),
+        ("FAKE", "STOCK_SUFFIX_POLICY+SAME_VENUE_SPOT_FUTURE_SYMBOL", 1.0),
+    ]
+    assert tuple(financing_mapping) == (
+        "FAKE", "SAME_VENUE_MARKET_SYMBOL+STOCK_SUFFIX_POLICY", 1.0
+    )
 
 
 def test_stock_suffix_alias_can_use_any_declared_reference_venue(tmp_path):

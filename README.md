@@ -19,7 +19,7 @@ routing service.
 
 > Development disclosure: this repository has been developed primarily through
 > Codex-assisted “vibe coding,” with human direction and test-based review. The
-> current release is `0.8.0`; audit behavior, security, and operational controls
+> current release is `0.8.1`; audit behavior, security, and operational controls
 > before relying on it in a production or risk-sensitive system.
 
 ## What it provides
@@ -177,6 +177,9 @@ Current evidence rules are:
 - Provider alias hints, such as a `STOCK` suffix: accepted only when display
   symbol, asset classification, declared reference venue, active reference
   market, and reference classification all agree.
+- Market and financing symbols ending in `STOCK` are an explicit venue
+  convention: they map to the same canonical symbol without `STOCK`, while
+  retaining the original venue symbol and mapping evidence.
 - Delivery-managed manual actions can map a reviewed venue symbol, rename a
   canonical asset, or retain another review note. They are packaged as tracked
   data and reconciled into every installation; local UI edits override the
