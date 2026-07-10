@@ -1,0 +1,35 @@
+{
+  "products": [
+    {
+      "product_id": "BTC-PERP-INTX",
+      "status": "STANDARD",
+      "trading_disabled": false,
+      "is_disabled": false,
+      "view_only": false,
+      "quote_currency_id": "USDC",
+      "base_max_size": "1000000",
+      "product_venue": "INTX",
+      "future_product_details": {
+        "contract_root_unit": "BTC",
+        "contract_size": "1",
+        "contract_expiry_type": "PERPETUAL",
+        "perpetual_details": {"underlying_type": "SPOT"}
+      }
+    },
+    {
+      "product_id": "META-PERP-INTX",
+      "status": "STANDARD",
+      "trading_disabled": false,
+      "is_disabled": false,
+      "view_only": true,
+      "quote_currency_id": "USDC",
+      "product_venue": "INTX",
+      "future_product_details": {
+        "contract_root_unit": "META",
+        "contract_size": "1",
+        "contract_expiry_type": "PERPETUAL",
+        "perpetual_details": {"underlying_type": "EQUITY"}
+      }
+    }
+  ]
+}

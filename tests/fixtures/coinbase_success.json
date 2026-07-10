@@ -1,0 +1,27 @@
+[
+  {
+    "id": "BTC-USD",
+    "base_currency": "BTC",
+    "quote_currency": "USD",
+    "status": "online",
+    "trading_disabled": false,
+    "margin_enabled": true,
+    "base_increment": "0.00000001"
+  },
+  {
+    "id": "ETH-USD",
+    "base_currency": "ETH",
+    "quote_currency": "USD",
+    "status": "offline",
+    "trading_disabled": false,
+    "margin_enabled": false
+  },
+  {
+    "id": "SOL-USD",
+    "base_currency": "SOL",
+    "quote_currency": "USD",
+    "status": "online",
+    "trading_disabled": true,
+    "margin_enabled": false
+  }
+]

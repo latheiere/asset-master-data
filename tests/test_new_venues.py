@@ -6,6 +6,11 @@ import pytest
 
 from mdv.collection import CollectionService
 from mdv.connectors.htx import htx_connectors
+from mdv.connectors.coinbase import (
+    CoinbaseCrossMarginConnector,
+    CoinbasePerpetualConnector,
+    CoinbaseSpotConnector,
+)
 from mdv.connectors.hyperliquid import (
     HyperliquidPerpConnector,
     HyperliquidSpotConnector,
@@ -14,6 +19,7 @@ from mdv.connectors.kucoin import KucoinFutureConnector, KucoinSpotConnector
 from mdv.connectors.okx import okx_connectors
 from mdv.connectors.registry import (
     default_collection_connectors,
+    market_metadata,
     market_trade_url,
     supported_venues,
 )
@@ -45,6 +51,23 @@ def test_okx_recorded_spot_swap_and_expiry_fixtures_normalize_dimensions():
     assert futures.markets[0].contract_direction == "INVERSE"
     assert futures.markets[0].expiry_cycle == "Q"
     assert futures.markets[0].expires_at == "2026-09-25T08:00:00+00:00"
+
+
+def test_okx_skips_official_preopen_listing_placeholders_without_symbols():
+    payload = fixture("okx_success.json")["spot"]
+    payload["data"].append(
+        {
+            "instId": "LISTING-SPOT-SLX-USD",
+            "instType": "SPOT",
+            "state": "preopen",
+            "baseCcy": "",
+            "quoteCcy": "",
+        }
+    )
+
+    snapshot = okx_connectors()[0].parse(payload, observed_at=OBSERVED_AT)
+
+    assert [market.raw_symbol for market in snapshot.markets] == ["BTC-USDT"]
 
 
 def test_hyperliquid_recorded_spot_and_all_perp_dex_fixtures():
@@ -121,6 +144,47 @@ def test_whitebit_recorded_spot_crypto_and_tradfi_perp_fixtures():
     assert futures.markets[1].raw["_metadata"]["ASSET_TAGS"][0]["tag"] == "TRADFI"
 
 
+def test_coinbase_recorded_spot_fixture_preserves_native_status_and_restrictions():
+    snapshot = CoinbaseSpotConnector().parse(
+        fixture("coinbase_success.json"), observed_at=OBSERVED_AT
+    )
+
+    assert [market.raw_symbol for market in snapshot.markets] == ["BTC-USD", "ETH-USD", "SOL-USD"]
+    assert snapshot.markets[0].active is True
+    assert snapshot.markets[1].status == "CLOSED"
+    assert snapshot.markets[1].venue_status == "OFFLINE"
+    assert snapshot.markets[2].active is False
+    assert snapshot.markets[2].status == "PAUSED"
+    assert snapshot.markets[2].venue_status == "ONLINE"
+
+
+def test_coinbase_recorded_perpetual_and_margin_fixtures_normalize_dimensions():
+    perpetuals = CoinbasePerpetualConnector().parse(
+        fixture("coinbase_perpetuals_success.json"), observed_at=OBSERVED_AT
+    )
+    margin = CoinbaseCrossMarginConnector().parse(
+        fixture("coinbase_success.json"), observed_at=OBSERVED_AT
+    )
+
+    assert [market.raw_symbol for market in perpetuals.markets] == [
+        "BTC-PERP-INTX",
+        "META-PERP-INTX",
+    ]
+    assert perpetuals.markets[0].active is True
+    assert perpetuals.markets[0].contract_multiplier == "1"
+    assert perpetuals.markets[0].contract_direction == "LINEAR"
+    assert perpetuals.markets[1].status == "PAUSED"
+    assert perpetuals.markets[1].venue_status == "STANDARD"
+    assert perpetuals.markets[1].raw["future_product_details"]["perpetual_details"]["underlying_type"] == "EQUITY"
+    assert "EQUITY" in market_metadata(
+        {"market_type": "FUTURE", "base_symbol": "META"}, perpetuals.markets[1].raw
+    ).classifications
+
+    eligible = {record.raw_asset_symbol for record in margin.records if record.eligible}
+    assert eligible == {"BTC", "USD"}
+    assert margin.records[0].raw["evidence_granularity"] == "PAIR"
+
+
 @pytest.mark.parametrize(
     ("parser", "payload"),
     [
@@ -134,6 +198,11 @@ def test_whitebit_recorded_spot_crypto_and_tradfi_perp_fixtures():
         (lambda value: KucoinSpotConnector().parse(value, observed_at=OBSERVED_AT), fixture("kucoin_partial.json")),
         (lambda value: WhitebitConnector(market_type="SPOT").parse(value, observed_at=OBSERVED_AT), fixture("whitebit_malformed.json")),
         (lambda value: WhitebitConnector(market_type="FUTURE").parse(value, observed_at=OBSERVED_AT), fixture("whitebit_partial.json")),
+        (lambda value: CoinbaseSpotConnector().parse(value, observed_at=OBSERVED_AT), fixture("coinbase_malformed.json")),
+        (lambda value: CoinbaseSpotConnector().parse(value, observed_at=OBSERVED_AT), fixture("coinbase_partial.json")),
+        (lambda value: CoinbasePerpetualConnector().parse(value, observed_at=OBSERVED_AT), fixture("coinbase_perpetuals_malformed.json")),
+        (lambda value: CoinbasePerpetualConnector().parse(value, observed_at=OBSERVED_AT), fixture("coinbase_perpetuals_partial.json")),
+        (lambda value: CoinbaseCrossMarginConnector().parse(value, observed_at=OBSERVED_AT), fixture("coinbase_partial.json")),
     ],
 )
 def test_new_venue_malformed_and_partial_fixtures_fail_complete_snapshots(parser, payload):
@@ -152,7 +221,7 @@ class FailingConnector:
         raise ValueError("partial upstream response")
 
 
-@pytest.mark.parametrize("venue", ["OKX", "HYPERLIQUID", "HTX", "KUCOIN", "WHITEBIT"])
+@pytest.mark.parametrize("venue", ["OKX", "HYPERLIQUID", "HTX", "KUCOIN", "WHITEBIT", "COINBASE"])
 def test_new_venue_failed_snapshot_preserves_last_active_market(tmp_path, venue):
     connector = next(
         connector
@@ -165,6 +234,7 @@ def test_new_venue_failed_snapshot_preserves_last_active_market(tmp_path, venue)
         "HTX": fixture("htx_success.json")["spot"],
         "KUCOIN": fixture("kucoin_success.json")["spot"],
         "WHITEBIT": fixture("whitebit_success.json"),
+        "COINBASE": fixture("coinbase_success.json"),
     }
     snapshot = connector.parse(success_payloads[venue], observed_at=OBSERVED_AT)
     store = SQLiteStore(tmp_path / f"{venue}.sqlite3")
@@ -191,6 +261,11 @@ def test_new_venue_registry_extension_covers_sources_and_trade_links():
         },
         "KUCOIN": {"KUCOIN_SPOT", "KUCOIN_FUTURE"},
         "WHITEBIT": {"WHITEBIT_SPOT", "WHITEBIT_FUTURE"},
+        "COINBASE": {
+            "COINBASE_SPOT",
+            "COINBASE_PERP_FUTURE",
+            "COINBASE_CROSS_MARGIN",
+        },
     }
     assert set(expected).issubset(supported_venues())
     connectors = default_collection_connectors()
@@ -214,3 +289,9 @@ def test_new_venue_registry_extension_covers_sources_and_trade_links():
     assert market_trade_url(
         {"venue": "WHITEBIT", "market_type": "FUTURE", "raw_symbol": "BTC_PERP"}
     ) == "https://whitebit.com/trade/BTC_PERP"
+    assert market_trade_url(
+        {"venue": "COINBASE", "market_type": "SPOT", "raw_symbol": "BTC-USD"}
+    ) == "https://www.coinbase.com/advanced-trade/spot/BTC-USD"
+    assert market_trade_url(
+        {"venue": "COINBASE", "market_type": "FUTURE", "raw_symbol": "BTC-PERP-INTX"}
+    ) == "https://www.coinbase.com/advanced-trade/perpetuals/BTC-PERP-INTX"

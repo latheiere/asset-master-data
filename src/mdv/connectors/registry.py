@@ -9,6 +9,7 @@ from mdv.connectors.base import Connector
 from mdv.connectors.binance import binance_connectors
 from mdv.connectors.bitget import bitget_connectors
 from mdv.connectors.bybit import bybit_connectors
+from mdv.connectors.coinbase import coinbase_connectors, coinbase_financing_connectors
 from mdv.connectors.gate import gate_connectors
 from mdv.connectors.htx import htx_connectors
 from mdv.connectors.hyperliquid import hyperliquid_connectors
@@ -109,6 +110,15 @@ def _mexc_trade_url(market: dict) -> str | None:
     return None
 
 
+def _coinbase_trade_url(market: dict) -> str | None:
+    raw, _, _, _, _ = _encoded_market(market)
+    if market.get("market_type") == "SPOT":
+        return f"https://www.coinbase.com/advanced-trade/spot/{raw}"
+    if market.get("market_type") == "FUTURE":
+        return f"https://www.coinbase.com/advanced-trade/perpetuals/{raw}"
+    return None
+
+
 def _xt_trade_url(market: dict) -> str | None:
     raw, _, _, _, _ = _encoded_market(market)
     if market.get("market_type") == "FUTURE":
@@ -182,6 +192,10 @@ INTEGRATIONS = {
             "GATE", gate_connectors, _gate_trade_url,
             gate_financing_connectors,
         ),
+        VenueIntegration(
+            "COINBASE", coinbase_connectors, _coinbase_trade_url,
+            coinbase_financing_connectors,
+        ),
         VenueIntegration("MEXC", mexc_connectors, _mexc_trade_url),
         VenueIntegration("OKX", okx_connectors, _okx_trade_url),
         VenueIntegration(
@@ -242,11 +256,19 @@ def market_metadata(market: dict, raw: dict) -> MarketMetadata:
         if str(value).strip()
     }
     concepts = _strings(raw.get("conceptPlate"))
+    future_details = raw.get("future_product_details")
+    perpetual_details = (
+        future_details.get("perpetual_details") if isinstance(future_details, dict) else None
+    )
     if (
         any("stock" in value.lower() for value in concepts)
         or str(raw.get("underlyingType") or "").upper() == "EQUITY"
         or str(raw.get("contractType") or "").upper() == "TRADIFI_PERPETUAL"
         or str(raw.get("symbolType") or "").upper() == "STOCK"
+        or (
+            isinstance(perpetual_details, dict)
+            and str(perpetual_details.get("underlying_type") or "").upper() == "EQUITY"
+        )
     ):
         classifications.add("EQUITY")
 

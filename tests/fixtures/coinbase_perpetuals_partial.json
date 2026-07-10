@@ -1,0 +1,10 @@
+{
+  "products": [
+    {
+      "product_id": "BTC-PERP-INTX",
+      "status": "STANDARD",
+      "quote_currency_id": "USDC",
+      "future_product_details": {"contract_expiry_type": "PERPETUAL"}
+    }
+  ]
+}

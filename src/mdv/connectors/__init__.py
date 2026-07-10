@@ -1,6 +1,7 @@
 from mdv.connectors.binance import binance_connectors
 from mdv.connectors.bitget import bitget_connectors
 from mdv.connectors.bybit import bybit_connectors
+from mdv.connectors.coinbase import coinbase_connectors, coinbase_financing_connectors
 from mdv.connectors.gate import gate_connectors
 from mdv.connectors.htx import htx_connectors
 from mdv.connectors.hyperliquid import hyperliquid_connectors
@@ -21,6 +22,8 @@ __all__ = [
     "binance_connectors",
     "bitget_connectors",
     "bybit_connectors",
+    "coinbase_connectors",
+    "coinbase_financing_connectors",
     "gate_connectors",
     "htx_connectors",
     "hyperliquid_connectors",

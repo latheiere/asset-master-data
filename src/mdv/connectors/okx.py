@@ -42,7 +42,9 @@ class OkxConnector:
         rows = payload.get("data")
         if not isinstance(rows, list):
             raise ValueError(f"{self.source}: response has no data array")
-        markets = tuple(self._market(row) for row in rows)
+        markets = tuple(
+            market for row in rows if (market := self._market(row)) is not None
+        )
         snapshot = MarketSnapshot(
             self.source,
             self.venue,
@@ -54,12 +56,19 @@ class OkxConnector:
         snapshot.validate()
         return snapshot
 
-    def _market(self, row: object) -> MarketRecord:
+    def _market(self, row: object) -> MarketRecord | None:
         if not isinstance(row, dict):
             raise ValueError(f"{self.source}: instrument is not an object")
         raw_symbol = _required(row, "instId", source=self.source)
         venue_status = str(row.get("state") or "UNKNOWN").strip().upper()
         if self.market_type == "SPOT":
+            if (
+                venue_status == "PREOPEN"
+                and raw_symbol.startswith("LISTING-SPOT-")
+                and not str(row.get("baseCcy") or "").strip()
+                and not str(row.get("quoteCcy") or "").strip()
+            ):
+                return None
             base_symbol = _required(row, "baseCcy", source=self.source).upper()
             quote_symbol = _required(row, "quoteCcy", source=self.source).upper()
             settle_symbol = None
