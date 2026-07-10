@@ -259,7 +259,7 @@ def test_new_venue_registry_extension_covers_sources_and_trade_links():
             "HTX_COIN_SWAP_FUTURE",
             "HTX_COIN_FUTURE",
         },
-        "KUCOIN": {"KUCOIN_SPOT", "KUCOIN_FUTURE"},
+        "KUCOIN": {"KUCOIN_SPOT", "KUCOIN_FUTURE", "KUCOIN_CROSS_MARGIN"},
         "WHITEBIT": {"WHITEBIT_SPOT", "WHITEBIT_FUTURE"},
         "COINBASE": {
             "COINBASE_SPOT",

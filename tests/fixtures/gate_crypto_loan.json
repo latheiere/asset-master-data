@@ -1,0 +1,9 @@
+{
+  "loan_currencies": [
+    {"currency": "BTC", "price": "68000"},
+    {"currency": "USDT", "price": "1"}
+  ],
+  "collateral_currencies": [
+    {"currency": "ETH", "price": "2400"}
+  ]
+}

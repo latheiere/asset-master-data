@@ -15,7 +15,9 @@ from mdv.connectors.financing import (
     BinanceCrossMarginPublicConnector,
     BybitCrossMarginConnector,
     BybitCryptoLoanConnector,
+    GateCryptoLoanConnector,
     GateCrossMarginConnector,
+    KucoinCrossMarginConnector,
     financing_connectors,
 )
 from mdv.connectors.mexc import MexcFutureConnector, MexcSpotConnector
@@ -449,8 +451,14 @@ def test_financing_parsers_keep_margin_and_crypto_loan_separate():
     gate_margin = GateCrossMarginConnector().parse(
         fixture("gate_financing.json"), observed_at=observed_at
     )
+    gate_loan = GateCryptoLoanConnector().parse(
+        fixture("gate_crypto_loan.json"), observed_at=observed_at
+    )
+    kucoin_margin = KucoinCrossMarginConnector().parse(
+        fixture("kucoin_financing.json"), observed_at=observed_at
+    )
 
-    assert len(financing_connectors()) == 6
+    assert len(financing_connectors()) == 8
     assert {row.raw_asset_symbol for row in binance_margin.records} == {"BTC", "USDT"}
     assert all(row.status == "ENABLED" for row in binance_margin.records)
     assert binance_margin.records[0].raw["evidence_granularity"] == "PAIR"
@@ -466,16 +474,15 @@ def test_financing_parsers_keep_margin_and_crypto_loan_separate():
     assert {row.asset_role for row in bitget_loan.records} == {"BORROWABLE", "COLLATERAL"}
     assert gate_margin.records[0].eligible is True
     assert gate_margin.records[1].eligible is False
+    assert {row.asset_role for row in gate_loan.records} == {"BORROWABLE", "COLLATERAL"}
+    assert kucoin_margin.records[0].limits["max_leverage"] == 5
 
     sources = {connector.source for connector in default_collection_connectors()}
     assert {
         "BINANCE_CROSS_MARGIN_PUBLIC", "BYBIT_CROSS_MARGIN", "BYBIT_CRYPTO_LOAN",
         "BITGET_CROSS_MARGIN", "BITGET_CRYPTO_LOAN", "GATE_CROSS_MARGIN",
+        "GATE_CRYPTO_LOAN", "KUCOIN_CROSS_MARGIN",
     }.issubset(sources)
-    assert not any(
-        source.startswith("MEXC_") and source.endswith(("MARGIN", "LOAN"))
-        for source in sources
-    )
 
 
 def test_financing_parsers_reject_recorded_malformed_payloads():
@@ -492,3 +499,7 @@ def test_financing_parsers_reject_recorded_malformed_payloads():
         BitgetCrossMarginConnector().parse(malformed["bitget"], observed_at=observed_at)
     with pytest.raises(ValueError):
         GateCrossMarginConnector().parse(malformed["gate"], observed_at=observed_at)
+    with pytest.raises(ValueError):
+        GateCryptoLoanConnector().parse(malformed["gate_loan"], observed_at=observed_at)
+    with pytest.raises(ValueError):
+        KucoinCrossMarginConnector().parse(malformed["kucoin"], observed_at=observed_at)

@@ -18,6 +18,7 @@ from mdv.connectors.financing import (
     bitget_financing_connectors,
     bybit_financing_connectors,
     gate_financing_connectors,
+    kucoin_financing_connectors,
 )
 from mdv.connectors.mexc import mexc_connectors
 from mdv.connectors.kucoin import kucoin_connectors
@@ -202,7 +203,9 @@ INTEGRATIONS = {
             "HYPERLIQUID", hyperliquid_connectors, _hyperliquid_trade_url
         ),
         VenueIntegration("HTX", htx_connectors, _htx_trade_url),
-        VenueIntegration("KUCOIN", kucoin_connectors, _kucoin_trade_url),
+        VenueIntegration(
+            "KUCOIN", kucoin_connectors, _kucoin_trade_url, kucoin_financing_connectors,
+        ),
         VenueIntegration("WHITEBIT", whitebit_connectors, _whitebit_trade_url),
         VenueIntegration("XT", xt_connectors, _xt_trade_url, xt_financing_connectors),
     )

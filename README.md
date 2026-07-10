@@ -19,7 +19,7 @@ routing service.
 
 > Development disclosure: this repository has been developed primarily through
 > Codex-assisted “vibe coding,” with human direction and test-based review. The
-> current release is `0.8.1`; audit behavior, security, and operational controls
+> current release is `0.9.0`; audit behavior, security, and operational controls
 > before relying on it in a production or risk-sensitive system.
 
 ## What it provides
@@ -77,23 +77,23 @@ Set `server.refresh_on_startup: never` to disable it, or run `mdv serve
 | Bitget | Spot | USDT-M, USDC-M, and Coin-M | Pair eligibility | Loan and collateral assets |
 | Bybit | Spot | Linear and inverse perpetuals and dated futures | Asset eligibility and rate tiers | Loan and collateral assets |
 | Coinbase | Spot | USDC-settled perpetuals | Margin-enabled pairs | — |
-| Gate.com | Spot | USDT/BTC perpetuals and USDT delivery futures | Asset eligibility | — |
+| Gate.com | Spot | USDT/BTC perpetuals and USDT delivery futures | Asset eligibility | Loan and collateral assets |
 | HTX | Spot | USDT/coin-margined perpetuals and delivery futures | — | — |
 | Hyperliquid | Spot | Core and HIP-3 perpetuals | — | — |
-| KuCoin | Spot | Perpetuals and dated futures | — | — |
+| KuCoin | Spot | Perpetuals and dated futures | Public currency catalog | — |
 | MEXC | Spot | Perpetuals | — | — |
 | OKX | Spot | Linear/inverse perpetuals and dated futures | — | — |
 | WhiteBIT | Spot | Crypto and TradFi perpetuals | — | — |
 | XT | Spot | Linear perpetuals and dated futures | Pair eligibility and rates | Loan and collateral assets |
 
 Binance and Coinbase eligibility comes from public pair-level market flags;
-Bitget and XT also publish pair-level evidence. Bybit and Gate publish
-asset-level margin catalogs. XT publishes public loan and collateral catalogs
-with regular-user rates, terms, limits, and pledge thresholds. Binance, Coinbase,
-and MEXC do not expose credential-free crypto-loan catalogs, so those universes
-are not collected. Other market-only venues retain raw financing fields for
-audit but do not promote them to financing products without separate complete
-public catalogs.
+Bitget and XT also publish pair-level evidence. Bybit, Gate, and KuCoin publish
+asset-level margin catalogs. Gate and XT publish public loan and collateral
+catalogs; XT additionally provides regular-user rates, terms, limits, and pledge
+thresholds. Binance, Coinbase, KuCoin, and MEXC do not expose credential-free
+crypto-loan catalogs, so those universes are not collected. MEXC, HTX, and OKX
+do not expose a complete public margin catalog; Hyperliquid and WhiteBIT do not
+expose a complete public financing catalog.
 
 Venue-specific parsing and trade-link rules live behind a shared connector
 registry. Collection, API validation, and CLI help derive from that registry;
@@ -328,6 +328,8 @@ git tag -a vX.Y.Z -m "Release X.Y.Z"
 git push origin main
 git push origin vX.Y.Z
 make deploy-prod
+# Run only when deployment changes the collected universe or parsing behavior.
+make collect-prod
 ```
 
 Do not bump for every commit. Bump once per release: patch for compatible fixes,
@@ -350,7 +352,7 @@ make install
 bash deploy/systemd/install_systemd.sh
 ```
 
-Complete dependency sync, migration, initial collection, and API start:
+Complete dependency sync, migration, and API start:
 
 ```bash
 bash deploy/systemd/deploy.sh
@@ -358,6 +360,10 @@ bash deploy/systemd/deploy.sh
 
 The deploy script refuses dirty worktrees, untagged commits, mismatched versions,
 lightweight tags, and tags that do not identify current `main` HEAD.
+
+Deployment does not force a collection. Run `make collect-prod` only when the
+release changes collection behavior, such as adding a venue or a financing
+catalog; scheduled collection continues through `asset-master-refresh.timer`.
 
 Deployment does not overwrite configuration, entitlements, or an existing
 SQLite database. Inspect it with:

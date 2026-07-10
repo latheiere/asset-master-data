@@ -364,6 +364,76 @@ class GateCrossMarginConnector:
         return snapshot
 
 
+class GateCryptoLoanConnector:
+    source = "GATE_CRYPTO_LOAN"
+    venue = "GATE"
+    market_type = "FINANCING"
+    product = "CRYPTO_LOAN"
+    url = "https://api.gateio.ws/api/v4/loan/multi_collateral/currencies"
+
+    async def fetch(self, client: httpx.AsyncClient) -> FinancingSnapshot:
+        return self.parse(await fetch_json(client, self.url), observed_at=utc_now())
+
+    def parse(self, payload: object, *, observed_at: str) -> FinancingSnapshot:
+        if not isinstance(payload, dict):
+            raise ValueError(f"{self.source}: response is not an object")
+        loans = payload.get("loan_currencies")
+        collateral = payload.get("collateral_currencies")
+        if not isinstance(loans, list) or not isinstance(collateral, list):
+            raise ValueError(
+                f"{self.source}: response has no loan_currencies/collateral_currencies arrays"
+            )
+        records = []
+        for role, rows in (("BORROWABLE", loans), ("COLLATERAL", collateral)):
+            for row in rows:
+                if not isinstance(row, dict):
+                    raise ValueError(f"{self.source}: {role.lower()} currency is not an object")
+                records.append(FinancingRecord(
+                    self.source, self.venue, self.product, role,
+                    _symbol(row.get("currency"), source=self.source, field="currency"),
+                    True, "ENABLED", "REGULAR", (), (), {}, (), dict(row),
+                ))
+        snapshot = FinancingSnapshot(
+            self.source, self.venue, self.product, observed_at, tuple(records)
+        )
+        snapshot.validate()
+        return snapshot
+
+
+class KucoinCrossMarginConnector:
+    source = "KUCOIN_CROSS_MARGIN"
+    venue = "KUCOIN"
+    market_type = "FINANCING"
+    product = "CROSS_MARGIN"
+    url = "https://api.kucoin.com/api/v1/margin/config"
+
+    async def fetch(self, client: httpx.AsyncClient) -> FinancingSnapshot:
+        return self.parse(await fetch_json(client, self.url), observed_at=utc_now())
+
+    def parse(self, payload: object, *, observed_at: str) -> FinancingSnapshot:
+        if not isinstance(payload, dict) or str(payload.get("code")) != "200000":
+            raise ValueError(f"{self.source}: unsuccessful response")
+        data = payload.get("data")
+        currencies = data.get("currencyList") if isinstance(data, dict) else None
+        if not isinstance(currencies, list):
+            raise ValueError(f"{self.source}: response has no data.currencyList array")
+        records = tuple(
+            FinancingRecord(
+                self.source, self.venue, self.product, "BORROWABLE",
+                _symbol(currency, source=self.source, field="currencyList"),
+                True, "ENABLED", "REGULAR", (), (),
+                {"max_leverage": data.get("maxLeverage")}, (),
+                {"currency": currency, "maxLeverage": data.get("maxLeverage")},
+            )
+            for currency in currencies
+        )
+        snapshot = FinancingSnapshot(
+            self.source, self.venue, self.product, observed_at, records
+        )
+        snapshot.validate()
+        return snapshot
+
+
 def bybit_financing_connectors() -> list:
     return [BybitCrossMarginConnector(), BybitCryptoLoanConnector()]
 
@@ -377,7 +447,11 @@ def bitget_financing_connectors() -> list:
 
 
 def gate_financing_connectors() -> list:
-    return [GateCrossMarginConnector()]
+    return [GateCrossMarginConnector(), GateCryptoLoanConnector()]
+
+
+def kucoin_financing_connectors() -> list:
+    return [KucoinCrossMarginConnector()]
 
 
 def financing_connectors() -> list:
@@ -386,4 +460,5 @@ def financing_connectors() -> list:
         *bybit_financing_connectors(),
         *bitget_financing_connectors(),
         *gate_financing_connectors(),
+        *kucoin_financing_connectors(),
     ]

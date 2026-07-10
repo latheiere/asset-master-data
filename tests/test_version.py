@@ -44,6 +44,13 @@ def test_deploy_requires_clean_annotated_release_tag():
     assert "MDV_DEPLOY_REEXEC=1" in script
     assert 'git cat-file -t "$RELEASE_TAG"' in script
     assert 'git rev-list -n 1 "$RELEASE_TAG"' in script
+    assert "mdv.cli --config config/config.yaml collect" not in script
+
+
+def test_make_exposes_production_collection_separately_from_deployment():
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    assert "collect-prod:" in makefile
+    assert ".venv/bin/python -m mdv.cli --config config/config.yaml collect" in makefile
 
 
 def test_cli_reports_distribution_version(capsys):

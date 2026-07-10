@@ -4,7 +4,7 @@ COLLECT_COMMAND ?= $(PYTHON) -m mdv.cli --config config/config.yaml collect
 
 -include Makefile.local
 
-.PHONY: install test collect serve install-systemd deploy-prod clean-data
+.PHONY: install test collect collect-prod serve install-systemd deploy-prod clean-data
 
 install:
 	$(PYTHON_BOOTSTRAP) -m venv .venv
@@ -24,6 +24,9 @@ install-systemd:
 
 deploy-prod:
 	ssh tradier 'cd /home/ubuntu/asset-master-data && bash deploy/systemd/deploy.sh'
+
+collect-prod:
+	ssh tradier 'cd /home/ubuntu/asset-master-data && .venv/bin/python -m mdv.cli --config config/config.yaml collect'
 
 clean-data:
 	@echo "Refusing to delete runtime data automatically. Remove .data only when intended."
