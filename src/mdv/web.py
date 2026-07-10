@@ -5,7 +5,7 @@ import hashlib
 import hmac
 from contextlib import asynccontextmanager
 from importlib import resources
-from urllib.parse import parse_qs, quote
+from urllib.parse import parse_qs, quote, urlencode
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -36,7 +36,7 @@ def _query_filters(request: Request) -> dict[str, object]:
         return result
 
     result: dict[str, object] = {
-        "limit": value("LIMIT", 5000),
+        "limit": value("LIMIT", 500),
         "offset": value("OFFSET", 0),
     }
     for query_name, filter_name in (
@@ -75,8 +75,11 @@ def _log_query_filters(request: Request) -> dict[str, object]:
     def value(name: str, default=None):
         return query.get(name) or query.get(name.lower()) or default
 
+    def enabled(name: str) -> bool:
+        return str(value(name, "")).strip().lower() in {"1", "true", "yes", "on"}
+
     return {
-        "limit": int(value("LIMIT", 100)),
+        "limit": int(value("LIMIT", 10)),
         "offset": int(value("OFFSET", 0)),
         "venue": value("VENUE"),
         "action": value("ACTION"),
@@ -85,6 +88,7 @@ def _log_query_filters(request: Request) -> dict[str, object]:
         "product": value("PRODUCT"),
         "date_from": value("DATE_FROM"),
         "date_to": value("DATE_TO"),
+        "changed_only": enabled("CHANGES_ONLY"),
     }
 
 
@@ -217,7 +221,7 @@ def create_app(
 
     @app.get("/", include_in_schema=False)
     async def root():
-        return RedirectResponse("/mdv")
+        return RedirectResponse("/coverage")
 
     @app.get("/health")
     async def health():
@@ -231,7 +235,7 @@ def create_app(
     @app.get("/api/v1/markets")
     async def api_markets(request: Request):
         try:
-            rows = store.list_markets(_query_filters(request))
+            rows = await asyncio.to_thread(store.list_markets, _query_filters(request))
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return {"count": len(rows), "markets": rows}
@@ -239,7 +243,7 @@ def create_app(
     @app.get("/api/v1/assets")
     async def api_assets(request: Request):
         try:
-            return store.list_assets(_query_filters(request))
+            return await asyncio.to_thread(store.list_assets, _query_filters(request))
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -264,12 +268,12 @@ def create_app(
 
     @app.get("/api/v1/stats")
     async def api_stats():
-        return store.stats()
+        return await asyncio.to_thread(store.stats)
 
     @app.get("/api/v1/logs")
     async def api_logs(request: Request):
         try:
-            return store.list_collection_runs(**_log_query_filters(request))
+            return await asyncio.to_thread(store.list_collection_runs, **_log_query_filters(request))
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -282,7 +286,7 @@ def create_app(
         return templates.TemplateResponse(
             request=request,
             name="metadata.html",
-            context={"metadata": store.filter_metadata()},
+            context={"metadata": store.filter_metadata(), "active_nav": "metadata"},
         )
 
     def manual_action_payload(form: dict) -> dict:
@@ -307,7 +311,10 @@ def create_app(
         return templates.TemplateResponse(
             request=request,
             name="manual_actions.html",
-            context={"actions": store.list_manual_asset_actions(), "error": None},
+            context={
+                "actions": store.list_manual_asset_actions(), "error": None,
+                "active_nav": "manual",
+            },
         )
 
     @app.post("/manual-actions", response_class=HTMLResponse, include_in_schema=False)
@@ -319,7 +326,10 @@ def create_app(
             return templates.TemplateResponse(
                 request=request,
                 name="manual_actions.html",
-                context={"actions": store.list_manual_asset_actions(), "error": str(exc)},
+                context={
+                    "actions": store.list_manual_asset_actions(), "error": str(exc),
+                    "active_nav": "manual",
+                },
                 status_code=422,
             )
         return RedirectResponse("/manual-actions", status_code=303)
@@ -367,9 +377,21 @@ def create_app(
     async def logs(request: Request):
         try:
             log_filters = _log_query_filters(request)
-            collection_log = store.list_collection_runs(**log_filters)
+            collection_log = await asyncio.to_thread(store.list_collection_runs, **log_filters)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        def page_url(offset: int) -> str:
+            items = [
+                (key, value)
+                for key, value in request.query_params.multi_items()
+                if key.upper() not in {"LIMIT", "OFFSET"}
+            ]
+            items.extend((("LIMIT", str(log_filters["limit"])), ("OFFSET", str(offset))))
+            return "/logs?" + urlencode(items)
+
+        offset = int(log_filters["offset"])
+        limit = int(log_filters["limit"])
         return templates.TemplateResponse(
             request=request,
             name="logs.html",
@@ -383,32 +405,66 @@ def create_app(
                     "product": str(log_filters["product"] or "").upper(),
                     "date_from": log_filters["date_from"] or "",
                     "date_to": log_filters["date_to"] or "",
+                    "changed_only": log_filters["changed_only"],
+                    "limit": limit,
+                    "offset": offset,
                 },
+                "previous_page": page_url(max(0, offset - limit)) if offset else None,
+                "next_page": page_url(offset + limit)
+                if offset + limit < collection_log["count"] else None,
+                "active_nav": "logs",
             },
         )
 
-    @app.get("/mdv", response_class=HTMLResponse)
-    async def mdv(request: Request):
+    async def asset_view_page(request: Request, *, template_name: str):
         raw_query = request.scope.get("query_string", b"").decode("latin-1")
         canonical_query = _canonical_mdv_query(request)
         if raw_query != canonical_query:
-            location = "/mdv" + (f"?{canonical_query}" if canonical_query else "")
+            location = request.url.path + (f"?{canonical_query}" if canonical_query else "")
             return RedirectResponse(location)
         filters = _query_filters(request)
+        if "LIMIT" not in request.query_params and "limit" not in request.query_params:
+            filters["limit"] = 200
+        symbol_filters = list(filters["symbol"])
+        show_asset_detail = (
+            template_name == "mdv.html"
+            and len(symbol_filters) == 1
+            and "*" not in symbol_filters[0]
+        )
         try:
-            asset_view = store.list_assets(filters)
+            asset_view = await asyncio.to_thread(
+                store.list_assets, filters, include_details=show_asset_detail
+            )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        filter_metadata = await asyncio.to_thread(store.filter_metadata)
+        stats = await asyncio.to_thread(store.stats)
         return templates.TemplateResponse(
             request=request,
-            name="mdv.html",
+            name=template_name,
             context={
                 "asset_view": asset_view,
                 "filters": filters,
-                "filter_metadata": store.filter_metadata()["filters"],
-                "stats": store.stats(),
+                "filter_metadata": filter_metadata["filters"],
+                "stats": stats,
+                "view_path": request.url.path,
+                "show_asset_detail": show_asset_detail,
+                "active_nav": "coverage" if template_name == "coverage.html" else "assets",
             },
         )
+
+    @app.get("/coverage", response_class=HTMLResponse, include_in_schema=False)
+    async def coverage(request: Request):
+        return await asset_view_page(request, template_name="coverage.html")
+
+    @app.get("/asset", response_class=HTMLResponse, include_in_schema=False)
+    async def asset(request: Request):
+        return await asset_view_page(request, template_name="mdv.html")
+
+    @app.get("/mdv", response_class=HTMLResponse)
+    async def mdv(request: Request):
+        """Backward-compatible alias for the asset explorer."""
+        return await asset_view_page(request, template_name="mdv.html")
 
     return app
 

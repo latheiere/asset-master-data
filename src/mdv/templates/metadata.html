@@ -5,14 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Filter Metadata · Asset Master Data</title>
   <style>
-    :root { color-scheme:light; --bg:#f5f7fa; --panel:#fff; --line:#d8dee8; --text:#182230; --muted:#607086; --accent:#2057d4; --grey-bg:#eef2f7; }
+    :root { color-scheme:light; --bg:#f5f7fa; --panel:#fff; --line:#dce3ed; --text:#172033; --muted:#66758a; --accent:#2457d6; --grey-bg:#eef2f7; }
     * { box-sizing:border-box; }
     body { margin:0; background:var(--bg); color:var(--text); font:14px/1.4 ui-sans-serif,system-ui,sans-serif; }
-    header { padding:22px 28px 12px; display:flex; justify-content:space-between; align-items:end; gap:20px; }
+    header, main { max-width:1440px; margin:auto; padding-left:28px; padding-right:28px; }
+    header { padding-top:22px; padding-bottom:12px; display:flex; justify-content:space-between; align-items:end; gap:20px; }
     h1 { margin:0; font-size:24px; }
     .summary, .muted { color:var(--muted); }
     .summary { margin-top:4px; }
-    main { padding:0 28px 28px; }
+    main { padding-bottom:28px; }
     .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; box-shadow:0 2px 8px #1a2a4410; overflow:auto; }
     table { width:100%; border-collapse:collapse; }
     th { background:#eef2f7; color:#44546a; text-align:left; font-size:12px; letter-spacing:.03em; }
@@ -21,7 +22,9 @@
     code { background:var(--grey-bg); border-radius:4px; padding:2px 5px; }
     .badges { display:flex; flex-wrap:wrap; gap:5px; }
     .badge { border-radius:999px; background:var(--grey-bg); padding:3px 8px; white-space:nowrap; font-size:12px; }
-    .button-link { min-height:36px; border:1px solid var(--accent); border-radius:6px; background:white; padding:7px 10px; color:var(--accent); font:inherit; font-weight:600; text-decoration:none; display:inline-flex; align-items:center; }
+    .app-nav { display:flex; flex-wrap:wrap; gap:4px; align-items:center; }
+    .app-nav a { color:var(--muted); text-decoration:none; padding:7px 10px; border-radius:7px; font-weight:650; }
+    .app-nav a:hover, .app-nav a.active { color:var(--accent); background:#edf3ff; }
     @media (max-width:800px) { header, main { padding-left:12px; padding-right:12px; } }
   </style>
 </head>
@@ -31,11 +34,7 @@
       <h1>Filter Metadata</h1>
       <div class="summary">Supported query filters and values from the current active universe. All data filters support <code>=</code> and <code>!=</code>.</div>
     </div>
-    <div>
-      <a class="button-link" href="/mdv">Asset view</a>
-      <a class="button-link" href="/logs">Collection log</a>
-      <a class="button-link" href="/manual-actions">Manual actions</a>
-    </div>
+    {% include "partials/navigation.html" %}
   </header>
   <main>
     <section class="panel">

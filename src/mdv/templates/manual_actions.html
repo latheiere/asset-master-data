@@ -5,10 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Manual asset actions · Asset Master Data</title>
   <style>
-    :root { color-scheme:light; --bg:#f5f7fa; --panel:#fff; --line:#d8dee8; --text:#182230; --muted:#607086; --accent:#2057d4; --red:#b42318; }
+    :root { color-scheme:light; --bg:#f5f7fa; --panel:#fff; --line:#dce3ed; --text:#172033; --muted:#66758a; --accent:#2457d6; --red:#b42318; }
     * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 ui-sans-serif,system-ui,sans-serif; }
-    header, main { max-width:1320px; margin:auto; padding-left:28px; padding-right:28px; } header { padding-top:22px; display:flex; justify-content:space-between; gap:16px; align-items:end; }
-    h1 { margin:0; font-size:24px; } h2 { margin:22px 0 10px; font-size:16px; } .muted { color:var(--muted); } .actions { display:flex; gap:8px; flex-wrap:wrap; }
+    header, main { max-width:1440px; margin:auto; padding-left:28px; padding-right:28px; } header { padding-top:22px; padding-bottom:14px; display:flex; justify-content:space-between; gap:24px; align-items:flex-start; }
+    h1 { margin:0; font-size:24px; } h2 { margin:22px 0 10px; font-size:16px; } .muted { color:var(--muted); }
+    .app-nav { display:flex; flex-wrap:wrap; gap:4px; align-items:center; }
+    .app-nav a { color:var(--muted); text-decoration:none; padding:7px 10px; border-radius:7px; font-weight:650; }
+    .app-nav a:hover, .app-nav a.active { color:var(--accent); background:#edf3ff; }
     input, select, textarea, button, .button-link { width:100%; min-height:36px; border:1px solid var(--line); border-radius:6px; background:#fff; padding:7px 9px; color:var(--text); font:inherit; }
     textarea { min-height:54px; resize:vertical; } button, .button-link { cursor:pointer; font-weight:650; } button.primary, .button-link { color:#fff; background:var(--accent); border-color:var(--accent); text-decoration:none; display:inline-flex; align-items:center; justify-content:center; width:auto; }
     button.danger { color:var(--red); border-color:#e7b3af; } .panel { margin-top:14px; padding:14px; background:var(--panel); border:1px solid var(--line); border-radius:8px; }
@@ -20,7 +23,7 @@
 <body>
   <header>
     <div><h1>Manual asset actions</h1><div class="muted">Delivery actions ship in tracked package data. Local edits override delivery rows on this installation.</div></div>
-    <div class="actions"><a class="button-link" href="/mdv">Asset view</a><a class="button-link" href="/logs">Collection log</a></div>
+    {% include "partials/navigation.html" %}
   </header>
   <main>
     {% if error %}<div class="error">{{ error }}</div>{% endif %}

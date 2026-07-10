@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Coverage · Asset Master Data</title>
+  <style>
+    :root { color-scheme:light; --page:#f5f7fa; --surface:#fff; --line:#dce3ed; --text:#172033; --muted:#66758a; --blue:#2457d6; --blue-soft:#edf3ff; --green:#157444; --green-soft:#e9f7ef; --amber:#9a5a07; --amber-soft:#fff3df; --chip:#f0f3f7; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--page); color:var(--text); font:14px/1.45 ui-sans-serif,system-ui,sans-serif; }
+    header, main { max-width:1440px; margin:auto; padding-left:28px; padding-right:28px; }
+    header { padding-top:22px; padding-bottom:14px; display:flex; justify-content:space-between; align-items:flex-start; gap:24px; }
+    h1, h2 { margin:0; } h1 { font-size:25px; letter-spacing:-.03em; }
+    .summary, .muted { color:var(--muted); } .summary { margin-top:4px; }
+    .app-nav { display:flex; flex-wrap:wrap; gap:4px; align-items:center; } .app-nav a { color:var(--muted); text-decoration:none; padding:7px 10px; border-radius:7px; font-weight:650; } .app-nav a:hover, .app-nav a.active { color:var(--blue); background:var(--blue-soft); }
+    .filters { display:grid; grid-template-columns:minmax(190px,1.4fr) repeat(4,minmax(120px,1fr)) auto; gap:9px; align-items:end; padding:12px; background:var(--surface); border:1px solid var(--line); border-radius:10px; box-shadow:0 2px 8px #1a2a4410; }
+    label { display:grid; gap:4px; color:var(--muted); font-size:12px; } input, select, button { min-height:36px; width:100%; border:1px solid var(--line); border-radius:6px; background:#fff; padding:7px 9px; color:var(--text); font:inherit; } input:focus, select:focus { outline:2px solid var(--blue); outline-offset:2px; }
+    .filter-reset { align-self:end; min-height:36px; padding:8px 4px; color:var(--blue); font-weight:650; text-decoration:none; white-space:nowrap; }
+    .advanced { grid-column:1 / -1; border-top:1px solid var(--line); padding-top:9px; } .advanced summary { color:var(--blue); cursor:pointer; font-weight:650; } .advanced-grid { display:grid; grid-template-columns:repeat(6,minmax(120px,1fr)); gap:9px; margin-top:9px; }
+    .kicker { margin:20px 0 9px; display:flex; justify-content:space-between; align-items:baseline; gap:12px; } .kicker h2 { font-size:14px; }
+    .matrix { overflow:auto; background:var(--surface); border:1px solid var(--line); border-radius:10px; box-shadow:0 2px 8px #1a2a440b; }
+    table { width:100%; min-width:830px; border-collapse:separate; border-spacing:0; } th, td { padding:11px 13px; border-bottom:1px solid var(--line); text-align:left; vertical-align:middle; } th { position:sticky; top:0; z-index:1; background:#f0f3f8; color:#536277; font-size:11px; letter-spacing:.04em; text-transform:uppercase; } th:first-child { min-width:160px; } tbody tr { cursor:pointer; } tbody tr:hover { background:#fafcff; } tbody tr:focus { outline:2px solid var(--blue); outline-offset:-2px; } tbody tr:last-child td { border-bottom:0; }
+    .asset-symbol { font-size:15px; font-weight:780; letter-spacing:-.01em; } .stock { display:inline-block; margin-left:5px; color:#5b439b; background:#f1ecff; border-radius:999px; padding:2px 6px; font-size:10px; font-weight:750; }
+    .coverage-cell { display:flex; flex-wrap:wrap; gap:4px; min-width:92px; } .venue { display:inline-flex; gap:3px; align-items:center; background:var(--chip); border-radius:999px; padding:3px 7px; color:#47576d; font-size:11px; white-space:nowrap; } .venue.finance { color:#466337; background:#eff7eb; } .count { color:var(--muted); font-weight:700; } .none { color:#9aa6b5; font-size:12px; }
+    .coverage { display:inline-flex; color:var(--amber); background:var(--amber-soft); border-radius:999px; padding:4px 8px; font-size:11px; font-weight:750; white-space:nowrap; } .coverage-all { color:var(--green); background:var(--green-soft); } .coverage-none { color:var(--muted); background:var(--chip); }
+    .empty { padding:35px; text-align:center; color:var(--muted); }
+    @media (max-width:900px) { header, main { padding-left:12px; padding-right:12px; } header { flex-direction:column; } .filters { grid-template-columns:repeat(2,minmax(0,1fr)); } .advanced-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+    @media (max-width:560px) { .filters, .advanced-grid { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div><h1>Coverage</h1><div class="summary">Compare {{ asset_view.count }} active assets across trading and borrowing availability. Click a row to investigate.</div></div>
+    {% include "partials/navigation.html" %}
+  </header>
+  <main>
+    <form class="filters" method="get" action="{{ view_path }}" autocomplete="off" id="coverage-filters">
+      <label>Search asset or venue symbol<input type="search" name="SYMBOL" value="{{ filters.symbol|join(',') }}" placeholder="BTC or BTC*" autocomplete="off"></label>
+      <label>Market<select name="PRODUCT"><option value="">All markets</option>{% for product in filter_metadata.PRODUCT['values'] %}<option value="{{ product }}"{% if product in filters.product %} selected{% endif %}>{{ product }}</option>{% endfor %}</select></label>
+      <label>Trading venue<select name="VENUE"><option value="">All venues</option>{% for venue in filter_metadata.VENUE['values'] %}<option value="{{ venue }}"{% if venue in filters.venue %} selected{% endif %}>{{ venue }}</option>{% endfor %}</select></label>
+      <label>Margin venue<select name="FINANCING"><option value="">Any margin</option>{% for financing in filter_metadata.FINANCING['values'] %}{% if financing.endswith(':MARGIN') %}<option value="{{ financing }}"{% if financing in filters.financing %} selected{% endif %}>{{ financing.split(':')[0] }}</option>{% endif %}{% endfor %}</select></label>
+      <label>Loan venue<select name="FINANCING"><option value="">Any loan</option>{% for financing in filter_metadata.FINANCING['values'] %}{% if financing.endswith(':LOAN') %}<option value="{{ financing }}"{% if financing in filters.financing %} selected{% endif %}>{{ financing.split(':')[0] }}</option>{% endif %}{% endfor %}</select></label>
+      <details class="advanced"><summary>Advanced filters</summary><div class="advanced-grid">
+        <label>Asset type<select name="TYPE"><option value="">All</option><option value="FUTURE"{% if 'FUTURE' in filters.type %} selected{% endif %}>Has futures</option><option value="SPOT"{% if 'SPOT' in filters.type %} selected{% endif %}>Has spot</option></select></label>
+        <label>Futures on<select name="FUTURES"><option value="">Any venue</option>{% for venue in asset_view.supported_future_venues %}<option value="{{ venue }}"{% if filters.futures|length == 1 and filters.futures[0] == venue %} selected{% endif %}>{{ venue }}</option>{% endfor %}</select></label>
+        <label>Without futures on<select name="FUTURES!"><option value="">None excluded</option>{% for venue in asset_view.supported_future_venues %}<option value="{{ venue }}"{% if venue in filters.futures_not %} selected{% endif %}>{{ venue }}</option>{% endfor %}</select></label>
+        <label>Quote<input name="QUOTE" value="{{ filters.quote|join(',') }}" placeholder="USDT"></label>
+        <label>Settle<input name="SETTLE" value="{{ filters.settle|join(',') }}" placeholder="USDC"></label>
+        <label>Direction<select name="DIRECTION"><option value="">Any</option>{% for direction in filter_metadata.DIRECTION['values'] %}<option value="{{ direction }}"{% if direction in filters.direction %} selected{% endif %}>{{ direction }}</option>{% endfor %}</select></label>
+        <label>Expiry<select name="EXPIRY"><option value="">Any</option>{% for expiry in filter_metadata.EXPIRY['values'] %}<option value="{{ expiry }}"{% if expiry in filters.expiry %} selected{% endif %}>{{ expiry }}</option>{% endfor %}</select></label>
+        <label>Tag<select name="TAG"><option value="">Any tag</option>{% for tag in filter_metadata.TAG['values'] %}<option value="{{ tag }}"{% if tag in filters.tags %} selected{% endif %}>{{ tag }}</option>{% endfor %}</select></label>
+      </div></details>
+    </form>
+    <div class="kicker"><h2>Availability matrix</h2><span class="muted">Counts are active instruments or eligible borrowable records.</span></div>
+    <section class="matrix" aria-label="Asset coverage matrix">{% if asset_view.assets %}<table><thead><tr><th>Asset</th><th>Spot</th><th>Perps</th><th>Dated</th><th>Margin</th><th>Loans</th><th>Futures coverage</th></tr></thead><tbody>{% for asset in asset_view.assets %}<tr class="coverage-row" tabindex="0" role="link" data-href="/asset?SYMBOL={{ asset.canonical_symbol }}"><td><span class="asset-symbol">{{ asset.canonical_symbol }}</span>{% if asset.is_stock %}<span class="stock">STOCK</span>{% endif %}</td><td><div class="coverage-cell">{% for item in asset.spot_venues %}<span class="venue">{{ item.venue }} <span class="count">{{ item.count }}</span></span>{% else %}<span class="none">—</span>{% endfor %}</div></td><td><div class="coverage-cell">{% for item in asset.perp_venues %}<span class="venue">{{ item.venue }} <span class="count">{{ item.count }}</span></span>{% else %}<span class="none">—</span>{% endfor %}</div></td><td><div class="coverage-cell">{% for item in asset.dated_venues %}<span class="venue">{{ item.venue }} <span class="count">{{ item.count }}</span></span>{% else %}<span class="none">—</span>{% endfor %}</div></td><td><div class="coverage-cell">{% for item in asset.margin_venues %}<span class="venue finance">{{ item.venue }}</span>{% else %}<span class="none">—</span>{% endfor %}</div></td><td><div class="coverage-cell">{% for item in asset.loan_venues %}<span class="venue finance">{{ item.venue }}</span>{% else %}<span class="none">—</span>{% endfor %}</div></td><td><span class="coverage coverage-{{ asset.future_coverage_kind }}">{{ asset.future_coverage }}</span></td></tr>{% endfor %}</tbody></table>{% else %}<div class="empty">No active assets match these filters.</div>{% endif %}</section>
+  </main>
+  <script>
+    const coverageFilters = document.getElementById('coverage-filters');
+    let coverageFilterTimer;
+    coverageFilters.querySelectorAll('select').forEach((field) => field.addEventListener('change', () => coverageFilters.requestSubmit()));
+    coverageFilters.querySelectorAll('input:not([name=SYMBOL])').forEach((field) => {
+      field.addEventListener('input', () => {
+        clearTimeout(coverageFilterTimer);
+        coverageFilterTimer = setTimeout(() => coverageFilters.requestSubmit(), field.value ? 350 : 0);
+      });
+      field.addEventListener('search', () => coverageFilters.requestSubmit());
+    });
+    const coverageSymbol = coverageFilters.querySelector('[name=SYMBOL]');
+    coverageSymbol.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        coverageFilters.requestSubmit();
+      }
+    });
+    coverageSymbol.addEventListener('change', () => coverageFilters.requestSubmit());
+    coverageSymbol.addEventListener('search', () => coverageFilters.requestSubmit());
+    document.querySelectorAll('.coverage-row').forEach((row) => { const open = () => { window.location.href = row.dataset.href; }; row.addEventListener('click', open); row.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); open(); } }); });
+  </script>
+</body>
+</html>

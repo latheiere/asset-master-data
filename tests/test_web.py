@@ -186,6 +186,7 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
         unauthenticated_api = client.get("/api/v1/stats")
         favicon_response = client.get("/favicon.ico")
         login_redirect = client.get("/mdv", follow_redirects=False)
+        root_redirect = client.get("/", follow_redirects=False)
         failed_login = client.post(
             "/login",
             data={"username": "admin", "password": "wrong", "next": "/mdv"},
@@ -200,6 +201,7 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
         client.headers["Authorization"] = "Basic " + base64.b64encode(
             b"admin:password"
         ).decode("ascii")
+        authenticated_root = client.get("/", follow_redirects=False)
         health_response = client.get("/health")
         openapi_response = client.get("/openapi.json")
         canonical_redirect = client.get(
@@ -215,6 +217,10 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
             follow_redirects=False,
         )
         response = client.get("/mdv?TYPE=FUTURE")
+        asset_page = client.get("/asset?TYPE=FUTURE")
+        asset_detail_page = client.get("/asset?SYMBOL=SOL")
+        btc_detail_page = client.get("/asset?SYMBOL=BTC")
+        coverage_page = client.get("/coverage?TYPE=FUTURE")
         api_response = client.get("/api/v1/markets?TYPE=FUTURE")
         asset_response = client.get("/api/v1/assets?TYPE=FUTURE")
         financing_response = client.get("/api/v1/financing?PRODUCT=CRYPTO_LOAN&SYMBOL=SOL")
@@ -237,6 +243,8 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
             follow_redirects=False,
         )
         logs_api_response = client.get("/api/v1/logs")
+        changed_only_logs_response = client.get("/logs?CHANGES_ONLY=1")
+        changed_only_logs_api_response = client.get("/api/v1/logs?CHANGES_ONLY=1")
         mexc_logs_api_response = client.get("/api/v1/logs?VENUE=MEXC")
         filtered_logs_response = client.get(
             "/logs?ACTION=TAG_ADDED&TAG=BINANCE%3AMONITORING&DATE_FROM=2026-07-03&DATE_TO=2026-07-03"
@@ -253,6 +261,7 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
         invalid_logs_api_response = client.get("/api/v1/logs?ACTION=UNKNOWN")
         binance_only = client.get("/mdv?CONTRACT=PERP&FUTURES=BINANCE&FUTURES!=MEXC")
         monitoring = client.get("/mdv?TAG=BINANCE:MONITORING")
+        monitoring_detail = client.get("/asset?SYMBOL=WIF")
         scoped_refresh = client.post("/api/v1/refresh?VENUE=MEXC")
 
     assert unauthenticated_api.status_code == 401
@@ -268,6 +277,10 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
     assert openapi_response.json()["info"]["version"] == __version__
     assert login_redirect.status_code == 303
     assert login_redirect.headers["location"].startswith("/login?next=")
+    assert root_redirect.status_code == 303
+    assert root_redirect.headers["location"].startswith("/login?next=")
+    assert authenticated_root.status_code == 307
+    assert authenticated_root.headers["location"] == "/coverage"
     assert failed_login.status_code == 401
     assert successful_login.status_code == 303
     assert successful_login.headers["location"] == "/mdv"
@@ -281,27 +294,38 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
     assert financing_not_redirect.status_code == 307
     assert financing_not_redirect.headers["location"] == "/mdv?FINANCING!=BYBIT%3ALOAN"
     assert response.status_code == 200
-    assert "BTC_USDT" in response.text
+    assert asset_page.status_code == 200
+    assert asset_detail_page.status_code == 200
+    assert btc_detail_page.status_code == 200
+    assert coverage_page.status_code == 200
+    assert "BTC_USDT" not in response.text
+    assert "BTC_USDT" in btc_detail_page.text
     assert "MEXC" in response.text
-    assert "Futures coverage" in response.text
+    assert "Perps" in response.text
     assert "MEXC ONLY" in response.text
     assert "SAME_VENUE_SPOT_FUTURE_SYMBOL" not in response.text
-    assert "https://www.mexc.com/futures/BTC_USDT" in response.text
-    assert "https://www.bybit.com/trade/usdt/SOLUSDT-25SEP26" in response.text
-    assert "Expires: 2026-09-25T08:00:00+00:00" in response.text
-    assert "Max market order size: 5000000" in response.text
-    assert "Contract size:" not in response.text
-    assert 'id="column-settings-toggle"' in response.text
-    assert 'data-column-option="asset"' in response.text
-    assert 'data-column-option="markets"' in response.text
-    assert 'data-column-option="financing"' in response.text
-    assert "BYBIT · LOAN · 4.0% APR" in response.text
-    assert 'draggable="true"' in response.text
-    assert 'tabindex="0"' in response.text
-    assert "mdv_columns" in response.text
-    assert 'data-details-cell' in response.text
+    assert "https://www.mexc.com/futures/BTC_USDT" in btc_detail_page.text
+    assert "https://www.bybit.com/trade/usdt/SOLUSDT-25SEP26" in asset_detail_page.text
+    assert "Expires: 2026-09-25T08:00:00+00:00" in asset_detail_page.text
+    assert "Max market order size: 5000000" in btc_detail_page.text
+    assert "Contract size:" not in asset_detail_page.text
+    assert 'class="asset asset-link"' in response.text
+    assert '<details class="asset" open>' in asset_detail_page.text
+    assert 'type="search" name="SYMBOL"' in response.text
+    assert 'type="search" name="SYMBOL"' in coverage_page.text
+    assert '<label>Tag<select name="TAG">' in response.text
+    assert '<label>Tag<select name="TAG">' in coverage_page.text
+    assert 'assetSymbol.addEventListener(\'keydown\'' in response.text
+    assert 'assetSymbol.addEventListener(\'change\'' in response.text
+    assert 'coverageSymbol.addEventListener(\'keydown\'' in coverage_page.text
+    assert 'coverageSymbol.addEventListener(\'change\'' in coverage_page.text
+    assert "Loan · BYBIT" in asset_detail_page.text
     assert "Refresh universes" not in response.text
-    assert "data-move" not in response.text
+    assert "market-toggle" not in response.text
+    assert "Availability matrix" in coverage_page.text
+    assert 'class="coverage-row"' in coverage_page.text
+    assert "Margin" in coverage_page.text
+    assert "Loans" in coverage_page.text
     assert api_response.json()["count"] == 3
     assert api_response.json()["markets"][2]["max_market_order_size"] == "5000000"
     assert asset_response.json()["count"] == 3
@@ -310,6 +334,8 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
         if asset["canonical_symbol"] == "SOL"
     )
     assert sol_asset["borrow_eligibility"][0]["product"] == "CRYPTO_LOAN"
+    assert sol_asset["loan_venues"] == [{"venue": "BYBIT", "count": 1}]
+    assert sol_asset["margin_venues"] == []
     assert "raw" not in sol_asset["borrow_eligibility"][0]
     assert financing_response.status_code == 200
     assert financing_response.json()["count"] == 1
@@ -366,10 +392,22 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
     assert 'name="PRODUCT"' in logs_response.text
     assert 'name="DATE_FROM"' in logs_response.text
     assert 'name="DATE_TO"' in logs_response.text
+    assert 'name="CHANGES_ONLY" value="1"' in logs_response.text
+    assert 'type="search" name="SYMBOL"' in logs_response.text
+    assert 'logFilters.requestSubmit()' in logs_response.text
+    assert 'logSymbol.addEventListener(\'change\'' in logs_response.text
+    assert 'Apply filters' not in logs_response.text
+    assert 'class="app-nav"' in logs_response.text
+    assert 'class="app-nav"' in metadata_html_response.text
+    assert 'class="app-nav"' in manual_actions_response.text
+    assert '<details class="venue-block" open>' in logs_response.text
     assert 'id="market-filter-group" class="filter-group" hidden' in logs_response.text
     assert 'id="tag-filter-group" class="filter-group" hidden' in logs_response.text
     assert logs_api_response.status_code == 200
     assert logs_api_response.json()["count"] == 5
+    assert changed_only_logs_response.status_code == 200
+    assert 'name="CHANGES_ONLY" value="1" checked' in changed_only_logs_response.text
+    assert changed_only_logs_api_response.json()["count"] == 4
     assert {run["scope"] for run in logs_api_response.json()["runs"]} == {
         "BINANCE",
         "BYBIT",
@@ -392,11 +430,11 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
     assert listing_logs_api_response.json()["runs"][0]["venues"][0]["venue"] == "BINANCE"
     assert listing_logs_api_response.json()["runs"][0]["venues"][0]["changes"][0]["product"] == "SPOT"
     assert invalid_logs_api_response.status_code == 422
-    assert "ETHUSDT" in binance_only.text
+    assert "ETH" in binance_only.text
     assert "BTC_USDT" not in binance_only.text
     assert monitoring.status_code == 200
     assert "WIF" in monitoring.text
-    assert "BINANCE · Monitoring" in monitoring.text
+    assert "BINANCE · Monitoring" in monitoring_detail.text
     assert scoped_refresh.status_code == 200
     assert scoped_refresh.json()["scope"] == "MEXC"
     assert scoped_refresh.json()["collection_run_id"] == "collection-run"

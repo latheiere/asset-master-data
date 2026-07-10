@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import threading
 import uuid
 from collections import defaultdict
 from fnmatch import fnmatchcase
@@ -97,6 +98,8 @@ def requested_financing_keys(
 class SQLiteStore:
     def __init__(self, path: Path | str):
         self.path = Path(path)
+        self._migrated = False
+        self._migration_lock = threading.Lock()
 
     def connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -130,37 +133,43 @@ class SQLiteStore:
             conn.close()
 
     def migrate(self) -> None:
-        conn = self.connect()
-        try:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS schema_migrations (
-                    version INTEGER PRIMARY KEY,
-                    filename TEXT NOT NULL,
-                    applied_at TEXT NOT NULL
+        if self._migrated:
+            return
+        with self._migration_lock:
+            if self._migrated:
+                return
+            conn = self.connect()
+            try:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS schema_migrations (
+                        version INTEGER PRIMARY KEY,
+                        filename TEXT NOT NULL,
+                        applied_at TEXT NOT NULL
+                    )
+                    """
                 )
-                """
-            )
-            applied = {row[0] for row in conn.execute("SELECT version FROM schema_migrations")}
-            migration_dir = resources.files("mdv.migrations")
-            for entry in sorted(migration_dir.iterdir(), key=lambda item: item.name):
-                if not entry.name.endswith(".sql"):
-                    continue
-                version = int(entry.name.split("_", 1)[0])
-                if version in applied:
-                    continue
-                filename = entry.name.replace("'", "''")
-                applied_at = utc_now().replace("'", "''")
-                conn.executescript(
-                    "BEGIN IMMEDIATE;\n"
-                    + entry.read_text(encoding="utf-8")
-                    + f"\nINSERT INTO schema_migrations(version, filename, applied_at) "
-                    f"VALUES ({version}, '{filename}', '{applied_at}');\n"
-                    "COMMIT;"
-                )
-            self._sync_delivery_manual_actions(conn)
-        finally:
-            conn.close()
+                applied = {row[0] for row in conn.execute("SELECT version FROM schema_migrations")}
+                migration_dir = resources.files("mdv.migrations")
+                for entry in sorted(migration_dir.iterdir(), key=lambda item: item.name):
+                    if not entry.name.endswith(".sql"):
+                        continue
+                    version = int(entry.name.split("_", 1)[0])
+                    if version in applied:
+                        continue
+                    filename = entry.name.replace("'", "''")
+                    applied_at = utc_now().replace("'", "''")
+                    conn.executescript(
+                        "BEGIN IMMEDIATE;\n"
+                        + entry.read_text(encoding="utf-8")
+                        + f"\nINSERT INTO schema_migrations(version, filename, applied_at) "
+                        f"VALUES ({version}, '{filename}', '{applied_at}');\n"
+                        "COMMIT;"
+                    )
+                self._sync_delivery_manual_actions(conn)
+                self._migrated = True
+            finally:
+                conn.close()
 
     @staticmethod
     def _normalize_manual_symbol(value: object, *, field: str, required: bool = True) -> str | None:
@@ -530,6 +539,11 @@ class SQLiteStore:
                 venue_product = market.venue_product or market.product
                 venue_status = market.venue_status or market.status
                 normalized_status = normalize_status(market.status)
+                retain_observation_raw = (
+                    previous is None
+                    or bool(previous["active"]) != market.active
+                    or previous["status"] != normalized_status
+                )
                 normalized_direction = market.contract_direction or contract_direction(
                     market_type=market.market_type,
                     base_symbol=market.base_symbol,
@@ -598,8 +612,8 @@ class SQLiteStore:
                     """
                     INSERT INTO market_observations(
                         run_id, market_id, observed_at, status, active,
-                        content_hash, raw_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        content_hash, raw_json, raw_retained
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         run_id,
@@ -608,7 +622,8 @@ class SQLiteStore:
                         normalized_status,
                         int(market.active),
                         content_hash,
-                        raw_json,
+                        raw_json if retain_observation_raw else "{}",
+                        int(retain_observation_raw),
                     ),
                 )
                 if previous is None:
@@ -728,6 +743,12 @@ class SQLiteStore:
                 raw_json = canonical_json(record.raw)
                 content_hash = hashlib.sha256(raw_json.encode()).hexdigest()
                 previous = previous_rows.get(record.financing_id)
+                retain_observation_raw = (
+                    previous is None
+                    or not previous["active"]
+                    or bool(previous["eligible"]) != record.eligible
+                    or previous["status"] != record.status
+                )
                 conn.execute(
                     """
                     INSERT INTO financing_products(
@@ -775,8 +796,8 @@ class SQLiteStore:
                     INSERT INTO financing_observations(
                         run_id, financing_id, observed_at, eligible, status,
                         content_hash, rates_json, terms_json, limits_json,
-                        pair_symbols_json, raw_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        pair_symbols_json, raw_json, raw_retained
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         run_id,
@@ -785,11 +806,12 @@ class SQLiteStore:
                         int(record.eligible),
                         record.status,
                         content_hash,
-                        rates_json,
-                        terms_json,
-                        limits_json,
-                        pair_symbols_json,
-                        raw_json,
+                        rates_json if retain_observation_raw else "[]",
+                        terms_json if retain_observation_raw else "[]",
+                        limits_json if retain_observation_raw else "{}",
+                        pair_symbols_json if retain_observation_raw else "[]",
+                        raw_json if retain_observation_raw else "{}",
+                        int(retain_observation_raw),
                     ),
                 )
                 if previous is None:
@@ -1753,9 +1775,38 @@ class SQLiteStore:
             row["active"] = bool(row["active"])
         return {"count": total, "financing": rows}
 
-    def list_assets(self, filters: dict[str, object]) -> dict:
+    def list_assets(self, filters: dict[str, object], *, include_details: bool = True) -> dict:
         """Build the active asset -> venue symbol -> market projection."""
         self.migrate()
+        symbol_patterns = requested_values(filters, "symbol")
+
+        def sql_pattern(value: str) -> str:
+            return (
+                value.replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_")
+                .replace("*", "%")
+            )
+
+        symbol_where = ""
+        symbol_params: list[str] = []
+        if symbol_patterns:
+            matching_conditions = []
+            for pattern in sorted(symbol_patterns):
+                matching_conditions.append(
+                    "(UPPER(a2.canonical_symbol) LIKE ? ESCAPE '\\' OR "
+                    "UPPER(m2.base_symbol) LIKE ? ESCAPE '\\' OR "
+                    "UPPER(m2.raw_symbol) LIKE ? ESCAPE '\\')"
+                )
+                symbol_params.extend([sql_pattern(pattern)] * 3)
+            symbol_where = (
+                "AND a.asset_id IN ("
+                "SELECT DISTINCT a2.asset_id "
+                "FROM markets m2 "
+                "JOIN market_asset_mappings map2 ON map2.market_id = m2.market_id "
+                "JOIN assets a2 ON a2.asset_id = map2.asset_id "
+                "WHERE m2.active = 1 AND (" + " OR ".join(matching_conditions) + "))"
+            )
         with self.readonly() as conn:
             rows = [dict(row) for row in conn.execute(
                 """
@@ -1772,9 +1823,11 @@ class SQLiteStore:
                 JOIN market_asset_mappings map ON map.market_id = m.market_id
                 JOIN assets a ON a.asset_id = map.asset_id
                 WHERE m.active = 1
+                """ + symbol_where + """
                 ORDER BY a.canonical_symbol, m.venue, m.market_type,
                          m.product, m.raw_symbol
-                """
+                """,
+                symbol_params,
             )]
             supported_future_venues = [row[0] for row in conn.execute(
                 """
@@ -2024,10 +2077,11 @@ class SQLiteStore:
                     {"venue": market["venue"], "symbols": set(), "spot": [], "futures": []},
                 )
                 venue["symbols"].add(market["base_symbol"])
-                market["underlying_unit"] = asset["canonical_symbol"]
-                if market["underlying_multiplier"] != "1":
-                    market["underlying_unit"] = f"{market['underlying_multiplier']} {asset['canonical_symbol']}"
-                market["trade_url"] = market_trade_url(market)
+                if include_details:
+                    market["underlying_unit"] = asset["canonical_symbol"]
+                    if market["underlying_multiplier"] != "1":
+                        market["underlying_unit"] = f"{market['underlying_multiplier']} {asset['canonical_symbol']}"
+                    market["trade_url"] = market_trade_url(market)
                 target = venue["spot"] if market["market_type"] == "SPOT" else venue["futures"]
                 target.append(market)
 
@@ -2055,6 +2109,36 @@ class SQLiteStore:
                 }
                 for venue in venue_rows if venue["futures"]
             ]
+            perp_venues = [
+                {
+                    "venue": venue["venue"],
+                    "count": sum(
+                        market["product"] == "PERP" for market in venue["futures"]
+                    ),
+                }
+                for venue in venue_rows
+                if any(market["product"] == "PERP" for market in venue["futures"])
+            ]
+            dated_venues = [
+                {
+                    "venue": venue["venue"],
+                    "count": sum(
+                        market["product"] == "DATED" for market in venue["futures"]
+                    ),
+                }
+                for venue in venue_rows
+                if any(market["product"] == "DATED" for market in venue["futures"])
+            ]
+            margin_venues = [
+                {"venue": financing["venue"], "count": 1}
+                for financing in borrow_eligibility
+                if financing["product"] == "CROSS_MARGIN"
+            ]
+            loan_venues = [
+                {"venue": financing["venue"], "count": 1}
+                for financing in borrow_eligibility
+                if financing["product"] == "CRYPTO_LOAN"
+            ]
             future_venue_names = {row["venue"] for row in future_venues}
             covered = len(future_venue_names)
             possible = len(supported_future_venues)
@@ -2077,21 +2161,25 @@ class SQLiteStore:
 
             asset.update(
                 {
-                    "markets": markets,
-                    "venues": venue_rows,
+                    "markets": markets if include_details else [],
+                    "venues": venue_rows if include_details else [],
                     "venue_symbols": [
                         {"venue": venue["venue"], "symbols": venue["symbols"]}
                         for venue in venue_rows
-                    ],
+                    ] if include_details else [],
                     "spot_venues": spot_venues,
                     "future_venues": future_venues,
+                    "perp_venues": perp_venues,
+                    "dated_venues": dated_venues,
+                    "margin_venues": margin_venues,
+                    "loan_venues": loan_venues,
                     "future_coverage": coverage_label,
                     "future_coverage_kind": coverage_kind,
                     "active_market_count": len(markets),
                     "is_stock": is_stock,
-                    "tags": asset_tags,
-                    "financing": asset_financing,
-                    "borrow_eligibility": borrow_eligibility,
+                    "tags": asset_tags if include_details else [],
+                    "financing": asset_financing if include_details else [],
+                    "borrow_eligibility": borrow_eligibility if include_details else [],
                 }
             )
             assets.append(asset)
@@ -2226,7 +2314,7 @@ class SQLiteStore:
                     "Normalized operational market status; venue_status retains the source label.",
                 ),
                 "ACTIVE": enum(["true", "false"], "Whether the market is in the current active view."),
-                "LIMIT": {"kind": "integer", "default": 5000, "minimum": 1, "maximum": 5000},
+                "LIMIT": {"kind": "integer", "default": 500, "minimum": 1, "maximum": 5000},
                 "OFFSET": {"kind": "integer", "default": 0, "minimum": 0},
             }
         return {"filters": filters}
@@ -2234,7 +2322,7 @@ class SQLiteStore:
     def list_collection_runs(
         self,
         *,
-        limit: int = 100,
+        limit: int = 10,
         offset: int = 0,
         venue: str | None = None,
         action: str | None = None,
@@ -2243,6 +2331,7 @@ class SQLiteStore:
         product: str | None = None,
         date_from: str | None = None,
         date_to: str | None = None,
+        changed_only: bool = False,
     ) -> dict:
         """Return collection invocations with universe outcomes and audit changes."""
         self.migrate()
@@ -2302,6 +2391,19 @@ class SQLiteStore:
             )
             params.append(requested_venue)
 
+        if changed_only:
+            where_clauses.append(
+                "(EXISTS ("
+                "SELECT 1 FROM market_lifecycle_events e "
+                "JOIN ingest_runs ir ON ir.run_id = e.run_id "
+                "WHERE ir.collection_run_id = cr.collection_run_id"
+                ") OR EXISTS ("
+                "SELECT 1 FROM asset_tag_events e "
+                "JOIN ingest_runs ir ON ir.run_id = e.run_id "
+                "WHERE ir.collection_run_id = cr.collection_run_id"
+                "))"
+            )
+
         change_filters_active = bool(
             requested_action
             or requested_tag
@@ -2309,6 +2411,7 @@ class SQLiteStore:
             or requested_product
             or requested_date_from
             or requested_date_to
+            or changed_only
         )
         if change_filters_active:
             matching_queries: list[str] = []
@@ -2443,20 +2546,9 @@ class SQLiteStore:
                 f"""
                 SELECT ir.collection_run_id, ir.run_id, ir.venue, ir.source,
                        e.event_type, e.old_value, e.new_value, e.observed_at,
-                       m.raw_symbol, m.base_symbol, m.product,
-                       COALESCE(a.canonical_symbol, m.base_symbol) AS canonical_symbol,
-                       EXISTS(
-                           SELECT 1
-                           FROM markets prior_market
-                           LEFT JOIN market_asset_mappings prior_mapping
-                             ON prior_mapping.market_id = prior_market.market_id
-                           WHERE prior_market.market_id != m.market_id
-                             AND prior_market.venue = m.venue
-                             AND prior_market.market_type = m.market_type
-                             AND prior_market.first_seen_at < m.first_seen_at
-                             AND COALESCE(prior_mapping.asset_id, prior_market.base_symbol) =
-                                 COALESCE(map.asset_id, m.base_symbol)
-                       ) AS has_prior_similar_market
+                       m.raw_symbol, m.base_symbol, m.product, m.market_type,
+                       m.first_seen_at, map.asset_id AS mapping_asset_id,
+                       COALESCE(a.canonical_symbol, m.base_symbol) AS canonical_symbol
                 FROM market_lifecycle_events e
                 JOIN ingest_runs ir ON ir.run_id = e.run_id
                 JOIN markets m ON m.market_id = e.market_id
@@ -2466,6 +2558,16 @@ class SQLiteStore:
                 ORDER BY e.observed_at, e.rowid
                 """,
                 run_ids,
+            )]
+            earliest_market_rows = [dict(row) for row in conn.execute(
+                """
+                SELECT m.venue, m.market_type,
+                       COALESCE(map.asset_id, m.base_symbol) AS asset_key,
+                       MIN(m.first_seen_at) AS earliest_first_seen_at
+                FROM markets m
+                LEFT JOIN market_asset_mappings map ON map.market_id = m.market_id
+                GROUP BY m.venue, m.market_type, COALESCE(map.asset_id, m.base_symbol)
+                """
             )]
             tag_rows = [dict(row) for row in conn.execute(
                 f"""
@@ -2487,6 +2589,10 @@ class SQLiteStore:
             universes_by_run.setdefault(row["collection_run_id"], []).append(row)
 
         changes_by_run: dict[str, list[dict]] = {}
+        earliest_market_by_key = {
+            (row["venue"], row["market_type"], row["asset_key"]): row["earliest_first_seen_at"]
+            for row in earliest_market_rows
+        }
         lifecycle_labels = {
             "DISCOVERED": "listed",
             "MISSING": "removed",
@@ -2501,7 +2607,13 @@ class SQLiteStore:
                 message = f"{asset} status changed from {row['old_value']} to {row['new_value']}"
             else:
                 message = f"{asset} {lifecycle_labels.get(event_type, event_type.lower().replace('_', ' '))}"
-            if event_type == "DISCOVERED" and row["has_prior_similar_market"]:
+            asset_key = row["mapping_asset_id"] or row["base_symbol"]
+            if (
+                event_type == "DISCOVERED"
+                and earliest_market_by_key.get(
+                    (row["venue"], row["market_type"], asset_key)
+                ) < row["first_seen_at"]
+            ):
                 kind = "MARKET_LISTED"
                 message = f"{asset} listed"
             changes_by_run.setdefault(row["collection_run_id"], []).append(

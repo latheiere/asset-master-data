@@ -19,7 +19,7 @@ routing service.
 
 > Development disclosure: this repository has been developed primarily through
 > Codex-assisted “vibe coding,” with human direction and test-based review. The
-> current release is `0.7.0`; audit behavior, security, and operational controls
+> current release is `0.8.0`; audit behavior, security, and operational controls
 > before relying on it in a production or risk-sensitive system.
 
 ## What it provides
@@ -132,7 +132,10 @@ history. Renamed and delisted markets remain available for audit.
 Only complete successful snapshots can mark previously active markets or
 financing records missing. A partial, empty, failed, or malformed response
 records an error and preserves the previous current view. Each market and
-financing catalog is applied transactionally and independently.
+financing catalog is applied transactionally and independently. Current raw
+payloads remain available; observation history retains raw payloads only for
+lifecycle, eligibility, or status transitions, while every observation keeps
+its timestamp, normalized state, and content hash.
 
 Normalized dimensions remain independent:
 
@@ -194,6 +197,8 @@ workflow remain open work; see [Technical debt](docs/TECHNICAL_DEBT.md).
 Useful starting views:
 
 ```text
+http://127.0.0.1:8090/coverage?TYPE=FUTURE
+http://127.0.0.1:8090/asset?SYMBOL=BTC*
 http://127.0.0.1:8090/mdv?TYPE=FUTURE
 http://127.0.0.1:8090/mdv?PRODUCT=PERP&FUTURES=BINANCE,MEXC
 http://127.0.0.1:8090/mdv?PRODUCT=PERP&FUTURES=BINANCE&FUTURES!=MEXC
@@ -204,18 +209,20 @@ http://127.0.0.1:8090/mdv?TYPE=SPOT&VENUE=BINANCE
 http://127.0.0.1:8090/mdv?SYMBOL=BTC*
 ```
 
-`/mdv` shows active markets and compact `MARGIN`/`LOAN` badges for mapped
-financing records. Full rates, tiers, terms, limits, collateral roles, raw
-evidence, and unmapped records stay in the JSON API. Expand an asset to inspect
-venue symbols, markets, and trading links.
+`/coverage` is the compact comparison view: it separates spot, perpetual,
+dated, margin, and loan availability. `/asset` is the asset explorer, with
+click-to-expand venue detail, native symbols, markets, and trading links.
+`/mdv` remains a compatible alias for `/asset`. Full rates, tiers, terms,
+limits, collateral roles, raw evidence, and unmapped records stay in the JSON
+API.
 
-`/logs` shows collection outcomes and lifecycle/tag changes. It supports
-action, provider-scoped tag, venue, symbol, product, and inclusive UTC date
-filters. `/metadata` describes filter meanings and current values.
+`/logs` shows collection outcomes and lifecycle/tag changes in 10-run pages.
+It supports action, provider-scoped tag, venue, symbol, product, and inclusive
+UTC date filters. `/metadata` describes filter meanings and current values.
 
 Every data filter supports `=` and `!=`. Values may be repeated or
-comma-separated. `SYMBOL` supports `*` wildcards. The Columns control changes
-visibility and order, stored locally in a cookie.
+comma-separated. `SYMBOL` supports `*` wildcards. The primary filters submit on
+selection; uncommon dimensions are grouped under Advanced filters.
 
 `/manual-actions` provides CRUD for reviewed mapping, name-change, and other
 asset actions. `MAP_SYMBOL` applies to an exact venue base symbol; `RENAME_ASSET`

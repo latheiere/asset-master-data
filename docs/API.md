@@ -76,7 +76,7 @@ Common filters:
 | `VENUE` | Trading venue |
 | `SYMBOL` | Canonical, venue-base, or raw symbol; `*` wildcard supported |
 | `STATUS` | Normalized market status |
-| `LIMIT` | Page size; default and maximum depend on endpoint |
+| `LIMIT` | Page size; defaults to 500 for market and asset endpoints |
 | `OFFSET` | Zero-based result offset |
 
 Asset filters are `TYPE`, `PRODUCT`, `CONTRACT`, `EXPIRY`, `DIRECTION`, `QUOTE`,
@@ -97,7 +97,7 @@ Authenticated liveness and database reachability check.
 ```json
 {
   "status": "ok",
-  "version": "0.6.0",
+  "version": "0.8.0",
   "revision": "0123456789abcdef0123456789abcdef01234567",
   "markets": 12500
 }
@@ -121,6 +121,10 @@ Returns the active asset-first hierarchy. Supports all common filters except
       "canonical_symbol": "BTC",
       "venue_symbols": [{"venue": "BINANCE", "symbols": ["BTC"]}],
       "spot_venues": [{"venue": "BINANCE", "count": 3}],
+      "perp_venues": [{"venue": "BINANCE", "count": 1}],
+      "dated_venues": [{"venue": "BINANCE", "count": 1}],
+      "margin_venues": [{"venue": "BINANCE", "count": 1}],
+      "loan_venues": [{"venue": "BYBIT", "count": 1}],
       "future_venues": [
         {"venue": "BINANCE", "count": 2, "products": ["DATED", "PERP"]}
       ],
@@ -143,6 +147,10 @@ Returns the active asset-first hierarchy. Supports all common filters except
 arrays. Market rows include normalized fields, source fields, timestamps,
 `underlying_unit`, and `trade_url`; they do not include `raw_json`. `count` is
 the filtered total before `LIMIT`/`OFFSET`.
+
+`perp_venues` and `dated_venues` split active derivative coverage by normalized
+duration. `margin_venues` and `loan_venues` split mapped borrow eligibility by
+`CROSS_MARGIN` and `CRYPTO_LOAN`; their counts are eligible borrowable records.
 
 `financing` contains compact, active, eligible financing records mapped through
 an exact same-venue market symbol. `borrow_eligibility` is its `BORROWABLE`
@@ -333,9 +341,11 @@ Parameters:
 - `PRODUCT`: normalized lifecycle market type: `PERP`, `DATED`, or `SPOT`. It
   cannot be combined with tag actions.
 - `DATE_FROM` and `DATE_TO`: inclusive UTC change dates in `YYYY-MM-DD` format.
-- `LIMIT` (default 100, maximum 500) and `OFFSET`: paginate matching collection runs.
+- `CHANGES_ONLY`: `1`, `true`, `yes`, or `on` restricts results to runs with at
+  least one recorded market lifecycle or tag change.
+- `LIMIT` (default 10, maximum 500) and `OFFSET`: paginate matching collection runs.
 
-When any change filter is present, only runs containing a matching change and
+When `CHANGES_ONLY` or any change filter is present, only runs containing a matching change and
 only matching changes and venue sections inside those runs are returned. Venue
 updates with no matching change are omitted. `count` is the total number of
 matching runs before pagination.

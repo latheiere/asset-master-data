@@ -467,7 +467,7 @@ def test_financing_migration_upgrades_schema_12_without_rewriting_market_data(tm
         venue = migrated.execute(
             "SELECT display_name FROM venues WHERE venue = 'BYBIT'"
         ).fetchone()[0]
-    assert versions[-1] == 14
+    assert versions[-1] == 15
     assert {
         "financing_products", "financing_observations",
         "financing_lifecycle_events", "financing_asset_mappings",
@@ -475,6 +475,61 @@ def test_financing_migration_upgrades_schema_12_without_rewriting_market_data(tm
         "manual_asset_actions", "manual_asset_action_tombstones",
     }.issubset(tables)
     assert venue == "Bybit"
+
+
+def test_observations_retain_raw_payloads_only_for_lifecycle_changes(tmp_path):
+    store = SQLiteStore(tmp_path / "mdv.sqlite3")
+    first = snapshot()
+    repeated = MarketSnapshot(
+        source=first.source,
+        venue=first.venue,
+        market_type=first.market_type,
+        product=first.product,
+        observed_at="2026-07-04T00:00:00+00:00",
+        markets=first.markets,
+    )
+    changed = snapshot(active=False, status="BREAK")
+    changed = MarketSnapshot(
+        source=changed.source,
+        venue=changed.venue,
+        market_type=changed.market_type,
+        product=changed.product,
+        observed_at="2026-07-05T00:00:00+00:00",
+        markets=changed.markets,
+    )
+    store.apply_snapshot(first)
+    store.apply_snapshot(repeated)
+    store.apply_snapshot(changed)
+
+    record = FinancingRecord(
+        source="BYBIT_CRYPTO_LOAN", venue="BYBIT", product="CRYPTO_LOAN",
+        asset_role="BORROWABLE", raw_asset_symbol="BTC", eligible=True,
+        status="ENABLED", regular_user_tier="VIP0", rates=(), terms=(),
+        limits={}, pair_symbols=(), raw={"coin": "BTC"},
+    )
+    finance_first = FinancingSnapshot(
+        source=record.source, venue=record.venue, product=record.product,
+        observed_at="2026-07-03T00:00:00+00:00", records=(record,),
+    )
+    finance_repeat = FinancingSnapshot(
+        source=record.source, venue=record.venue, product=record.product,
+        observed_at="2026-07-04T00:00:00+00:00", records=(record,),
+    )
+    store.apply_financing_snapshot(finance_first)
+    store.apply_financing_snapshot(finance_repeat)
+
+    with store.readonly() as conn:
+        market_payloads = [tuple(row) for row in conn.execute(
+            "SELECT raw_retained, raw_json FROM market_observations ORDER BY observed_at"
+        )]
+        financing_payloads = [tuple(row) for row in conn.execute(
+            "SELECT raw_retained, rates_json, raw_json FROM financing_observations ORDER BY observed_at"
+        )]
+    assert market_payloads[0][0] == 1
+    assert market_payloads[1] == (0, "{}")
+    assert market_payloads[2][0] == 1
+    assert financing_payloads[0][0] == 1
+    assert financing_payloads[1] == (0, "[]", "{}")
 
 
 def test_delivery_manual_mapping_applies_and_local_actions_are_crud(tmp_path):
@@ -548,6 +603,13 @@ def test_asset_view_groups_active_markets_and_reports_cross_venue_futures(tmp_pa
     assert asset["canonical_symbol"] == "BTC"
     assert asset["future_coverage"] == "BOTH · 2/2"
     assert [item["venue"] for item in asset["future_venues"]] == ["BINANCE", "MEXC"]
+    assert asset["perp_venues"] == [
+        {"venue": "BINANCE", "count": 1},
+        {"venue": "MEXC", "count": 1},
+    ]
+    assert asset["dated_venues"] == []
+    assert asset["margin_venues"] == []
+    assert asset["loan_venues"] == []
     assert asset["spot_venues"] == [{"venue": "BINANCE", "count": 1}]
     assert asset["active_market_count"] == 3
     assert all(row["status"] != "BREAK" for row in asset["markets"])

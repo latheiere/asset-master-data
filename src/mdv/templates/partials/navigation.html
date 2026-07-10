@@ -1,0 +1,7 @@
+<nav class="app-nav" aria-label="Primary">
+  <a href="/coverage"{% if active_nav == 'coverage' %} class="active"{% endif %}>Coverage</a>
+  <a href="/asset"{% if active_nav == 'assets' %} class="active"{% endif %}>Assets</a>
+  <a href="/logs"{% if active_nav == 'logs' %} class="active"{% endif %}>Collection log</a>
+  <a href="/metadata"{% if active_nav == 'metadata' %} class="active"{% endif %}>Metadata</a>
+  <a href="/manual-actions"{% if active_nav == 'manual' %} class="active"{% endif %}>Manual actions</a>
+</nav>
