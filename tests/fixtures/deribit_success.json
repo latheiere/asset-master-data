@@ -1,0 +1,4 @@
+{
+  "spot": {"jsonrpc": "2.0", "result": [{"kind": "spot", "instrument_name": "BTC_USDC", "base_currency": "BTC", "quote_currency": "USDC", "state": "open", "is_active": true, "contract_size": 0.0001}]},
+  "future": {"jsonrpc": "2.0", "result": [{"kind": "future", "instrument_name": "BTC-PERPETUAL", "base_currency": "BTC", "quote_currency": "USD", "settlement_currency": "BTC", "settlement_period": "perpetual", "instrument_type": "reversed", "state": "open", "is_active": true, "contract_size": 10}, {"kind": "future", "instrument_name": "ETH_USDC-25SEP26", "base_currency": "ETH", "quote_currency": "USDC", "settlement_currency": "USDC", "settlement_period": "month", "instrument_type": "linear", "state": "delivered", "is_active": false, "contract_size": 0.01, "expiration_timestamp": 1790323200000}]}
+}

@@ -1,0 +1,4 @@
+{
+  "spot": ["btcusd", "ethusdc", "jitosolsol", "btcgusdperp"],
+  "future": [{"symbol": "BTCGUSDPERP", "base_currency": "BTC", "quote_currency": "GUSD", "contract_price_currency": "GUSD", "product_type": "swap", "contract_type": "linear", "status": "open"}, {"symbol": "ETHUSDPERP", "base_currency": "ETH", "quote_currency": "USD", "contract_price_currency": "ETH", "product_type": "swap", "contract_type": "inverse", "status": "closed"}]
+}

@@ -1,0 +1,1 @@
+{"spot": {"result": [{"kind": "spot", "instrument_name": "BTC_USDC"}]}, "future": {"result": [{"kind": "future", "instrument_name": "BTC-PERPETUAL", "base_currency": "BTC"}]}}

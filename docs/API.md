@@ -97,7 +97,7 @@ Authenticated liveness and database reachability check.
 ```json
 {
   "status": "ok",
-  "version": "0.8.1",
+  "version": "0.10.0",
   "revision": "0123456789abcdef0123456789abcdef01234567",
   "markets": 12500
 }
@@ -139,7 +139,7 @@ Returns the active asset-first hierarchy. Supports all common filters except
     }
   ],
   "count": 1,
-  "supported_future_venues": ["BINANCE", "BITGET", "BYBIT", "COINBASE", "GATE", "HTX", "HYPERLIQUID", "KUCOIN", "MEXC", "OKX", "WHITEBIT", "XT"]
+  "supported_future_venues": ["BINANCE", "BITFINEX", "BITGET", "BITMART", "BYBIT", "COINBASE", "DERIBIT", "GATE", "GEMINI", "HTX", "HYPERLIQUID", "KUCOIN", "MEXC", "OKX", "WHITEBIT", "XT"]
 }
 ```
 

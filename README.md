@@ -19,7 +19,7 @@ routing service.
 
 > Development disclosure: this repository has been developed primarily through
 > Codex-assisted “vibe coding,” with human direction and test-based review. The
-> current release is `0.9.0`; audit behavior, security, and operational controls
+> current release is `0.10.0`; audit behavior, security, and operational controls
 > before relying on it in a production or risk-sensitive system.
 
 ## What it provides
@@ -74,10 +74,14 @@ Set `server.refresh_on_startup: never` to disable it, or run `mdv serve
 | Venue | Spot | Futures | Cross margin | Crypto loans |
 | --- | --- | --- | --- | --- |
 | Binance | Spot | USD-M and COIN-M | Margin-enabled pairs | — |
+| BitMart | Spot | USDT/USDC- and coin-margined perpetuals and delivery futures | — | — |
 | Bitget | Spot | USDT-M, USDC-M, and Coin-M | Pair eligibility | Loan and collateral assets |
+| Bitfinex | Spot | Perpetuals | — | — |
 | Bybit | Spot | Linear and inverse perpetuals and dated futures | Asset eligibility and rate tiers | Loan and collateral assets |
 | Coinbase | Spot | USDC-settled perpetuals | Margin-enabled pairs | — |
+| Deribit | Spot | Linear/inverse perpetuals and dated futures | — | — |
 | Gate.com | Spot | USDT/BTC perpetuals and USDT delivery futures | Asset eligibility | Loan and collateral assets |
+| Gemini | Spot | Linear and inverse perpetuals | — | — |
 | HTX | Spot | USDT/coin-margined perpetuals and delivery futures | — | — |
 | Hyperliquid | Spot | Core and HIP-3 perpetuals | — | — |
 | KuCoin | Spot | Perpetuals and dated futures | Public currency catalog | — |
@@ -90,7 +94,7 @@ Binance and Coinbase eligibility comes from public pair-level market flags;
 Bitget and XT also publish pair-level evidence. Bybit, Gate, and KuCoin publish
 asset-level margin catalogs. Gate and XT publish public loan and collateral
 catalogs; XT additionally provides regular-user rates, terms, limits, and pledge
-thresholds. Binance, Coinbase, KuCoin, and MEXC do not expose credential-free
+thresholds. Binance, BitMart, Bitfinex, Coinbase, Deribit, Gemini, KuCoin, and MEXC do not expose credential-free
 crypto-loan catalogs, so those universes are not collected. MEXC, HTX, and OKX
 do not expose a complete public margin catalog; Hyperliquid and WhiteBIT do not
 expose a complete public financing catalog.

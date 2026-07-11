@@ -7,10 +7,14 @@ from urllib.parse import quote
 
 from mdv.connectors.base import Connector
 from mdv.connectors.binance import binance_connectors
+from mdv.connectors.bitfinex import bitfinex_connectors
+from mdv.connectors.bitmart import bitmart_connectors
 from mdv.connectors.bitget import bitget_connectors
 from mdv.connectors.bybit import bybit_connectors
 from mdv.connectors.coinbase import coinbase_connectors, coinbase_financing_connectors
+from mdv.connectors.deribit import deribit_connectors
 from mdv.connectors.gate import gate_connectors
+from mdv.connectors.gemini import gemini_connectors
 from mdv.connectors.htx import htx_connectors
 from mdv.connectors.hyperliquid import hyperliquid_connectors
 from mdv.connectors.financing import (
@@ -77,6 +81,34 @@ def _bitget_trade_url(market: dict) -> str | None:
     if market.get("market_type") == "SPOT":
         return f"https://www.bitget.com/spot/{raw}"
     return None
+
+
+def _bitmart_trade_url(market: dict) -> str | None:
+    raw, _, _, _, _ = _encoded_market(market)
+    if market.get("market_type") == "FUTURE":
+        return f"https://www.bitmart.com/en-US/futures/{raw}" if raw else None
+    if market.get("market_type") == "SPOT":
+        return f"https://www.bitmart.com/en-US/spot/{raw}" if raw else None
+    return None
+
+
+def _bitfinex_trade_url(market: dict) -> str | None:
+    raw, _, _, _, _ = _encoded_market(market)
+    return f"https://trading.bitfinex.com/t/{raw}" if raw else None
+
+
+def _deribit_trade_url(market: dict) -> str | None:
+    raw, _, _, _, _ = _encoded_market(market)
+    if market.get("market_type") == "FUTURE":
+        return f"https://www.deribit.com/futures/{raw}" if raw else None
+    if market.get("market_type") == "SPOT":
+        return f"https://www.deribit.com/spot/{raw}" if raw else None
+    return None
+
+
+def _gemini_trade_url(market: dict) -> str | None:
+    raw, _, _, _, _ = _encoded_market(market)
+    return f"https://exchange.gemini.com/trade/{raw}" if raw else None
 
 
 def _bybit_trade_url(market: dict) -> str | None:
@@ -185,6 +217,8 @@ INTEGRATIONS = {
             "BITGET", bitget_connectors, _bitget_trade_url,
             bitget_financing_connectors,
         ),
+        VenueIntegration("BITFINEX", bitfinex_connectors, _bitfinex_trade_url),
+        VenueIntegration("BITMART", bitmart_connectors, _bitmart_trade_url),
         VenueIntegration(
             "BYBIT", bybit_connectors, _bybit_trade_url,
             bybit_financing_connectors,
@@ -197,6 +231,8 @@ INTEGRATIONS = {
             "COINBASE", coinbase_connectors, _coinbase_trade_url,
             coinbase_financing_connectors,
         ),
+        VenueIntegration("DERIBIT", deribit_connectors, _deribit_trade_url),
+        VenueIntegration("GEMINI", gemini_connectors, _gemini_trade_url),
         VenueIntegration("MEXC", mexc_connectors, _mexc_trade_url),
         VenueIntegration("OKX", okx_connectors, _okx_trade_url),
         VenueIntegration(

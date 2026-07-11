@@ -1,0 +1,4 @@
+{
+  "spot": {"code": 1000, "data": {"symbols": [{"symbol": "BTC_USDT"}]}},
+  "future": {"code": 1000, "data": {"symbols": [{"symbol": "BTCUSDT", "product_type": 1}]}}
+}

@@ -1,8 +1,12 @@
 from mdv.connectors.binance import binance_connectors
+from mdv.connectors.bitfinex import bitfinex_connectors
+from mdv.connectors.bitmart import bitmart_connectors
 from mdv.connectors.bitget import bitget_connectors
 from mdv.connectors.bybit import bybit_connectors
 from mdv.connectors.coinbase import coinbase_connectors, coinbase_financing_connectors
+from mdv.connectors.deribit import deribit_connectors
 from mdv.connectors.gate import gate_connectors
+from mdv.connectors.gemini import gemini_connectors
 from mdv.connectors.htx import htx_connectors
 from mdv.connectors.hyperliquid import hyperliquid_connectors
 from mdv.connectors.kucoin import kucoin_connectors
@@ -20,11 +24,15 @@ from mdv.connectors.registry import (
 
 __all__ = [
     "binance_connectors",
+    "bitfinex_connectors",
+    "bitmart_connectors",
     "bitget_connectors",
     "bybit_connectors",
     "coinbase_connectors",
     "coinbase_financing_connectors",
+    "deribit_connectors",
     "gate_connectors",
+    "gemini_connectors",
     "htx_connectors",
     "hyperliquid_connectors",
     "kucoin_connectors",
