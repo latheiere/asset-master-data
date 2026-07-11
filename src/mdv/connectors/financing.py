@@ -455,8 +455,11 @@ def kucoin_financing_connectors() -> list:
 
 
 def financing_connectors() -> list:
+    from mdv.connectors.bitfinex import bitfinex_financing_connectors
+
     return [
         *binance_financing_connectors(),
+        *bitfinex_financing_connectors(),
         *bybit_financing_connectors(),
         *bitget_financing_connectors(),
         *gate_financing_connectors(),

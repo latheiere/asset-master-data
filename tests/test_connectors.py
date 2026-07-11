@@ -7,6 +7,7 @@ import pytest
 
 from mdv.connectors.binance import BinanceConnector
 from mdv.connectors.bitget import BitgetFutureConnector, BitgetSpotConnector, bitget_connectors
+from mdv.connectors.bitfinex import BitfinexCrossMarginConnector
 from mdv.connectors.bybit import BybitConnector, bybit_connectors
 from mdv.connectors.gate import GateFutureConnector, GateSpotConnector, gate_connectors
 from mdv.connectors.financing import (
@@ -458,7 +459,11 @@ def test_financing_parsers_keep_margin_and_crypto_loan_separate():
         fixture("kucoin_financing.json"), observed_at=observed_at
     )
 
-    assert len(financing_connectors()) == 8
+    bitfinex_margin = BitfinexCrossMarginConnector().parse(
+        fixture("bitfinex_financing.json"), observed_at=observed_at
+    )
+
+    assert len(financing_connectors()) == 9
     assert {row.raw_asset_symbol for row in binance_margin.records} == {"BTC", "USDT"}
     assert all(row.status == "ENABLED" for row in binance_margin.records)
     assert binance_margin.records[0].raw["evidence_granularity"] == "PAIR"
@@ -476,12 +481,13 @@ def test_financing_parsers_keep_margin_and_crypto_loan_separate():
     assert gate_margin.records[1].eligible is False
     assert {row.asset_role for row in gate_loan.records} == {"BORROWABLE", "COLLATERAL"}
     assert kucoin_margin.records[0].limits["max_leverage"] == 5
+    assert {row.raw_asset_symbol for row in bitfinex_margin.records} == {"AAVE", "BTC", "USD"}
 
     sources = {connector.source for connector in default_collection_connectors()}
     assert {
         "BINANCE_CROSS_MARGIN_PUBLIC", "BYBIT_CROSS_MARGIN", "BYBIT_CRYPTO_LOAN",
         "BITGET_CROSS_MARGIN", "BITGET_CRYPTO_LOAN", "GATE_CROSS_MARGIN",
-        "GATE_CRYPTO_LOAN", "KUCOIN_CROSS_MARGIN",
+        "GATE_CRYPTO_LOAN", "KUCOIN_CROSS_MARGIN", "BITFINEX_CROSS_MARGIN",
     }.issubset(sources)
 
 

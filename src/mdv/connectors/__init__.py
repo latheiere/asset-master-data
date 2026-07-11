@@ -1,5 +1,5 @@
 from mdv.connectors.binance import binance_connectors
-from mdv.connectors.bitfinex import bitfinex_connectors
+from mdv.connectors.bitfinex import bitfinex_connectors, bitfinex_financing_connectors
 from mdv.connectors.bitmart import bitmart_connectors
 from mdv.connectors.bitget import bitget_connectors
 from mdv.connectors.bybit import bybit_connectors
@@ -25,6 +25,7 @@ from mdv.connectors.registry import (
 __all__ = [
     "binance_connectors",
     "bitfinex_connectors",
+    "bitfinex_financing_connectors",
     "bitmart_connectors",
     "bitget_connectors",
     "bybit_connectors",

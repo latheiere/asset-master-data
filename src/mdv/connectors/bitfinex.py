@@ -3,12 +3,16 @@ from __future__ import annotations
 import httpx
 
 from mdv.connectors.base import fetch_json, utc_now
-from mdv.models import MarketRecord, MarketSnapshot
+from mdv.models import FinancingRecord, FinancingSnapshot, MarketRecord, MarketSnapshot
 
 
 CONFIG_URL = (
     "https://api-pub.bitfinex.com/v2/conf/"
     "pub:list:pair:exchange,pub:list:pair:futures,pub:list:currency"
+)
+MARGIN_CONFIG_URL = (
+    "https://api-pub.bitfinex.com/v2/conf/"
+    "pub:list:pair:margin,pub:list:currency"
 )
 
 
@@ -106,5 +110,61 @@ class BitfinexConnector:
         return snapshot
 
 
+class BitfinexCrossMarginConnector:
+    source = "BITFINEX_CROSS_MARGIN"
+    venue = "BITFINEX"
+    market_type = "FINANCING"
+    product = "CROSS_MARGIN"
+    url = MARGIN_CONFIG_URL
+
+    async def fetch(self, client: httpx.AsyncClient) -> FinancingSnapshot:
+        return self.parse(await fetch_json(client, self.url), observed_at=utc_now())
+
+    def parse(self, payload: object, *, observed_at: str) -> FinancingSnapshot:
+        if not isinstance(payload, list) or len(payload) != 2:
+            raise ValueError(f"{self.source}: malformed configuration response")
+        pairs, currencies = payload
+        if not isinstance(pairs, list) or not isinstance(currencies, list):
+            raise ValueError(f"{self.source}: response has no pair/currency arrays")
+        currency_codes = tuple(
+            sorted(
+                (str(value).strip().upper() for value in currencies if str(value).strip()),
+                key=len,
+                reverse=True,
+            )
+        )
+        if not currency_codes:
+            raise ValueError(f"{self.source}: response has no currencies")
+        evidence: dict[str, list[dict]] = {}
+        for pair in pairs:
+            if not isinstance(pair, str):
+                raise ValueError(f"{self.source}: pair is not a string")
+            base_symbol, quote_symbol = _spot_symbols(
+                pair, currency_codes, source=self.source
+            )
+            for role, asset in (("BASE", base_symbol), ("QUOTE", quote_symbol)):
+                evidence.setdefault(asset, []).append(
+                    {"pair": pair.upper(), "asset_role": role, "raw": pair}
+                )
+        records = tuple(
+            FinancingRecord(
+                self.source, self.venue, self.product, "BORROWABLE", asset,
+                True, "ENABLED", None, (), (), {},
+                tuple(sorted({item["pair"] for item in pairs})),
+                {"evidence_granularity": "PAIR", "pairs": pairs},
+            )
+            for asset, pairs in sorted(evidence.items())
+        )
+        snapshot = FinancingSnapshot(
+            self.source, self.venue, self.product, observed_at, records
+        )
+        snapshot.validate()
+        return snapshot
+
+
 def bitfinex_connectors() -> list[BitfinexConnector]:
     return [BitfinexConnector(market_type=value) for value in ("SPOT", "FUTURE")]
+
+
+def bitfinex_financing_connectors() -> list[BitfinexCrossMarginConnector]:
+    return [BitfinexCrossMarginConnector()]

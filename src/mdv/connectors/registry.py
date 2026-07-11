@@ -7,7 +7,7 @@ from urllib.parse import quote
 
 from mdv.connectors.base import Connector
 from mdv.connectors.binance import binance_connectors
-from mdv.connectors.bitfinex import bitfinex_connectors
+from mdv.connectors.bitfinex import bitfinex_connectors, bitfinex_financing_connectors
 from mdv.connectors.bitmart import bitmart_connectors
 from mdv.connectors.bitget import bitget_connectors
 from mdv.connectors.bybit import bybit_connectors
@@ -217,7 +217,10 @@ INTEGRATIONS = {
             "BITGET", bitget_connectors, _bitget_trade_url,
             bitget_financing_connectors,
         ),
-        VenueIntegration("BITFINEX", bitfinex_connectors, _bitfinex_trade_url),
+        VenueIntegration(
+            "BITFINEX", bitfinex_connectors, _bitfinex_trade_url,
+            bitfinex_financing_connectors,
+        ),
         VenueIntegration("BITMART", bitmart_connectors, _bitmart_trade_url),
         VenueIntegration(
             "BYBIT", bybit_connectors, _bybit_trade_url,

@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from mdv.collection import CollectionService
-from mdv.connectors.bitfinex import BitfinexConnector
+from mdv.connectors.bitfinex import BitfinexConnector, BitfinexCrossMarginConnector
 from mdv.connectors.deribit import DeribitConnector
 from mdv.connectors.gemini import GeminiFutureConnector, GeminiSpotConnector
 from mdv.connectors.registry import default_collection_connectors, market_trade_url, supported_venues
@@ -59,6 +59,16 @@ def test_bitfinex_recorded_spot_and_future_fixtures_normalize_dimensions():
     assert futures.markets[1].contract_direction == "LINEAR"
 
 
+def test_bitfinex_recorded_margin_fixture_preserves_pair_level_eligibility():
+    snapshot = BitfinexCrossMarginConnector().parse(
+        fixture("bitfinex_financing.json"), observed_at=OBSERVED_AT
+    )
+
+    assert {record.raw_asset_symbol for record in snapshot.records} == {"AAVE", "BTC", "USD"}
+    assert all(record.eligible for record in snapshot.records)
+    assert snapshot.records[0].raw["evidence_granularity"] == "PAIR"
+
+
 @pytest.mark.parametrize(
     ("connector", "payload"),
     [
@@ -74,6 +84,8 @@ def test_bitfinex_recorded_spot_and_future_fixtures_normalize_dimensions():
         (BitfinexConnector(market_type="FUTURE"), fixture("bitfinex_malformed.json")),
         (BitfinexConnector(market_type="SPOT"), fixture("bitfinex_partial.json")),
         (BitfinexConnector(market_type="FUTURE"), fixture("bitfinex_partial.json")),
+        (BitfinexCrossMarginConnector(), fixture("bitfinex_malformed.json")),
+        (BitfinexCrossMarginConnector(), fixture("bitfinex_partial.json")),
     ],
 )
 def test_added_venue_malformed_and_partial_fixtures_fail_complete_snapshots(connector, payload):
@@ -114,7 +126,7 @@ def test_added_venue_failed_snapshot_preserves_last_active_market(tmp_path, venu
 
 def test_added_venue_registry_exposes_sources_and_trade_links():
     expected = {
-        "BITFINEX": {"BITFINEX_SPOT", "BITFINEX_FUTURE"},
+        "BITFINEX": {"BITFINEX_SPOT", "BITFINEX_FUTURE", "BITFINEX_CROSS_MARGIN"},
         "DERIBIT": {"DERIBIT_SPOT", "DERIBIT_FUTURE"},
         "GEMINI": {"GEMINI_SPOT", "GEMINI_FUTURE"},
     }

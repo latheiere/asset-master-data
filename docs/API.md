@@ -97,7 +97,7 @@ Authenticated liveness and database reachability check.
 ```json
 {
   "status": "ok",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "revision": "0123456789abcdef0123456789abcdef01234567",
   "markets": 12500
 }
