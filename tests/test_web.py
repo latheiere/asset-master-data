@@ -220,6 +220,8 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
         asset_page = client.get("/asset?TYPE=FUTURE")
         asset_detail_page = client.get("/asset?SYMBOL=SOL")
         btc_detail_page = client.get("/asset?SYMBOL=BTC")
+        asset_detail_api_response = client.get("/api/v1/assets?SYMBOL=SOL")
+        btc_detail_api_response = client.get("/api/v1/assets?SYMBOL=BTC")
         coverage_page = client.get("/coverage?TYPE=FUTURE")
         api_response = client.get("/api/v1/markets?TYPE=FUTURE")
         asset_response = client.get("/api/v1/assets?TYPE=FUTURE")
@@ -262,6 +264,7 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
         binance_only = client.get("/mdv?CONTRACT=PERP&FUTURES=BINANCE&FUTURES!=MEXC")
         monitoring = client.get("/mdv?TAG=BINANCE:MONITORING")
         monitoring_detail = client.get("/asset?SYMBOL=WIF")
+        monitoring_detail_api = client.get("/api/v1/assets?SYMBOL=WIF")
         scoped_refresh = client.post("/api/v1/refresh?VENUE=MEXC")
 
     assert unauthenticated_api.status_code == 401
@@ -297,20 +300,24 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
     assert asset_page.status_code == 200
     assert asset_detail_page.status_code == 200
     assert btc_detail_page.status_code == 200
+    assert asset_detail_api_response.status_code == 200
+    assert btc_detail_api_response.status_code == 200
     assert coverage_page.status_code == 200
     assert "BTC_USDT" not in response.text
-    assert "BTC_USDT" in btc_detail_page.text
+    assert "BTC_USDT" not in btc_detail_page.text
+    assert "BTC_USDT" in btc_detail_api_response.text
     assert "MEXC" in response.text
     assert "Perps" in response.text
     assert "MEXC ONLY" in response.text
     assert "SAME_VENUE_SPOT_FUTURE_SYMBOL" not in response.text
-    assert "https://www.mexc.com/futures/BTC_USDT" in btc_detail_page.text
-    assert "https://www.bybit.com/trade/usdt/SOLUSDT-25SEP26" in asset_detail_page.text
-    assert "Expires: 2026-09-25T08:00:00+00:00" in asset_detail_page.text
-    assert "Max market order size: 5000000" in btc_detail_page.text
+    assert "https://www.mexc.com/futures/BTC_USDT" in btc_detail_api_response.text
+    assert "https://www.bybit.com/trade/usdt/SOLUSDT-25SEP26" in asset_detail_api_response.text
+    assert "2026-09-25T08:00:00+00:00" in asset_detail_api_response.text
+    assert '"max_market_order_size":"5000000"' in btc_detail_api_response.text
     assert "Contract size:" not in asset_detail_page.text
-    assert 'class="asset asset-link"' in response.text
-    assert '<details class="asset" open>' in asset_detail_page.text
+    assert '<details class="asset" data-symbol="SOL">' in asset_detail_page.text
+    assert 'loadAssetDetail(details)' in response.text
+    assert '/api/v1/assets?SYMBOL=${encodeURIComponent(details.dataset.symbol)}&LIMIT=1' in response.text
     assert 'type="search" name="SYMBOL"' in response.text
     assert 'type="search" name="SYMBOL"' in coverage_page.text
     assert '<label>Tag<select name="TAG">' in response.text
@@ -319,11 +326,16 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
     assert 'assetSymbol.addEventListener(\'change\'' in response.text
     assert 'coverageSymbol.addEventListener(\'keydown\'' in coverage_page.text
     assert 'coverageSymbol.addEventListener(\'change\'' in coverage_page.text
-    assert "Loan · BYBIT" in asset_detail_page.text
+    assert asset_detail_api_response.json()["assets"][0]["loan_venues"] == [
+        {"venue": "BYBIT", "count": 1}
+    ]
     assert "Refresh universes" not in response.text
     assert "market-toggle" not in response.text
     assert "Availability matrix" in coverage_page.text
     assert 'class="coverage-row"' in coverage_page.text
+    assert 'role="button" aria-expanded="false" aria-controls="coverage-detail-1"' in coverage_page.text
+    assert 'loadCoverageDetail(row, detail)' in coverage_page.text
+    assert 'data-href="/asset?SYMBOL=' not in coverage_page.text
     assert "Margin" in coverage_page.text
     assert "Loans" in coverage_page.text
     assert api_response.json()["count"] == 3
@@ -434,7 +446,11 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
     assert "BTC_USDT" not in binance_only.text
     assert monitoring.status_code == 200
     assert "WIF" in monitoring.text
-    assert "BINANCE · Monitoring" in monitoring_detail.text
+    assert "BINANCE · Monitoring" not in monitoring_detail.text
+    assert any(
+        tag["provider"] == "BINANCE" and tag["raw_tag"] == "Monitoring"
+        for tag in monitoring_detail_api.json()["assets"][0]["tags"]
+    )
     assert scoped_refresh.status_code == 200
     assert scoped_refresh.json()["scope"] == "MEXC"
     assert scoped_refresh.json()["collection_run_id"] == "collection-run"

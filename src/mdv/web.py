@@ -425,15 +425,9 @@ def create_app(
         filters = _query_filters(request)
         if "LIMIT" not in request.query_params and "limit" not in request.query_params:
             filters["limit"] = 200
-        symbol_filters = list(filters["symbol"])
-        show_asset_detail = (
-            template_name == "mdv.html"
-            and len(symbol_filters) == 1
-            and "*" not in symbol_filters[0]
-        )
         try:
             asset_view = await asyncio.to_thread(
-                store.list_assets, filters, include_details=show_asset_detail
+                store.list_assets, filters, include_details=False
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -448,7 +442,7 @@ def create_app(
                 "filter_metadata": filter_metadata["filters"],
                 "stats": stats,
                 "view_path": request.url.path,
-                "show_asset_detail": show_asset_detail,
+                "token_info_url": settings.token_info_url,
                 "active_nav": "coverage" if template_name == "coverage.html" else "assets",
             },
         )

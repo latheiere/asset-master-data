@@ -133,6 +133,14 @@ metadata uses a reserved `_metadata` namespace; it does not replace venue
 fields. Canonical changes update versioned mappings instead of rewriting market
 history. Renamed and delisted markets remain available for audit.
 
+For linked Hyperliquid spot tokens, collection makes a best-effort public
+HyperEVM ERC-20 `name`/`symbol` lookup. When the verified contract symbol differs
+from the HyperCore ticker, it is retained as provider identity and used as the
+venue base symbol (for example, HyperCore `AAPL` linked to ERC-20 `AAPLd`). The
+original HyperCore token name, index, contract address, and ERC-20 metadata stay
+in raw `_metadata.HYPERLIQUID_EVM_TOKEN`. A contract symbol is not treated as
+proof of an upstream issuer, backing, or redemption relationship.
+
 Only complete successful snapshots can mark previously active markets or
 financing records missing. A partial, empty, failed, or malformed response
 records an error and preserves the previous current view. Each market and
@@ -277,7 +285,13 @@ auth:
   session_cookie_name: mdv_session
   session_ttl_seconds: 43200
   session_cookie_secure: false
+
+integration:
+  token_info_url: http://127.0.0.1:8091
 ```
+
+`integration.token_info_url` is the base URL used by asset and coverage pages
+for links to the separate token-information service.
 
 Use `mdv --config PATH ...` for another YAML file. Environment variables do not
 override behavioral YAML settings, so interactive and systemd runs consume the

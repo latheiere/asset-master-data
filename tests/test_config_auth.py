@@ -27,6 +27,7 @@ def test_settings_load_every_runtime_value_from_yaml(tmp_path):
                     "session_ttl_seconds": 99,
                     "session_cookie_secure": True,
                 },
+                "integration": {"token_info_url": "https://tokens.example.test/"},
             }
         ),
         encoding="utf-8",
@@ -44,6 +45,7 @@ def test_settings_load_every_runtime_value_from_yaml(tmp_path):
     assert settings.session_cookie_name == "test_session"
     assert settings.session_ttl_seconds == 99
     assert settings.session_cookie_secure is True
+    assert settings.token_info_url == "https://tokens.example.test"
 
 
 def test_password_hash_and_signed_session_are_fail_closed(tmp_path):

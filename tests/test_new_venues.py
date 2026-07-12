@@ -2,6 +2,7 @@ import asyncio
 import json
 from pathlib import Path
 
+import httpx
 import pytest
 
 from mdv.collection import CollectionService
@@ -14,6 +15,8 @@ from mdv.connectors.coinbase import (
 from mdv.connectors.hyperliquid import (
     HyperliquidPerpConnector,
     HyperliquidSpotConnector,
+    _decode_abi_string,
+    _erc20_metadata,
 )
 from mdv.connectors.kucoin import KucoinFutureConnector, KucoinSpotConnector
 from mdv.connectors.okx import okx_connectors
@@ -87,6 +90,114 @@ def test_hyperliquid_recorded_spot_and_all_perp_dex_fixtures():
     assert perps.markets[1].settle_symbol == "USDT0"
     assert perps.markets[1].venue_product == "HIP-3:flx"
     assert perps.markets[1].active is False
+
+
+def test_hyperliquid_spot_uses_linked_erc20_symbol_as_provider_identity(tmp_path):
+    payload = fixture("hyperliquid_success.json")["spot"]
+    payload[0]["tokens"].append(
+        {
+            "name": "AAPL",
+            "szDecimals": 2,
+            "weiDecimals": 8,
+            "index": 413,
+            "tokenId": "0xec340db435d4d90899e97655cb8e71f5",
+            "isCanonical": False,
+            "evmContract": {"address": "0x7374dc1894fbd1bc6c42f6ebbc50b78c211a8606"},
+        }
+    )
+    payload[0]["universe"].append(
+        {"tokens": [413, 0], "name": "@268", "index": 268, "isCanonical": False}
+    )
+
+    snapshot = HyperliquidSpotConnector().parse(
+        payload,
+        observed_at=OBSERVED_AT,
+        evm_metadata={
+            413: {
+                "contract_address": "0x7374dc1894fbd1bc6c42f6ebbc50b78c211a8606",
+                "name": "Apple (dStock)",
+                "symbol": "AAPLd",
+            }
+        },
+    )
+
+    market = next(market for market in snapshot.markets if market.raw_symbol == "@268")
+    assert market.base_symbol == "AAPLd"
+    assert market.quote_symbol == "USDC"
+    assert market.raw["tokens"] == [413, 0]
+    assert market.raw["_metadata"]["HYPERLIQUID_EVM_TOKEN"] == {
+        "core_token_index": 413,
+        "core_token_name": "AAPL",
+        "contract_address": "0x7374dc1894fbd1bc6c42f6ebbc50b78c211a8606",
+        "name": "Apple (dStock)",
+        "symbol": "AAPLd",
+    }
+
+    store = SQLiteStore(tmp_path / "hyperliquid.sqlite3")
+    store.apply_snapshot(snapshot)
+    with store.readonly() as conn:
+        mapping = conn.execute(
+            """
+            SELECT venue_symbol, normalized_symbol, method, evidence_json
+            FROM market_asset_mappings
+            WHERE market_id = 'HYPERLIQUID_SPOT:@268'
+            """
+        ).fetchone()
+    assert tuple(mapping[:3]) == ("AAPLd", "AAPLD", "SYMBOL_ONLY")
+    assert '"raw_base_symbol":"AAPLd"' in mapping[3]
+
+
+def test_hyperliquid_erc20_metadata_is_validated_and_best_effort():
+    def abi_string(value: str) -> str:
+        encoded = value.encode("utf-8")
+        padded_length = ((len(encoded) + 31) // 32) * 32
+        return "0x" + (
+            (32).to_bytes(32, "big")
+            + len(encoded).to_bytes(32, "big")
+            + encoded.ljust(padded_length, b"\0")
+        ).hex()
+
+    assert _decode_abi_string(abi_string("AAPLd")) == "AAPLd"
+    assert _decode_abi_string("not-hex") is None
+
+    async def enrich():
+        async def handler(request):
+            calls = json.loads(request.content)
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "jsonrpc": "2.0",
+                        "id": call["id"],
+                        "result": abi_string(
+                            "Apple (dStock)" if call["id"].endswith(":name") else "AAPLd"
+                        ),
+                    }
+                    for call in calls
+                ],
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await _erc20_metadata(
+                client,
+                [
+                    {
+                        "index": 413,
+                        "evmContract": {
+                            "address": "0x7374dc1894fbd1bc6c42f6ebbc50b78c211a8606"
+                        },
+                    },
+                    {"index": 414, "evmContract": {"address": "invalid"}},
+                ],
+            )
+
+    assert asyncio.run(enrich()) == {
+        413: {
+            "contract_address": "0x7374dc1894fbd1bc6c42f6ebbc50b78c211a8606",
+            "name": "Apple (dStock)",
+            "symbol": "AAPLd",
+        }
+    }
 
 
 def test_htx_recorded_spot_linear_inverse_perp_and_expiry_fixtures():

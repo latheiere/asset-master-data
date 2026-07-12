@@ -22,6 +22,7 @@ class Settings:
     session_cookie_name: str
     session_ttl_seconds: int
     session_cookie_secure: bool
+    token_info_url: str = "http://127.0.0.1:8091"
 
     @classmethod
     def from_yaml(cls, path: str | Path = DEFAULT_CONFIG_PATH) -> "Settings":
@@ -39,6 +40,7 @@ class Settings:
         server = _mapping(payload, "server")
         collection = _mapping(payload, "collection")
         auth = _mapping(payload, "auth")
+        integration = _mapping(payload, "integration")
         refresh = str(server.get("refresh_on_startup", "if-empty")).strip().lower()
         if refresh not in {"always", "if-empty", "never"}:
             raise ValueError("server.refresh_on_startup must be always, if-empty, or never")
@@ -66,6 +68,10 @@ class Settings:
             session_cookie_secure=_boolean(
                 auth.get("session_cookie_secure", False),
                 "auth.session_cookie_secure",
+            ),
+            token_info_url=_http_url(
+                integration.get("token_info_url", "http://127.0.0.1:8091"),
+                "integration.token_info_url",
             ),
         )
         if not settings.collection_schedule:
@@ -126,3 +132,10 @@ def _boolean(value: Any, name: str) -> bool:
     if normalized in {"false", "no", "0"}:
         return False
     raise ValueError(f"{name} must be true or false")
+
+
+def _http_url(value: Any, name: str) -> str:
+    normalized = str(value).strip().rstrip("/")
+    if not normalized.startswith(("http://", "https://")):
+        raise ValueError(f"{name} must be an http or https URL")
+    return normalized

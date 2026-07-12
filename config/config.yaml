@@ -17,3 +17,6 @@ auth:
   session_ttl_seconds: 43200
   # Set true when HTML is served over HTTPS.
   session_cookie_secure: false
+
+integration:
+  token_info_url: http://127.0.0.1:8091

@@ -36,6 +36,8 @@
     .asset > summary:hover, .asset-link:hover .asset-summary { background:#fafcff; }
     .asset[open] > summary { border-bottom:1px solid var(--line); background:#fafcff; }
     .asset-name { display:flex; gap:7px; align-items:center; min-width:0; }
+    .token-link { color:var(--blue); font-size:11px; font-weight:750; text-decoration:none; white-space:nowrap; }
+    .token-link:hover { text-decoration:underline; }
     .asset-name::before { content:'›'; color:var(--muted); font-size:20px; transform:rotate(0deg); transition:transform .15s ease; }
     .asset[open] .asset-name::before { transform:rotate(90deg); }
     .asset-symbol { font-weight:780; font-size:17px; letter-spacing:-.02em; }
@@ -92,10 +94,10 @@
         <label>Tag<select name="TAG"><option value="">Any tag</option>{% for tag in filter_metadata.TAG['values'] %}<option value="{{ tag }}"{% if tag in filters.tags %} selected{% endif %}>{{ tag }}</option>{% endfor %}</select></label>
       </div></details>
     </form>
-    <div class="kicker"><h2>Asset explorer</h2><span class="muted">Native symbols appear only when you inspect an asset.</span></div>
+    <div class="kicker"><h2>Asset explorer</h2><span class="muted">Open assets in place to inspect native symbols, markets, and eligibility.</span></div>
     {% if asset_view.assets %}<section class="asset-list" aria-label="Assets">
-      {% for asset in asset_view.assets %}{% if show_asset_detail %}<details class="asset" open><summary>{% else %}<a class="asset asset-link" href="{{ view_path }}?SYMBOL={{ asset.canonical_symbol }}"><div class="asset-summary">{% endif %}
-          <div class="asset-name"><span class="asset-symbol">{{ asset.canonical_symbol }}</span>{% if asset.is_stock %}<span class="stock">STOCK</span>{% endif %}</div>
+      {% for asset in asset_view.assets %}<details class="asset" data-symbol="{{ asset.canonical_symbol }}"><summary>
+          <div class="asset-name"><span class="asset-symbol">{{ asset.canonical_symbol }}</span>{% if asset.is_stock %}<span class="stock">STOCK</span>{% endif %}<a class="token-link" href="{{ token_info_url }}/asset?SYMBOL={{ asset.canonical_symbol }}">Token info</a></div>
           <div class="availability">
             <span class="metric{% if not asset.spot_venues %} none{% endif %}"><strong>Spot</strong> {{ asset.spot_venues|length }}</span>
             <span class="metric{% if not asset.perp_venues %} none{% endif %}"><strong>Perps</strong> {{ asset.perp_venues|length }}</span>
@@ -104,13 +106,7 @@
             <span class="metric finance{% if not asset.loan_venues %} none{% endif %}"><strong>Loans</strong> {{ asset.loan_venues|length }}</span>
           </div>
           <span class="coverage coverage-{{ asset.future_coverage_kind }}">{{ asset.future_coverage }}</span>
-        {% if show_asset_detail %}</summary>{% else %}</div></a>{% endif %}
-        {% if show_asset_detail %}
-        <div class="asset-detail">
-          <div class="detail-meta">{% for tag in asset.tags %}<span class="tag">{{ tag.provider }} · {{ tag.raw_tag }}</span>{% endfor %}{% for venue in asset.margin_venues %}<span class="tag">Margin · {{ venue.venue }}</span>{% endfor %}{% for venue in asset.loan_venues %}<span class="tag">Loan · {{ venue.venue }}</span>{% endfor %}</div>
-          <div class="venue-grid">{% for venue in asset.venues %}<section class="venue"><div class="venue-head"><h3>{{ venue.venue }}</h3><div class="native">Native {% for symbol in venue.symbols %}<code>{{ symbol }}</code>{% endfor %}</div></div><div class="market-columns"><div class="market-group"><h4>Spot · {{ venue.spot|length }}</h4>{% for market in venue.spot %}<div class="market"><a href="{{ market.trade_url }}" target="_blank" rel="noopener noreferrer">{{ market.raw_symbol }}</a><div class="market-meta">{{ market.base_symbol }}/{{ market.quote_symbol }} · {{ market.status }}</div></div>{% else %}<span class="muted">No active spot</span>{% endfor %}</div><div class="market-group"><h4>Derivatives · {{ venue.futures|length }}</h4>{% for market in venue.futures %}<div class="market"><a href="{{ market.trade_url }}" target="_blank" rel="noopener noreferrer">{{ market.raw_symbol }}</a><div class="market-meta">{{ market.product }}{% if market.contract_direction %} · {{ market.contract_direction }}{% endif %}{% if market.settle_symbol %} · settle {{ market.settle_symbol }}{% endif %}</div>{% if market.expires_at %}<div class="market-meta">Expires: {{ market.expires_at }}</div>{% endif %}{% if market.underlying_multiplier != '1' %}<div class="market-meta">Underlying unit: {{ market.underlying_unit }}</div>{% endif %}{% if market.max_market_order_size %}<div class="market-meta">Max market order size: {{ market.max_market_order_size }}</div>{% endif %}</div>{% else %}<span class="muted">No active derivatives</span>{% endfor %}</div></div></section>{% endfor %}</div>
-        </div>
-      </details>{% endif %}{% endfor %}
+        </summary><div class="asset-detail" aria-live="polite"><span class="muted">Loading asset details…</span></div></details>{% endfor %}
     </section>{% else %}<div class="empty">No active assets match these filters.</div>{% endif %}
   </main>
   <script>
@@ -133,6 +129,89 @@
     });
     assetSymbol.addEventListener('change', () => assetFilters.requestSubmit());
     assetSymbol.addEventListener('search', () => assetFilters.requestSubmit());
+
+    function element(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    }
+
+    function marketRow(market, derivative) {
+      const row = element('div', 'market');
+      const symbol = market.trade_url ? element('a', '', market.raw_symbol) : element('strong', '', market.raw_symbol);
+      if (market.trade_url) {
+        symbol.href = market.trade_url;
+        symbol.target = '_blank';
+        symbol.rel = 'noopener noreferrer';
+      }
+      row.append(symbol);
+      const detail = derivative
+        ? [market.product, market.contract_direction, market.settle_symbol && `settle ${market.settle_symbol}`].filter(Boolean).join(' · ')
+        : `${market.base_symbol}/${market.quote_symbol} · ${market.status}`;
+      row.append(element('div', 'market-meta', detail));
+      if (market.expires_at) row.append(element('div', 'market-meta', `Expires: ${market.expires_at}`));
+      if (market.underlying_multiplier && market.underlying_multiplier !== '1') row.append(element('div', 'market-meta', `Underlying unit: ${market.underlying_unit}`));
+      if (market.max_market_order_size) row.append(element('div', 'market-meta', `Max market order size: ${market.max_market_order_size}`));
+      return row;
+    }
+
+    function marketGroup(title, markets, derivative) {
+      const group = element('div', 'market-group');
+      group.append(element('h4', '', `${title} · ${markets.length}`));
+      if (markets.length) markets.forEach((market) => group.append(marketRow(market, derivative)));
+      else group.append(element('span', 'muted', `No active ${derivative ? 'derivatives' : 'spot'}`));
+      return group;
+    }
+
+    function renderAssetDetail(container, asset) {
+      container.replaceChildren();
+      const metadata = element('div', 'detail-meta');
+      (asset.tags || []).forEach((tag) => metadata.append(element('span', 'tag', `${tag.provider} · ${tag.raw_tag}`)));
+      (asset.margin_venues || []).forEach((venue) => metadata.append(element('span', 'tag', `Margin · ${venue.venue}`)));
+      (asset.loan_venues || []).forEach((venue) => metadata.append(element('span', 'tag', `Loan · ${venue.venue}`)));
+      if (metadata.childElementCount) container.append(metadata);
+      const venues = element('div', 'venue-grid');
+      (asset.venues || []).forEach((venue) => {
+        const card = element('section', 'venue');
+        const heading = element('div', 'venue-head');
+        heading.append(element('h3', '', venue.venue));
+        const native = element('div', 'native', 'Native ');
+        (venue.symbols || []).forEach((symbol) => native.append(element('code', '', symbol)));
+        heading.append(native);
+        card.append(heading);
+        const columns = element('div', 'market-columns');
+        columns.append(marketGroup('Spot', venue.spot || [], false));
+        columns.append(marketGroup('Derivatives', venue.futures || [], true));
+        card.append(columns);
+        venues.append(card);
+      });
+      container.append(venues);
+    }
+
+    async function loadAssetDetail(details) {
+      if (details.dataset.loaded || details.dataset.loading) return;
+      details.dataset.loading = 'true';
+      const container = details.querySelector('.asset-detail');
+      try {
+        const response = await fetch(`/api/v1/assets?SYMBOL=${encodeURIComponent(details.dataset.symbol)}&LIMIT=1`);
+        if (!response.ok) throw new Error(`Request failed (${response.status})`);
+        const payload = await response.json();
+        const asset = payload.assets && payload.assets.find((item) => item.canonical_symbol === details.dataset.symbol);
+        if (!asset) throw new Error('Asset is no longer available');
+        renderAssetDetail(container, asset);
+        details.dataset.loaded = 'true';
+      } catch (error) {
+        container.replaceChildren(element('div', 'muted', `Could not load details: ${error.message}`));
+      } finally {
+        delete details.dataset.loading;
+      }
+    }
+
+    document.querySelectorAll('.asset[data-symbol]').forEach((details) => {
+      details.addEventListener('toggle', () => { if (details.open) loadAssetDetail(details); });
+    });
+    document.querySelectorAll('.token-link').forEach((link) => link.addEventListener('click', (event) => event.stopPropagation()));
   </script>
 </body>
 </html>
