@@ -103,6 +103,7 @@ def test_deploy_requires_clean_annotated_release_tag():
     assert "rollback_release" in script
     assert "cleanup_failed_release" in script
     assert 'ACTIVE_BUILD_DIR=""' in script
+    assert 'ACTIVE_SOURCE_DIR=""' in script
     assert "trap 'rm -rf" not in script
     assert "SWITCHED=1" in script
     assert "DEPLOY_SUCCEEDED=1" in script
@@ -163,6 +164,13 @@ def test_deploy_requires_clean_annotated_release_tag():
     assert 'if ! mv -Tf "$temporary_link" "$CURRENT_LINK"' in script
     assert "2 * database_bytes + reserve" in script
     assert "predeploy-[0-9]*.[0-9]*.[0-9]*-*.tar.gz" in script
+    assert 'build_dir="$RELEASE_DIR"' in script
+    assert 'python3 -m venv "$build_dir/venv"' in script
+    assert 'python3 -m venv "$legacy_dir/venv"' in script
+    assert '"$build_dir/venv/bin/mdv" --version' in script
+    assert '"$legacy_dir/venv/bin/mdv" --version' in script
+    assert 'mv "$build_dir" "$RELEASE_DIR"' not in script
+    assert 'mv "$source_stage" "$legacy_dir"' not in script
 
 
 def test_timer_restore_propagates_failures_even_in_conditional_context():

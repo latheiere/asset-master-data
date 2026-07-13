@@ -81,6 +81,7 @@ BUILT_NEW_RELEASE=0
 SWITCHED=0
 DEPLOY_SUCCEEDED=0
 ACTIVE_BUILD_DIR=""
+ACTIVE_SOURCE_DIR=""
 COLLECTION_QUIESCED=0
 TIMER_STATE_CAPTURED=0
 TIMER_WAS_ENABLED=0
@@ -90,7 +91,11 @@ cleanup_failed_release() {
   local status=$?
   trap - EXIT
   if [[ -n "$ACTIVE_BUILD_DIR" && -d "$ACTIVE_BUILD_DIR" ]]; then
+    chmod -R u+w "$ACTIVE_BUILD_DIR" 2>/dev/null || true
     rm -rf -- "$ACTIVE_BUILD_DIR"
+  fi
+  if [[ -n "$ACTIVE_SOURCE_DIR" && -d "$ACTIVE_SOURCE_DIR" ]]; then
+    rm -rf -- "$ACTIVE_SOURCE_DIR"
   fi
   if (( status != 0 && SWITCHED == 1 && DEPLOY_SUCCEEDED == 0 )); then
     if ! rollback_release "$PREVIOUS_RELEASE"; then
@@ -175,8 +180,14 @@ build_release() {
     echo "Reusing immutable release $RELEASE_ID"
     return
   fi
-  build_dir="$(mktemp -d "$RELEASES_DIR/.build-$RELEASE_ID-XXXXXX")"
+  # Console-script shebangs created by venv are absolute. Build directly at
+  # the final inactive release path so the sealed environment is never moved.
+  # Atomicity is provided by the later current-symlink switch; the EXIT trap
+  # removes this directory if any build or validation step fails.
+  build_dir="$RELEASE_DIR"
+  install -d -m 0700 "$build_dir"
   ACTIVE_BUILD_DIR="$build_dir"
+  BUILT_NEW_RELEASE=1
   python3 -m venv "$build_dir/venv"
   "$build_dir/venv/bin/pip" install --require-hashes -r requirements.lock
   "$build_dir/venv/bin/pip" install --no-deps "$PROJECT_DIR"
@@ -187,25 +198,27 @@ build_release() {
   copy_runtime_contract "$PROJECT_DIR" "$PROJECT_DIR" "$build_dir"
   printf '%s\n' "$VERSION" > "$build_dir/VERSION"
   printf '%s\n' "$GIT_SHA" > "$build_dir/REVISION"
+  if [[ "$("$build_dir/venv/bin/mdv" --version)" != "mdv $VERSION" ]]; then
+    echo "installed mdv entrypoint is not executable at its final release path" >&2
+    return 1
+  fi
   chmod -R a-w "$build_dir"
-  mv "$build_dir" "$RELEASE_DIR"
   ACTIVE_BUILD_DIR=""
-  BUILT_NEW_RELEASE=1
   echo "Built immutable release $RELEASE_ID"
 }
 
 bootstrap_legacy_release() {
   local revision="$1"
-  local build_dir source_root legacy_version legacy_id legacy_dir
+  local source_stage source_root legacy_version legacy_id legacy_dir
   if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]] || \
     ! git cat-file -e "$revision^{commit}" 2>/dev/null || \
     [[ "$revision" == "$GIT_SHA" ]]; then
     echo "first immutable deploy requires a distinct, valid pre-pull revision" >&2
     return 1
   fi
-  build_dir="$(mktemp -d "$RELEASES_DIR/.legacy-XXXXXX")"
-  ACTIVE_BUILD_DIR="$build_dir"
-  source_root="$build_dir/source"
+  source_stage="$(mktemp -d "$RELEASES_DIR/.legacy-source-XXXXXX")"
+  ACTIVE_SOURCE_DIR="$source_stage"
+  source_root="$source_stage/source"
   mkdir -p "$source_root"
   git archive "$revision" | tar -x -C "$source_root"
   legacy_version="$(python3 -c 'import pathlib,tomllib,sys; print(tomllib.loads(pathlib.Path(sys.argv[1]).read_text())["project"]["version"])' "$source_root/pyproject.toml")"
@@ -217,28 +230,34 @@ bootstrap_legacy_release() {
       return 1
     fi
     BOOTSTRAP_RELEASE="$legacy_dir"
-    rm -rf -- "$build_dir"
-    ACTIVE_BUILD_DIR=""
+    rm -rf -- "$source_stage"
+    ACTIVE_SOURCE_DIR=""
     echo "Reusing legacy rollback release $legacy_id"
     return
   fi
-  python3 -m venv "$build_dir/venv"
-  "$build_dir/venv/bin/pip" install --require-hashes \
+  install -d -m 0700 "$legacy_dir"
+  ACTIVE_BUILD_DIR="$legacy_dir"
+  python3 -m venv "$legacy_dir/venv"
+  "$legacy_dir/venv/bin/pip" install --require-hashes \
     -r "$source_root/requirements.lock"
-  "$build_dir/venv/bin/pip" install --no-deps "$source_root"
-  if [[ "$("$build_dir/venv/bin/python" -c 'import mdv; print(mdv.__version__)')" != "$legacy_version" ]]; then
+  "$legacy_dir/venv/bin/pip" install --no-deps "$source_root"
+  if [[ "$("$legacy_dir/venv/bin/python" -c 'import mdv; print(mdv.__version__)')" != "$legacy_version" ]]; then
     echo "legacy package version does not match $legacy_version" >&2
     return 1
   fi
   # The current release-local installer understands stable runtime paths. Old
   # templates are preserved except for normalizing their mutable .venv command
   # to the release interpreter placeholder.
-  copy_runtime_contract "$source_root" "$PROJECT_DIR" "$build_dir"
-  rm -rf "$source_root"
-  printf '%s\n' "$legacy_version" > "$build_dir/VERSION"
-  printf '%s\n' "$revision" > "$build_dir/REVISION"
-  chmod -R a-w "$build_dir"
-  mv "$build_dir" "$legacy_dir"
+  copy_runtime_contract "$source_root" "$PROJECT_DIR" "$legacy_dir"
+  rm -rf -- "$source_stage"
+  ACTIVE_SOURCE_DIR=""
+  printf '%s\n' "$legacy_version" > "$legacy_dir/VERSION"
+  printf '%s\n' "$revision" > "$legacy_dir/REVISION"
+  if [[ "$("$legacy_dir/venv/bin/mdv" --version)" != "mdv $legacy_version" ]]; then
+    echo "legacy mdv entrypoint is not executable at its final release path" >&2
+    return 1
+  fi
+  chmod -R a-w "$legacy_dir"
   ACTIVE_BUILD_DIR=""
   BOOTSTRAP_RELEASE="$legacy_dir"
   echo "Built legacy rollback release $legacy_id"
