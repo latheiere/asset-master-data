@@ -469,7 +469,7 @@ class SQLiteStore:
                 SELECT collection_run_id, status, completed_at
                 FROM collection_runs
                 WHERE completed_at IS NOT NULL
-                ORDER BY completed_at DESC, collection_run_id DESC
+                ORDER BY started_at DESC, collection_run_id DESC
                 LIMIT 1
                 """
             ).fetchone()

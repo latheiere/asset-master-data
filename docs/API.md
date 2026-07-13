@@ -133,8 +133,10 @@ version. `markets` is the active-market count. `status` is `degraded` and
 `readiness.ready` is false when there are no active markets or the last usable
 successful/partial collection exceeds the configured maximum age. A configured
 age of zero disables only the freshness-age check. `latest_collection` and the
-age are null before collection history exists. Database size includes existing
-main, WAL, and shared-memory files.
+age are null before collection history exists. `latest_collection` is the most
+recently started completed attempt; reconciling an older abandoned run later
+does not displace a newer collection in health output. Database size includes
+existing main, WAL, and shared-memory files.
 
 ### `GET /api/v1/assets`
 

@@ -763,6 +763,30 @@ def test_stale_collection_runs_are_reconciled_and_exposed_by_readiness(tmp_path)
     assert readiness["ready"] is False
 
 
+def test_reconciled_stale_run_does_not_eclipse_newer_collection(tmp_path):
+    store = SQLiteStore(tmp_path / "mdv.sqlite3")
+    stale_run_id = store.start_collection_run(scope="BINANCE", venues=["BINANCE"])
+    with store.transaction() as conn:
+        conn.execute(
+            "UPDATE collection_runs SET started_at = ? WHERE collection_run_id = ?",
+            ("2000-01-01T00:00:00+00:00", stale_run_id),
+        )
+
+    successful_run_id = store.start_collection_run(
+        scope="BINANCE",
+        venues=["BINANCE"],
+    )
+    store.apply_snapshot(snapshot(), collection_run_id=successful_run_id)
+    store.finish_collection_run(successful_run_id)
+
+    assert store.reconcile_stale_collection_runs(stale_after_seconds=1) == 1
+
+    readiness = store.readiness(max_collection_age_seconds=60)
+    assert readiness["latest_collection"]["collection_run_id"] == successful_run_id
+    assert readiness["latest_collection"]["status"] == "SUCCEEDED"
+    assert readiness["ready"] is True
+
+
 def test_asset_pagination_does_not_reparse_raw_market_catalog(tmp_path, monkeypatch):
     store = SQLiteStore(tmp_path / "mdv.sqlite3")
     apply_market(store, market(
