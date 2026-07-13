@@ -1,159 +1,110 @@
-# Technical Debt Implementation Request
+# Technical debt
 
-This request covers known gaps in the current `0.3.0` implementation relative to
-the durable, provider-neutral service described in the README. It is not a list
-of already implemented features.
+This file records architectural gaps, not already implemented behavior. Runtime
+and operator behavior belongs in the README and `OPERATIONS_REFERENCE.md`; the
+external contract belongs in `docs/API.md`.
 
-## Goal
+## 1. Durable identity independent of ticker
 
-Make canonical identity, provider evidence, API contracts, and authorization
-safe for long-lived external use without weakening raw-data auditability or
-existing API compatibility.
+`asset_id` is still derived from `canonical_symbol`. A ticker rename therefore
+creates a new identity, while unrelated assets sharing a ticker cannot be
+represented safely without manual conventions.
 
-## Required work
+Target state:
 
-### 1. Replace ticker-derived asset identity
-
-Current `asset_id` is a UUID derived from `canonical_symbol`. This makes ticker
-changes create new identities and makes unrelated assets with the same ticker
-indistinguishable. It conflicts with the rule that a ticker is evidence rather
-than stable identity.
-
-Implement durable opaque asset IDs and a versioned identifier model:
-
-- Add canonical asset identity independent of symbol.
-- Store canonical symbols and external identifiers as effective-dated claims.
-- Allow multiple symbol claims and explicit rename/split/merge decisions.
-- Preserve every previous market mapping and candidate decision.
-- Never auto-merge on ticker, suffix, tag, or venue count alone.
-- Add manual `ACCEPTED`/`REJECTED` review operations with actor, reason, and
+- Opaque durable asset IDs independent of ticker text.
+- Effective-dated symbol and external-identifier claims.
+- Explicit, reversible rename/split/merge decisions with actor, reason, and
   timestamp.
-- Add at least one optional external-identity adapter behind a generic
-  interface; collection must continue when enrichment is unavailable.
+- Migration preserving every legacy asset ID and mapping revision without
+  silently collapsing identities.
+- Optional enrichment adapters that fail open for collection and never make a
+  suffix, tag, or venue count sufficient merge evidence.
 
-Migration must preserve existing asset IDs through an explicit legacy mapping,
-not silently regenerate or collapse them.
+## 2. Normalize all provider evidence at connector boundaries
 
-### 2. Persist normalized provider evidence
+Generic projection still interprets selected provider fields from stored
+`raw_json` for classifications, tags, and alias hints. Raw payload preservation
+is correct, but provider semantics should not leak past connectors.
 
-Current generic projection still recognizes provider payload fields such as
-`conceptPlate`, `indexOrigin`, `underlyingType`, and `symbolType` while reading
-`raw_json`. This is backward-compatible, but provider semantics should stop at
-the connector boundary.
+Target state:
 
-Implement a normalized, versioned evidence envelope or tables for:
+- A versioned normalized evidence envelope for classification, tag, alias,
+  reference-venue, and routing evidence.
+- Connector/evidence-adapter version recorded with each observation.
+- Matching, storage, and UI consuming only normalized evidence.
+- Monotonic backfill from existing raw payloads, retaining those payloads
+  unchanged.
 
-- Asset classifications such as `EQUITY`.
-- Provider-scoped tags and raw labels.
-- Alias hints: proposed symbol, rule, display match, reference venues, and raw
-  source pointers.
-- Trade-link routing capabilities.
-- Evidence schema version and connector version.
+## 3. Complete connector capability registration
 
-Connectors must translate provider fields into this contract. Matching, store,
-UI, and API code must consume only normalized evidence. Preserve the original
-provider payload separately and unchanged. Backfill existing rows through a
-monotonic migration or explicit rebuild command, with tests from schema 12.
+The registry owns connector factories, supported venues, and trade links, but
+some HTTP behavior remains global.
 
-### 3. Complete connector capability registration
+Target state: one venue registration declares display metadata, universes,
+normalized evidence adapter, trade-link builder, request headers, retry and
+rate policy, pagination, supported products, and health diagnostics. A fixture
+venue should require one registration and no edits to collection, CLI,
+resolution validation, templates, or projection code.
 
-The shared registry now owns connector factories, supported venues, and trade
-URLs. Extend it so one registration describes all venue capabilities:
+## 4. Define response models for every API
 
-- Display name and stable venue key.
-- Connector universes and normalized evidence adapter.
-- Trade URL builder.
-- Optional request headers, rate limits, retry policy, and pagination policy.
-- Supported market types/products and health diagnostics.
+Batch mapping has explicit Pydantic request/response models; assets, markets,
+financing, logs, metadata, stats, and health still return dynamic dictionaries.
 
-Remove global HTTP behavior that exists for one source’s CDN. Adding a fixture
-venue in tests must require one registration and no edits to collection, CLI,
-resolution validation, templates, or database projection code.
+Target state:
 
-### 4. Define and enforce external API schemas
+- Explicit models for nullability, enum values, and numeric/string choices.
+- Consistent `count`/`total` pagination semantics. Assets and financing currently
+  report pre-pagination totals; markets report returned rows.
+- Stable validation error codes and contract tests for documentation examples.
+- An OpenAPI snapshot and a written compatibility/deprecation policy before an
+  `/api/v2` is introduced.
 
-Only batch mapping currently has explicit Pydantic response models. Add models
-for assets, markets, logs, metadata, stats, health, and refresh responses.
+## 5. Extend mutation audit and browser hardening
 
-- Keep `/api/v1` backward compatible.
-- Specify nullability, numeric/string choices, pagination semantics, and all
-  enums.
-- Resolve the inconsistent `count` meaning: assets use pre-pagination total,
-  markets use returned-row count. Add an explicit `total` and `count`, or
-  version the correction.
-- Decide whether `settle_symbol` is nullable for spot mapping targets; model and
-  document one behavior.
-- Add contract tests against `docs/API.md` examples and an OpenAPI snapshot.
-- Add deterministic error bodies and stable error codes for query validation.
-- Document compatibility/deprecation policy before adding `/api/v2`.
+Reader/operator separation, bounded scrypt work, failed-auth throttling, and
+403/401 behavior are implemented. Remaining work is to record the authenticated
+actor on local manual-action revisions and add explicit anti-CSRF tokens if the
+browser mutation surface is ever exposed beyond its current trusted-host
+boundary. More granular scopes are only needed when additional mutations are
+introduced.
 
-### 5. Separate read and mutation authorization
+## 6. Operational telemetry and encrypted recovery
 
-Any authenticated user can currently call `POST /api/v1/refresh`. Add explicit
-roles or scopes:
+Readiness exposes collection freshness, running work, active markets, and
+database bytes; systemd uses host-survival memory/task limits and deployment
+keeps bounded release and backup sets. Remaining work:
 
-- Read: health, assets, markets, mappings, metadata, stats, logs.
-- Operator: refresh and future review/mutation endpoints.
-- Browser session permissions must match the authenticated principal.
-- Denied authenticated requests return 403; missing/invalid credentials remain
-  401.
-- Keep secrets out of SQLite, source control, logs, and API responses.
+- Export structured metrics for collection duration, endpoint latency, retry
+  counts, database/WAL growth, compaction deletions, and auth throttling.
+- Alert before disk, readiness-age, or repeated partial-collection thresholds
+  become operational failures.
+- Automate encrypted off-host database and entitlement backups. Default local
+  archives intentionally exclude entitlements and are not encrypted.
+- Schedule recovery drills and record recovery-point/recovery-time evidence.
+- If recovery must become one indivisible namespace switch across directories,
+  add a staged-root/symlink protocol; current restore validates and stages all
+  entries, preserves every original, atomically replaces each configured file,
+  and rolls the full promotion set back on error.
 
-### 6. Add identity and migration regression coverage
+## Required regression coverage for these items
 
-Add tests that prove:
+Future work must retain the existing guarantees:
 
-- Same ticker with conflicting independent identifiers stays separate.
-- Rename preserves asset identity and mapping history.
-- Split and merge decisions are explicit and reversible through new revisions.
-- A suffix-only candidate never merges.
-- Alias corroboration works with any declared reference venue and fails when
-  reference evidence is absent, stale, ambiguous, or differently classified.
-- Unit-prefixed symbols do not merge without an unprefixed counterpart.
-- Empty, partial, malformed, and failed snapshots cannot mark markets missing.
-- Migrations work from empty DB and schema 12 with representative history.
-- All supported connectors parse recorded fixtures before optional live tests.
+- Empty, partial, malformed, failed, overlapping, and out-of-order snapshots do
+  not regress the current catalog.
+- Recent changed raw evidence survives payload compaction; older change rows
+  retain hashes/state until the configured hard row ceiling. Lifecycle/tag
+  events, candidates, and mapping revisions are not pruned by audit compaction.
+- Suffix-only aliases never merge without the documented independent evidence.
+- Unit prefixes do not merge without an unprefixed counterpart.
+- Migrations work from an empty database and the previously released schema.
+- Recorded connector fixtures run before any optional live check.
+- Mapping resolution remains projection-free: one indexed read transaction, no
+  `list_assets()`, no `raw_json`, with authenticated 1/10/100-symbol and
+  concurrent latency benchmarks preserved.
 
-### 7. Complete public financing coverage
-
-Current financing discovery intentionally covers only documented,
-credential-free catalogs: Binance, Bitget, Bybit, Gate, and XT cross margin,
-plus Bitget, Bybit, and XT crypto loans. Remaining work:
-
-- Add Binance crypto-loan catalogs only if Binance publishes a credential-free
-  enumeration source. Do not introduce exchange credentials into this
-  repository.
-- Add MEXC cross-margin or crypto-loan catalogs only when a documented public
-  enumeration API exists. Announcements and logged-in product pages are not a
-  complete snapshot contract.
-- Confirm and normalize Gate's venue-native loan-rate unit before presenting it
-  as an APR or hourly rate.
-- Add inventory/availability only as non-user-specific venue state. Account
-  balances, credit, personalized limits, and positions belong in a separate
-  service.
-
-## Constraints
-
-- Do not import sibling-project code, configuration, databases, or runtime
-  state.
-- Do not require exchange credentials for initial discovery.
-- Do not overwrite or delete an existing SQLite database.
-- Use monotonic, transactional migrations.
-- Keep mapping resolution projection-free: one indexed read transaction, no
-  `list_assets()`, no `raw_json`, synchronous/thread-pool route.
-- Preserve authenticated 1/10/100-symbol and concurrent mapping benchmarks.
-- Update README only for human-facing behavior; update `docs/API.md` for
-  external contracts and `AGENTS.md` for coding-agent rules.
-
-## Completion evidence
-
-Provide:
-
-- Migration plan, rollback limitations, and before/after schema summary.
-- Tests from empty DB and schema 12 fixture.
-- Full pytest result and mapping benchmark results.
-- Recorded connector fixture results; list optional live endpoint failures.
-- Files changed and API compatibility notes.
-- Confirmation that no origin, push, or deployment occurred unless separately
-  authorized.
-- Remaining identity ambiguity requiring human review.
+Completion reports must include migrations, API compatibility, tests and
+benchmarks, changed files, unresolved ambiguity, and confirmation that no push,
+deployment, or live collection occurred unless separately authorized.

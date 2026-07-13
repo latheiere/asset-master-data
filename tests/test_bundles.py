@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import hashlib
+from dataclasses import replace
 
 import pytest
 
@@ -84,6 +85,12 @@ class BundleFinancingConnector:
         )
 
 
+class InvalidBundleConnector(BundleMarketConnector):
+    async def fetch(self, client):
+        snapshot = await super().fetch(client)
+        return replace(snapshot, observed_at="not-a-timestamp")
+
+
 def test_collection_bundle_round_trip_applies_market_and_financing_snapshots(tmp_path):
     connectors = [BundleMarketConnector(), BundleFinancingConnector()]
     bundle = asyncio.run(
@@ -155,3 +162,15 @@ def test_failed_remote_bundle_records_failure_and_preserves_current_snapshot(tmp
     assert results[0].ok is False
     assert bool(store.list_markets({})[0]["active"]) is True
     assert store.list_collection_runs()["runs"][0]["status"] == "FAILED"
+
+
+def test_bundle_export_records_invalid_snapshot_as_failed_entry():
+    bundle = asyncio.run(
+        export_collection_bundle(
+            venue="TEST", timeout_seconds=1, connectors=[InvalidBundleConnector()]
+        )
+    )
+
+    assert bundle_succeeded(bundle) is False
+    assert bundle["entries"][0]["status"] == "FAILED"
+    assert "invalid observed_at" in bundle["entries"][0]["error"]

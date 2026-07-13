@@ -126,7 +126,6 @@ def app_client(tmp_path, store: SQLiteStore) -> tuple[TestClient, dict[str, str]
         db_path=store.path,
         host="127.0.0.1",
         port=8090,
-        refresh_on_startup="never",
         http_timeout_seconds=1,
         collection_schedule="*-*-* 00:00:00 UTC",
         entitlements_path=entitlements_path,

@@ -20,9 +20,10 @@ independent master-data service, not a trading engine, price feed, or order
 routing service.
 
 > Development disclosure: this repository has been developed primarily through
-> Codex-assisted “vibe coding,” with human direction and test-based review. The
-> current release is `0.11.0`; audit behavior, security, and operational controls
-> before relying on it in a production or risk-sensitive system.
+> Codex-assisted “vibe coding,” with human direction and test-based review.
+> Audit behavior, security, and operational controls before relying on it in a
+> production or risk-sensitive system. The current release is disclosed in the
+> README and derived at runtime from installed package metadata.
 
 ## What it provides
 
@@ -38,8 +39,11 @@ canonical asset → venue base symbols → active markets
 authenticated HTML and JSON APIs
 ```
 
-- Complete-snapshot collection with failure isolation per venue universe, bounded
-  fetch concurrency, and one derived-mapping rebuild after each refresh.
+- Complete-snapshot collection with failure isolation per venue universe,
+  bounded fetch concurrency/retry, a cross-process single-writer lease, and one
+  derived-mapping rebuild after each collection.
+- Out-of-order snapshot rejection, abandoned-run reconciliation, and explicit
+  readiness/freshness diagnostics.
 - Raw venue fields, observation timestamps, and inactive-market history.
 - Normalized product, settlement, direction, expiry, status, and size fields.
 - Evidence-based asset matching with candidate decisions and mapping revisions.
@@ -55,7 +59,8 @@ set `PYTHON_BOOTSTRAP` to another supported interpreter when needed.
 
 ```bash
 make install
-.venv/bin/python -m mdv.cli entitlement admin --password-file /secure/password-file
+.venv/bin/python -m mdv.cli entitlement admin \
+  --password-file /secure/password-file --role operator
 make collect
 make serve
 ```
@@ -67,9 +72,12 @@ Open [http://127.0.0.1:8090/mdv](http://127.0.0.1:8090/mdv) and sign in as
 password hashes and a random session-signing secret, and is ignored by Git.
 `config/entitlements.example.yaml` documents its non-secret structure.
 
-The server performs one collection on startup only when the database is empty.
-Set `server.refresh_on_startup: never` to disable it, or run `mdv serve
---refresh` to force collection before serving.
+The server never performs collection at startup and there is no web-triggered
+collection route. Run `mdv collect` explicitly or use the systemd timer. A
+non-blocking file lease permits only one collector or bundle import to mutate a
+database at a time; a second writer fails without waiting. A snapshot older than
+the latest successfully applied snapshot for its source is rejected before a
+collection run or current row can be changed.
 
 ## Supported universes
 
@@ -147,9 +155,19 @@ Only complete successful snapshots can mark previously active markets or
 financing records missing. A partial, empty, failed, or malformed response
 records an error and preserves the previous current view. Each market and
 financing catalog is applied transactionally and independently. Current raw
-payloads remain available; observation history retains raw payloads only for
-lifecycle, eligibility, or status transitions, while every observation keeps
-its timestamp, normalized state, and content hash.
+payloads remain available. Observation history retains raw payloads for first
+observations, content changes, lifecycle, eligibility, and status transitions.
+Unchanged observations retain timestamp, normalized state, and content hash for
+`audit.unchanged_observation_retention_days`, then the bounded compactor removes
+those unchanged rows. Historical change rows keep their content hash and
+normalized state, while bulky payload fields are cleared after
+`audit.changed_payload_retention_days`; current raw payloads are unaffected.
+Each observation table has an exact
+`audit.max_retained_observations_per_table` ceiling for retained change rows;
+the oldest rows beyond it are removed while lifecycle/tag events, current state,
+mapping candidates, and mapping revisions survive. Cumulative payload-compaction
+and row-pruning counters plus current retained-row counts appear in `/health`
+and `doctor`. Set an individual limit to `0` to disable that operation.
 
 Normalized dimensions remain independent:
 
@@ -246,6 +264,8 @@ asset actions. `MAP_SYMBOL` applies to an exact venue base symbol; `RENAME_ASSET
 applies globally after normal matching; `OTHER` is an auditable note only.
 Bundled actions live in `src/mdv/manual_asset_actions.json` and are reconciled
 on migration. A local edit or delete takes precedence for that installation.
+Accounts with the `operator` role may mutate these actions; `reader` accounts
+may inspect every route but receive 403 for mutation attempts.
 
 Collection logs distinguish a first observed market (`MARKET_DISCOVERED`) from
 a later listing for an asset that already had a market of that type on the venue
@@ -257,6 +277,13 @@ Every route, including `/health`, requires authentication. API clients use HTTP
 Basic Auth. Browser requests redirect to `/login` and receive a signed,
 expiring, HttpOnly, SameSite cookie after login; the cookie does not contain the
 password.
+
+Password hashes use fixed, validated scrypt parameters. Hash work is moved off
+the event loop and bounded by `auth.max_concurrent_hashes`. Repeated failures are
+limited per client address; after `auth.failed_attempt_limit`
+failures in the configured window, requests receive 429 and `Retry-After`.
+Legacy entitlement records without a role remain `operator` for compatibility;
+new accounts should choose `reader` or `operator` explicitly.
 
 The default listener is `127.0.0.1`. Keep it on a trusted host or network. Add
 TLS and set `auth.session_cookie_secure: true` before browser access over HTTPS.
@@ -276,17 +303,27 @@ database:
 server:
   host: 127.0.0.1
   port: 8090
-  refresh_on_startup: if-empty  # always | if-empty | never
 
 collection:
   http_timeout_seconds: 20
+  max_concurrent_fetches: 2
+  stale_after_seconds: 7200
+  readiness_max_age_seconds: 129600  # 0 disables the age check
   schedule: "*-*-* 00:00:00 UTC"  # systemd OnCalendar syntax
+
+audit:
+  unchanged_observation_retention_days: 30  # 0 disables pruning
+  changed_payload_retention_days: 7  # 0 keeps historical raw payloads
+  max_retained_observations_per_table: 100000  # 0 disables hard row cap
 
 auth:
   entitlements_path: config/entitlements.yaml
   session_cookie_name: mdv_session
   session_ttl_seconds: 43200
   session_cookie_secure: false
+  max_concurrent_hashes: 2
+  failed_attempt_limit: 10
+  failed_attempt_window_seconds: 60
 
 integration:
   token_info_url: http://127.0.0.1:8091
@@ -295,20 +332,34 @@ integration:
 `integration.token_info_url` is the base URL used by asset and coverage pages
 for links to the separate token-information service.
 
-Use `mdv --config PATH ...` for another YAML file. Environment variables do not
-override behavioral YAML settings, so interactive and systemd runs consume the
-same configuration. Systemd injects `MDV_GIT_SHA` only as deployment identity.
-Runtime data defaults to `.data/` and remains ignored by Git.
+Use `mdv --config PATH ...` for another YAML file. In a source checkout the
+existing `config/config.yaml` remains the default. Outside a checkout,
+`MDV_CONFIG_PATH` or the XDG path
+`~/.config/asset-master-data/config.yaml` is used; `mdv init-config` creates an
+XDG configuration and chooses `~/.local/share/asset-master-data/mdv.sqlite3`.
+Config, entitlement, and bundle outputs are written through random mode-`0600`
+same-directory temporary files, fsynced, and atomically promoted. Destination
+symlinks are rejected; replacing a hard-linked destination detaches that name
+without modifying the other link.
+Behavioral settings otherwise come from YAML so interactive and systemd runs
+agree. Timeout values must be finite; HTTP timeout is capped at 300 seconds,
+fetch concurrency at 32, concurrent scrypt checks at 8, failed attempts per
+window at 100, and the failure window at 3600 seconds. These are configuration
+guardrails, not recommended targets—the limited production host should retain
+the shipped defaults. Systemd injects `MDV_GIT_SHA` only as deployment identity.
 
 ## CLI and development
 
 ```bash
+mdv init-config
 mdv --config config/config.yaml init
 mdv --config config/config.yaml collect
 mdv --config config/config.yaml collect --venue BINANCE
 mdv --config config/config.yaml collect --exclude-venue XT
 mdv --config config/config.yaml bundle-export --venue XT --output xt-bundle.json
 mdv --config config/config.yaml bundle-import xt-bundle.json
+mdv --config config/config.yaml compact
+mdv --config config/config.yaml doctor --require-ready
 mdv --config config/config.yaml stats
 mdv --config config/config.yaml serve --host 127.0.0.1 --port 8090
 make test
@@ -321,6 +372,13 @@ checksum, registry metadata, complete source set, and each snapshot before
 applying successful universes transactionally. Failed universes are recorded
 without marking their previous records missing. `--output -` writes a bundle to
 standard output for an external SSH or file-transfer wrapper.
+
+Collection and bundle import share the same database writer lease. At startup,
+before collection/import, and during `doctor`, runs left `RUNNING` beyond
+`collection.stale_after_seconds` are reconciled to `FAILED`. Readiness requires
+at least one active market and, when enabled, a successful or partial collection
+newer than `collection.readiness_max_age_seconds`. A collection in progress does
+not hide the last usable snapshot.
 
 The Makefile accepts an ignored `Makefile.local` override of `COLLECT_COMMAND`
 for host-specific collection orchestration. Remote host names and transfer
@@ -368,7 +426,8 @@ Prepare units without starting the API:
 
 ```bash
 make install
-.venv/bin/python -m mdv.cli entitlement USER --password-file /secure/password-file
+.venv/bin/python -m mdv.cli entitlement USER \
+  --password-file /secure/password-file --role operator
 bash deploy/systemd/install_systemd.sh
 ```
 
@@ -378,15 +437,70 @@ Complete dependency sync, migration, and API start:
 bash deploy/systemd/deploy.sh
 ```
 
-The deploy script refuses dirty worktrees, untagged commits, mismatched versions,
-lightweight tags, and tags that do not identify current `main` HEAD.
+The deploy script refuses dirty worktrees, a non-`main` or out-of-date branch,
+untagged commits, mismatched versions, lightweight tags, and tags that do not
+identify current `main` HEAD. It builds a locked environment under
+`.local/releases/vX.Y.Z-SHA`, makes it read-only, and never mutates an active
+environment in place. The release includes its installed package environment,
+non-secret configuration snapshot, release-local installer, and all unit
+templates. Systemd and readiness use `.local/current/config/config.yaml`, so a
+rollback does not read configuration or deployment code from the newly pulled
+checkout. Entitlements remain external at the configured stable path.
+
+On the first transition from the legacy editable deployment, the deploy entry
+captures the pre-pull Git SHA. If an older deploy entry already performed the
+pull, the new script uses the verified `ORIG_HEAD`. It archives that commit,
+installs its locked package into a read-only release, snapshots its configuration
+and unit templates, and requires that legacy rollback release before the first
+immutable cutover. A missing, identical, or invalid prior revision aborts the
+transition instead of deploying without rollback.
 
 Deployment does not force a collection. Run `make collect-prod` only when the
 release changes collection behavior, such as adding a venue or a financing
 catalog; scheduled collection continues through `asset-master-refresh.timer`.
+The deploy transaction captures the timer's enabled and active state, stops the
+timer and any in-flight collector before backup/migration, and keeps collection
+quiescent through API readiness. It restores that exact state after rollback or
+successful cutover, so a deliberate operator pause is not erased. This prevents
+a pre-release collector from committing old projection logic after migration.
 
-Deployment does not overwrite configuration, entitlements, or an existing
-SQLite database. Inspect it with:
+Before migration or cutover, deployment resolves the database from the active
+release and requires the candidate release to use the same path. It creates a
+verified SQLite-online backup, retains the exact active non-secret configuration
+as evidence that is never auto-restored, and records the active release,
+revision, and version in manifest metadata. Missing input, insufficient disk
+headroom, a checksum mismatch, or SQLite integrity failure aborts the deploy.
+It then migrates, atomically switches `.local/current`, installs units
+against that stable path, and waits for `mdv doctor --require-ready` plus HTTP
+liveness. A failure automatically switches back to the prior immutable runtime
+and restarts it. Migrations are monotonic and are not automatically reversed;
+the predeploy backup remains the data rollback point.
+
+Re-running deployment for the already active tag performs a health-checked
+no-op. It never treats the active release as its own rollback target.
+
+As soon as a new predeploy archive self-verifies, backup cleanup enforces a
+newest-two-distinct-source-revisions policy—even if migration or cutover later
+fails—so retries from one revision cannot fill the disk or evict the preceding
+recovery point. The source revision is encoded in the safe archive filename and
+also recorded in verified manifest metadata. Those two archives map to the two
+distinct rollback releases retained beside current. After successful readiness, release cleanup
+retains the active release, the immediate rollback target, and one additional
+recent release (three maximum). A newly built inactive release is removed when
+its own deploy fails. Cleanup never removes the active or immediate rollback
+runtime.
+
+The units restrict writes to the configured data directory and bound memory,
+task count, collection duration, restart bursts, and timer jitter. Both API and
+collector belong to `asset-master-data.slice`, whose aggregate
+`MemoryHigh=224M`/`MemoryMax=288M` prevents their individual ceilings from
+combining into a host-wide OOM. Each service is additionally capped at 224M,
+and collection concurrency defaults to two. These limits favor host survival on
+the 911 MiB no-swap production host: a failed collection is preferable to a
+host-wide OOM. Deployment never mutates configuration in place; it activates
+the tagged non-secret configuration snapshot and leaves external entitlements
+untouched. It does not force collection.
+Inspect it with:
 
 ```bash
 systemctl status asset-master-data.service
@@ -394,8 +508,57 @@ systemctl list-timers asset-master-refresh.timer
 journalctl -u asset-master-data -u asset-master-refresh --since today
 ```
 
-Back up a live WAL database through SQLite’s backup API; do not copy only the
-main database file.
+## Backup and recovery
+
+Back up a live WAL database through SQLite’s backup API; never copy only the
+main database file:
+
+```bash
+make backup
+make restore-check
+```
+
+The default archive requires the configured database and `config/config.yaml`,
+records hashes, modes, restore locations, and SQLite integrity, and is mode
+`0600`. The candidate archive is fully extracted and verified before atomic
+promotion; input symlinks are rejected. Archives are limited to 10,000 members
+and 1 GiB expanded, and both extraction and target staging require reserved free
+space. Verification enumerates members incrementally. It deliberately excludes
+`config/entitlements.yaml`, whose session
+secret would otherwise be plaintext inside the unencrypted tarball. Keep a
+separate encrypted entitlement backup and protect all off-host copies.
+
+Perform a restore drill or recovery only with collection and API writers
+stopped:
+
+```bash
+sudo systemctl disable --now asset-master-refresh.timer
+sudo systemctl stop asset-master-data.service asset-master-refresh.service
+make restore
+.local/current/venv/bin/python -m mdv.cli \
+  --config .local/current/config/config.yaml doctor --require-ready
+sudo systemctl enable --now asset-master-refresh.timer
+sudo systemctl start asset-master-data.service
+```
+
+Restore verifies the complete manifest and checks SQLite with an immutable
+read-only connection before changing a target. It stages every file beside its
+configured destination and fsyncs it. The archive is extracted once; the exact
+verified tree is the tree staged for promotion. No symlink destinations are
+allowed. Before the first promotion, restore creates timestamped same-filesystem
+safety hardlinks for every existing target and SQLite
+WAL/SHM sidecar. Each destination is then atomically replaced. A failure at any
+point rolls every attempted destination and removed sidecar back to its
+pre-restore state; if rollback itself cannot complete, the safety files remain
+for explicit operator recovery. If the filesystem cannot create the required
+hardlinks, restore fails before promotion instead of making an unbudgeted full
+copy. Existing files require the `--replace` used by
+`make restore`. Evidence-only configuration from a predeploy archive is verified
+but never promoted. Read the manifest metadata, select its matching retained
+immutable release, restore the database, and run `doctor` with that release's
+`.local/current/config/config.yaml`. The Make target refuses to run while the
+API, collector, or timer is active. Restore the separately encrypted entitlement
+file before starting the API if it was lost.
 
 ## License
 

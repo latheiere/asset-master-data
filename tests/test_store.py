@@ -3,7 +3,12 @@ from importlib import resources
 
 import pytest
 
-from mdv.db import SQLiteStore, market_trade_url
+from mdv.db import (
+    CollectionBusyError,
+    OutOfOrderSnapshotError,
+    SQLiteStore,
+    market_trade_url,
+)
 from mdv.models import FinancingRecord, FinancingSnapshot, MarketRecord, MarketSnapshot
 
 
@@ -467,13 +472,31 @@ def test_financing_migration_upgrades_schema_12_without_rewriting_market_data(tm
         venue = migrated.execute(
             "SELECT display_name FROM venues WHERE venue = 'BYBIT'"
         ).fetchone()[0]
-    assert versions[-1] == 15
+        asset_columns = {
+            row[1] for row in migrated.execute("PRAGMA table_info(assets)")
+        }
+        indexes = {
+            row[0]
+            for row in migrated.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            )
+        }
+    assert versions[-1] == 17
     assert {
         "financing_products", "financing_observations",
         "financing_lifecycle_events", "financing_asset_mappings",
         "financing_asset_mapping_revisions",
         "manual_asset_actions", "manual_asset_action_tombstones",
     }.issubset(tables)
+    assert "is_stock" in asset_columns
+    assert {
+        "idx_collection_runs_status_started",
+        "idx_market_observations_retention",
+        "idx_financing_observations_retention",
+        "idx_market_observations_evidence_retention",
+        "idx_financing_observations_evidence_retention",
+    }.issubset(indexes)
+    assert "audit_compaction_stats" in tables
     assert venue == "Bybit"
 
 
@@ -530,6 +553,235 @@ def test_observations_retain_raw_payloads_only_for_lifecycle_changes(tmp_path):
     assert market_payloads[2][0] == 1
     assert financing_payloads[0][0] == 1
     assert financing_payloads[1] == (0, "[]", "{}")
+
+    deleted = store.compact_audit_history(
+        unchanged_retention_days=1, batch_size=1
+    )
+    with store.readonly() as conn:
+        retained_market = conn.execute(
+            "SELECT COUNT(*) FROM market_observations WHERE raw_retained = 1"
+        ).fetchone()[0]
+        retained_financing = conn.execute(
+            "SELECT COUNT(*) FROM financing_observations WHERE raw_retained = 1"
+        ).fetchone()[0]
+        lifecycle = conn.execute(
+            "SELECT COUNT(*) FROM market_lifecycle_events"
+        ).fetchone()[0]
+    assert deleted["market_observations"] == 1
+    assert deleted["financing_observations"] == 1
+    assert retained_market == 2
+    assert retained_financing == 1
+    assert lifecycle >= 2
+
+
+def test_content_only_observation_change_retains_raw_evidence(tmp_path):
+    store = SQLiteStore(tmp_path / "mdv.sqlite3")
+    first = snapshot()
+    changed_record = MarketRecord(
+        **{**first.markets[0].__dict__, "raw": {"symbol": "BTCUSDT", "tickSize": "0.01"}}
+    )
+    changed = MarketSnapshot(
+        source=first.source,
+        venue=first.venue,
+        market_type=first.market_type,
+        product=first.product,
+        observed_at="2026-07-04T00:00:00+00:00",
+        markets=(changed_record,),
+    )
+
+    store.apply_snapshot(first)
+    store.apply_snapshot(changed)
+
+    with store.readonly() as conn:
+        retained = [
+            row[0]
+            for row in conn.execute(
+                "SELECT raw_retained FROM market_observations ORDER BY observed_at"
+            )
+        ]
+    assert retained == [1, 1]
+
+
+def test_audit_compaction_bounds_payloads_and_evidence_rows(tmp_path):
+    store = SQLiteStore(tmp_path / "mdv.sqlite3")
+    base = snapshot()
+    for day in range(3, 7):
+        record = MarketRecord(
+            **{
+                **base.markets[0].__dict__,
+                "raw": {"symbol": "BTCUSDT", "revision": day},
+            }
+        )
+        store.apply_snapshot(
+            MarketSnapshot(
+                source=base.source,
+                venue=base.venue,
+                market_type=base.market_type,
+                product=base.product,
+                observed_at=f"2026-07-{day:02d}T00:00:00+00:00",
+                markets=(record,),
+            )
+        )
+
+    result = store.compact_audit_history(
+        unchanged_retention_days=30,
+        changed_payload_retention_days=1,
+        max_retained_observations_per_table=2,
+        batch_size=1,
+    )
+
+    with store.readonly() as conn:
+        observations = conn.execute(
+            """
+            SELECT raw_json, raw_retained, payload_compacted
+            FROM market_observations ORDER BY observed_at
+            """
+        ).fetchall()
+        current_raw = conn.execute(
+            "SELECT raw_json FROM markets WHERE market_id = ?",
+            (base.markets[0].market_id,),
+        ).fetchone()[0]
+        lifecycle = conn.execute(
+            "SELECT COUNT(*) FROM market_lifecycle_events"
+        ).fetchone()[0]
+    readiness = store.readiness()
+
+    assert result["market_payloads_compacted"] == 4
+    assert result["market_evidence_rows_pruned"] == 2
+    assert [tuple(row) for row in observations] == [
+        ("{}", 1, 1),
+        ("{}", 1, 1),
+    ]
+    assert '"revision":6' in current_raw
+    assert lifecycle == 1
+    assert readiness["retained_observations"]["market_observations"] == 2
+    stats = readiness["audit_compaction"]["market_observations"]
+    assert stats["payloads_compacted"] == 4
+    assert stats["evidence_rows_pruned"] == 2
+    assert stats["updated_at"] is not None
+
+
+def test_collection_writer_lease_is_nonblocking_across_store_instances(tmp_path):
+    path = tmp_path / "mdv.sqlite3"
+    first = SQLiteStore(path)
+    second = SQLiteStore(path)
+
+    with first.collection_writer_lease():
+        with pytest.raises(CollectionBusyError, match="already running"):
+            with second.collection_writer_lease():
+                raise AssertionError("second writer unexpectedly acquired the lease")
+
+
+def test_out_of_order_snapshot_cannot_regress_current_catalog(tmp_path):
+    store = SQLiteStore(tmp_path / "mdv.sqlite3")
+    current = snapshot()
+    older = MarketSnapshot(
+        source=current.source,
+        venue=current.venue,
+        market_type=current.market_type,
+        product=current.product,
+        observed_at="2026-07-02T00:00:00+00:00",
+        markets=(MarketRecord(
+            **{**current.markets[0].__dict__, "active": False, "status": "BREAK"}
+        ),),
+    )
+    store.apply_snapshot(current)
+
+    with pytest.raises(OutOfOrderSnapshotError, match="older than applied"):
+        store.apply_snapshot(older)
+
+    assert store.list_markets({})[0]["status"] == "TRADING"
+    assert store.list_collection_runs()["count"] == 1
+
+
+def test_snapshot_order_uses_instants_not_timestamp_text(tmp_path):
+    store = SQLiteStore(tmp_path / "mdv.sqlite3")
+    current = snapshot()
+
+    def observed_at(value: str, *, status: str) -> MarketSnapshot:
+        record = MarketRecord(
+            **{
+                **current.markets[0].__dict__,
+                "status": status,
+                "raw": {"symbol": "BTCUSDT", "status": status},
+            }
+        )
+        return MarketSnapshot(
+            source=current.source,
+            venue=current.venue,
+            market_type=current.market_type,
+            product=current.product,
+            observed_at=value,
+            markets=(record,),
+        )
+
+    # Lexically, 08:00+07 sorts after 02:00+00 even though it is an hour older.
+    store.apply_snapshot(observed_at("2026-07-03T08:00:00+07:00", status="OPEN"))
+    store.apply_snapshot(observed_at("2026-07-03T02:00:00+00:00", status="TRADING"))
+
+    with pytest.raises(OutOfOrderSnapshotError, match="older than applied"):
+        store.apply_snapshot(
+            observed_at("2026-07-03T01:30:00+00:00", status="BREAK")
+        )
+
+    assert store.list_markets({})[0]["status"] == "TRADING"
+
+
+def test_stale_collection_runs_are_reconciled_and_exposed_by_readiness(tmp_path):
+    store = SQLiteStore(tmp_path / "mdv.sqlite3")
+    collection_run_id = store.start_collection_run(scope="BINANCE", venues=["BINANCE"])
+    with store.transaction() as conn:
+        conn.execute(
+            "UPDATE collection_runs SET started_at = ? WHERE collection_run_id = ?",
+            ("2000-01-01T00:00:00+00:00", collection_run_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO ingest_runs(
+                run_id, source, venue, market_type, product, started_at,
+                status, complete, collection_run_id
+            ) VALUES ('stale-child', 'BINANCE_SPOT', 'BINANCE', 'SPOT',
+                      'SPOT', '2000-01-01T00:00:00+00:00', 'RUNNING', 0, ?)
+            """,
+            (collection_run_id,),
+        )
+
+    assert store.reconcile_stale_collection_runs(stale_after_seconds=1) == 1
+    readiness = store.readiness(max_collection_age_seconds=60)
+    with store.readonly() as conn:
+        parent = conn.execute(
+            "SELECT status, error FROM collection_runs WHERE collection_run_id = ?",
+            (collection_run_id,),
+        ).fetchone()
+        child = conn.execute(
+            "SELECT status, error FROM ingest_runs WHERE run_id = 'stale-child'"
+        ).fetchone()
+    assert parent[0] == child[0] == "FAILED"
+    assert "collector exited" in parent[1]
+    assert "collector exited" in child[1]
+    assert readiness["running_collections"] == 0
+    assert readiness["ready"] is False
+
+
+def test_asset_pagination_does_not_reparse_raw_market_catalog(tmp_path, monkeypatch):
+    store = SQLiteStore(tmp_path / "mdv.sqlite3")
+    apply_market(store, market(
+        source="BINANCE_BTC", venue="BINANCE", market_type="SPOT",
+        raw_symbol="BTCUSDT", base_symbol="BTC",
+    ))
+    apply_market(store, market(
+        source="BINANCE_ETH", venue="BINANCE", market_type="SPOT",
+        raw_symbol="ETHUSDT", base_symbol="ETH",
+    ))
+
+    def fail_if_reparsed(*_args, **_kwargs):
+        raise AssertionError("list_assets reparsed raw catalog metadata")
+
+    monkeypatch.setattr("mdv.db.market_metadata", fail_if_reparsed)
+    page = store.list_assets({"limit": 1, "offset": 1})
+
+    assert page["count"] == 2
+    assert [asset["canonical_symbol"] for asset in page["assets"]] == ["ETH"]
 
 
 def test_delivery_manual_mapping_applies_and_local_actions_are_crud(tmp_path):

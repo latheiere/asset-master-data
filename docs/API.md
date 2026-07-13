@@ -15,6 +15,11 @@ All routes, including `/health`, require HTTP Basic Auth for service clients.
 Browser session cookies are an HTML UI mechanism and should not be used by
 service integrations.
 
+Entitlements have `reader` and `operator` roles. All documented consumer routes
+are readable by both roles. Operator-only mutation is currently limited to the
+HTML manual-action workflow; collection is intentionally available only through
+the CLI and systemd timer, not HTTP.
+
 ```bash
 curl --user "$ASSET_MASTER_USERNAME:$ASSET_MASTER_PASSWORD" \
   http://127.0.0.1:8090/api/v1/stats
@@ -35,6 +40,8 @@ generated OpenAPI does not currently cover every dynamic response field.
 | --- | --- |
 | `200` | Request completed; batch resolution may still contain per-symbol failures |
 | `401` | Missing or invalid authentication |
+| `403` | Authenticated principal lacks the operator role for a mutation |
+| `429` | Too many authentication failures; honor `Retry-After` |
 | `422` | Invalid query value, request shape, enum, or conflicting filter |
 | `500` | Unexpected server or storage failure |
 
@@ -92,21 +99,42 @@ lists.
 
 ### `GET /health`
 
-Authenticated liveness and database reachability check.
+Authenticated liveness, readiness, collection freshness, and database check.
 
 ```json
 {
   "status": "ok",
-  "version": "0.10.1",
+  "service": "asset-master-data",
+  "version": "X.Y.Z",
   "revision": "0123456789abcdef0123456789abcdef01234567",
-  "markets": 12500
+  "markets": 12500,
+  "readiness": {
+    "ready": true,
+    "database": "ok",
+    "active_markets": 12500,
+    "running_collections": 0,
+    "running_ingests": 0,
+    "latest_collection": {
+      "collection_run_id": "uuid",
+      "status": "SUCCEEDED",
+      "completed_at": "2026-07-14T00:00:00+00:00"
+    },
+    "last_usable_collection_age_seconds": 300,
+    "collection_fresh": true,
+    "database_bytes": 123456789
+  }
 }
 ```
 
 `version` is the installed release version. `revision` is the exact 40-character
 Git commit injected by the deployment unit, or `unknown` outside a validated
 deployment. The release version is independent of the `/api/v1` contract
-version. `markets` includes inactive records.
+version. `markets` is the active-market count. `status` is `degraded` and
+`readiness.ready` is false when there are no active markets or the last usable
+successful/partial collection exceeds the configured maximum age. A configured
+age of zero disables only the freshness-age check. `latest_collection` and the
+age are null before collection history exists. Database size includes existing
+main, WAL, and shared-memory files.
 
 ### `GET /api/v1/assets`
 
@@ -160,6 +188,10 @@ rate count, terms, platform limits, pair symbols, and observation time. Raw
 payloads and full rate tiers are omitted here to bound the asset response; use
 the financing endpoint for the complete record. `FINANCING` filters asset
 selection; financing metadata never changes active-market counts.
+Filtering/counting uses compact normalized columns. Full financing JSON,
+trade-link generation, and other detail enrichment occur only for assets in the
+requested `LIMIT`/`OFFSET` page; the endpoint does not load every raw market
+payload to answer stock filters or pagination.
 
 ### `GET /api/v1/financing`
 
@@ -414,24 +446,6 @@ meanings, and values available from the current active universe.
 Returns total and active market counts, per-universe counts and last-seen times,
 and the most recent ingest result for each source.
 
-### `POST /api/v1/refresh`
-
-Starts collection and waits for it to finish.
-
-```text
-POST /api/v1/refresh
-POST /api/v1/refresh?VENUE=MEXC
-```
-
-The first form collects every registered venue; the second collects every
-universe registered for one venue. Unknown venues return 422. The response
-contains `collection_run_id`, normalized `scope`, aggregate `ok`, and one result
-per universe with source, success, record count, ingest run ID, and optional
-error.
-
-This is a mutating and potentially slow endpoint. Current authentication has no
-read/write roles; protect credentials and network access accordingly.
-
 ## Consumer configuration example
 
 ```yaml
@@ -448,6 +462,6 @@ ASSET_MASTER_USERNAME=service-user
 ASSET_MASTER_PASSWORD=generated-password
 ```
 
-Use a longer timeout for `/api/v1/refresh` than for read endpoints. Consumers
-that require a coherent batch mapping should retain `snapshot_revision` with
-their result set.
+Consumers that require a coherent batch mapping should retain
+`snapshot_revision` with their result set. Trigger catalog collection through
+an operator-controlled CLI or scheduler outside the consumer request path.

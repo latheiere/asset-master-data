@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import time
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from importlib import resources
 from urllib.parse import parse_qs, quote, urlencode
@@ -13,7 +15,6 @@ from fastapi.templating import Jinja2Templates
 
 from mdv import __version__, build_revision
 from mdv.auth import Entitlements, basic_credentials
-from mdv.collection import CollectionService, collection_json
 from mdv.config import Settings
 from mdv.db import SQLiteStore
 from mdv.resolution import MappingResolveRequest, MappingResolveResponse
@@ -119,14 +120,12 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         store.migrate()
+        store.reconcile_stale_collection_runs(
+            stale_after_seconds=settings.collection_stale_after_seconds
+        )
         # Re-apply the current generic matcher to stored raw observations on
         # every deployment, even when no exchange refresh is requested.
         store.rebuild_symbol_matches()
-        should_refresh = settings.refresh_on_startup == "always" or (
-            settings.refresh_on_startup == "if-empty" and store.market_count() == 0
-        )
-        if should_refresh:
-            await CollectionService(store, timeout_seconds=settings.http_timeout_seconds).collect_all()
         yield
 
     app = FastAPI(title="Asset Master Data", version=__version__, lifespan=lifespan)
@@ -134,6 +133,57 @@ def create_app(
     app.state.settings = settings
     app.state.entitlements = entitlements
     basic_auth_cache: dict[bytes, str] = {}
+    auth_hash_slots = asyncio.Semaphore(settings.auth_max_concurrent_hashes)
+    failed_attempts: dict[str, deque[float]] = defaultdict(deque)
+    pending_attempts: dict[str, int] = defaultdict(int)
+
+    def attempt_key(request: Request, _username: str) -> str:
+        return request.client.host if request.client is not None else "unknown"
+
+    def attempts_allowed(key: str) -> bool:
+        now = time.monotonic()
+        if key not in failed_attempts and len(failed_attempts) >= 1024:
+            failed_attempts.pop(next(iter(failed_attempts)))
+        attempts = failed_attempts[key]
+        cutoff = now - settings.auth_failed_attempt_window_seconds
+        while attempts and attempts[0] < cutoff:
+            attempts.popleft()
+        return (
+            len(attempts) + pending_attempts.get(key, 0)
+            < settings.auth_failed_attempt_limit
+        )
+
+    async def authenticate_bounded(
+        request: Request, username: str, password: str
+    ) -> tuple[bool, bool]:
+        key = attempt_key(request, username)
+        # Never build an unbounded queue of memory-expensive scrypt work.
+        if auth_hash_slots.locked():
+            return False, True
+        await auth_hash_slots.acquire()
+        reserved = False
+        try:
+            # Re-check after owning a slot and reserve one failure-budget entry
+            # so parallel slots cannot all pass against the same stale deque.
+            if not attempts_allowed(key):
+                return False, True
+            pending_attempts[key] += 1
+            reserved = True
+            authenticated = await asyncio.to_thread(
+                entitlements.authenticate, username, password
+            )
+            if authenticated:
+                failed_attempts.pop(key, None)
+            else:
+                failed_attempts[key].append(time.monotonic())
+            return authenticated, False
+        finally:
+            if reserved:
+                if pending_attempts.get(key, 0) > 1:
+                    pending_attempts[key] -= 1
+                else:
+                    pending_attempts.pop(key, None)
+            auth_hash_slots.release()
 
     @app.middleware("http")
     async def require_authentication(request: Request, call_next):
@@ -149,13 +199,21 @@ def create_app(
                 hashlib.sha256,
             ).digest()
             username = basic_auth_cache.get(cache_key)
-            if username is None and await asyncio.to_thread(
-                entitlements.authenticate, *credentials
-            ):
-                username = credentials[0]
-                if len(basic_auth_cache) >= 128:
-                    basic_auth_cache.pop(next(iter(basic_auth_cache)))
-                basic_auth_cache[cache_key] = username
+            if username is None:
+                authenticated, limited = await authenticate_bounded(
+                    request, *credentials
+                )
+                if limited:
+                    return JSONResponse(
+                        {"detail": "too many authentication failures"},
+                        status_code=429,
+                        headers={"Retry-After": str(settings.auth_failed_attempt_window_seconds)},
+                    )
+                if authenticated:
+                    username = credentials[0]
+                    if len(basic_auth_cache) >= 128:
+                        basic_auth_cache.pop(next(iter(basic_auth_cache)))
+                    basic_auth_cache[cache_key] = username
         if username is None:
             session = request.cookies.get(settings.session_cookie_name, "")
             username = entitlements.session_username(session)
@@ -171,6 +229,7 @@ def create_app(
                 headers={"WWW-Authenticate": 'Basic realm="asset-master-data"'},
             )
         request.state.auth_username = username
+        request.state.auth_role = entitlements.role(username)
         return await call_next(request)
 
     @app.get("/login", response_class=HTMLResponse, include_in_schema=False)
@@ -195,7 +254,16 @@ def create_app(
         username = form.get("username", [""])[0]
         password = form.get("password", [""])[0]
         next_path = _safe_next(form.get("next", ["/mdv"])[0])
-        if not entitlements.authenticate(username, password):
+        authenticated, limited = await authenticate_bounded(request, username, password)
+        if limited:
+            return templates.TemplateResponse(
+                request=request,
+                name="login.html",
+                context={"next_path": next_path, "error": "Too many failed attempts. Try later."},
+                status_code=429,
+                headers={"Retry-After": str(settings.auth_failed_attempt_window_seconds)},
+            )
+        if not authenticated:
             return templates.TemplateResponse(
                 request=request,
                 name="login.html",
@@ -225,14 +293,17 @@ def create_app(
 
     @app.get("/health")
     async def health():
-        markets = store.market_count()
+        readiness = await asyncio.to_thread(
+            store.readiness,
+            max_collection_age_seconds=settings.collection_readiness_max_age_seconds,
+        )
         return {
-            "status": "ok",
+            "status": "ok" if readiness["ready"] else "degraded",
             "service": "asset-master-data",
             "version": __version__,
             "revision": build_revision(),
-            "markets": markets,
-            "readiness": {"database": "ok", "markets": markets},
+            "markets": readiness["active_markets"],
+            "readiness": readiness,
         }
 
     @app.get("/api/v1/markets")
@@ -302,6 +373,10 @@ def create_app(
             "enabled": form.get("enabled") in {"1", "true", "on"},
         }
 
+    def require_operator(request: Request) -> None:
+        if getattr(request.state, "auth_role", "reader") != "operator":
+            raise HTTPException(status_code=403, detail="operator role required")
+
     async def manual_action_form(request: Request) -> dict[str, str]:
         content_type = request.headers.get("content-type", "").split(";", 1)[0]
         if content_type != "application/x-www-form-urlencoded":
@@ -322,6 +397,7 @@ def create_app(
 
     @app.post("/manual-actions", response_class=HTMLResponse, include_in_schema=False)
     async def create_manual_action(request: Request):
+        require_operator(request)
         form = await manual_action_form(request)
         try:
             store.create_manual_asset_action(manual_action_payload(form))
@@ -339,6 +415,7 @@ def create_app(
 
     @app.post("/manual-actions/{action_id}", include_in_schema=False)
     async def update_manual_action(action_id: str, request: Request):
+        require_operator(request)
         form = await manual_action_form(request)
         try:
             store.update_manual_asset_action(action_id, manual_action_payload(form))
@@ -347,34 +424,13 @@ def create_app(
         return RedirectResponse("/manual-actions", status_code=303)
 
     @app.post("/manual-actions/{action_id}/delete", include_in_schema=False)
-    async def delete_manual_action(action_id: str):
+    async def delete_manual_action(action_id: str, request: Request):
+        require_operator(request)
         try:
             store.delete_manual_asset_action(action_id)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return RedirectResponse("/manual-actions", status_code=303)
-
-    @app.post("/api/v1/refresh")
-    async def api_refresh(request: Request):
-        venue = request.query_params.get("VENUE") or request.query_params.get("venue")
-        try:
-            results = await CollectionService(store, timeout_seconds=settings.http_timeout_seconds).collect(
-                venue=venue,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return collection_json(results, scope=str(venue or "ALL").strip().upper())
-
-    @app.post("/mdv/refresh", include_in_schema=False)
-    async def refresh_page(request: Request):
-        venue = request.query_params.get("VENUE") or request.query_params.get("venue")
-        try:
-            await CollectionService(store, timeout_seconds=settings.http_timeout_seconds).collect(
-                venue=str(venue) if venue else None,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return RedirectResponse("/logs", status_code=303)
 
     @app.get("/logs", response_class=HTMLResponse, include_in_schema=False)
     async def logs(request: Request):

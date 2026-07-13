@@ -1,7 +1,8 @@
 # Copy to config/entitlements.yaml and create users with:
-#   .venv/bin/python -m mdv.cli entitlement USER --password-file /secure/password-file
+#   .venv/bin/python -m mdv.cli entitlement USER --password-file /secure/password-file --role operator
 # Never commit the generated file or plaintext passwords.
 session_secret: replace-with-at-least-32-random-characters
 users:
   example:
     password_hash: scrypt$16384$8$1$replace-with-generated-value
+    role: operator

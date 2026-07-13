@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import threading
 import uuid
 from collections import defaultdict
 from fnmatch import fnmatchcase
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from importlib import resources
 from pathlib import Path
 from typing import Iterator
@@ -39,6 +40,14 @@ from mdv.normalization import (
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+class CollectionBusyError(ValueError):
+    """Raised when another process owns the catalog-writer lease."""
+
+
+class OutOfOrderSnapshotError(ValueError):
+    """Raised before an older snapshot can replace a newer current view."""
 
 
 def canonical_json(value: object) -> str:
@@ -110,6 +119,31 @@ class SQLiteStore:
         conn.execute("PRAGMA synchronous = NORMAL")
         conn.execute("PRAGMA busy_timeout = 30000")
         return conn
+
+    @contextmanager
+    def collection_writer_lease(self) -> Iterator[None]:
+        """Hold a non-blocking, process-scoped lease for a complete collection."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = self.path.with_name(f"{self.path.name}.collection.lock")
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        locked = False
+        try:
+            try:
+                import fcntl
+            except ImportError as exc:
+                raise RuntimeError(
+                    "collection writer leases require a POSIX-compatible runtime"
+                ) from exc
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise CollectionBusyError("another collection is already running") from exc
+            locked = True
+            yield
+        finally:
+            if locked:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
@@ -342,6 +376,330 @@ class SQLiteStore:
         with self.readonly() as conn:
             return int(conn.execute("SELECT COUNT(*) FROM markets").fetchone()[0])
 
+    def reconcile_stale_collection_runs(self, *, stale_after_seconds: int) -> int:
+        """Fail closed any parent/child runs abandoned by a dead collector."""
+        self.migrate()
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=stale_after_seconds)).isoformat()
+        now = utc_now()
+        message = "collector exited before completing this run"
+        with self.transaction() as conn:
+            parent_ids = {
+                str(row[0])
+                for row in conn.execute(
+                    """
+                    SELECT collection_run_id FROM collection_runs
+                    WHERE status = 'RUNNING'
+                      AND julianday(started_at) < julianday(?)
+                    """,
+                    (cutoff,),
+                )
+            }
+            stale_children = [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT run_id, collection_run_id FROM ingest_runs
+                    WHERE status = 'RUNNING'
+                      AND julianday(started_at) < julianday(?)
+                    """,
+                    (cutoff,),
+                )
+            ]
+            parent_ids.update(
+                str(row["collection_run_id"])
+                for row in stale_children
+                if row["collection_run_id"] is not None
+            )
+            if not parent_ids and not stale_children:
+                return 0
+            if stale_children:
+                child_placeholders = ",".join("?" for _ in stale_children)
+                conn.execute(
+                    f"""
+                    UPDATE ingest_runs
+                    SET completed_at = ?, status = 'FAILED', complete = 0, error = ?
+                    WHERE run_id IN ({child_placeholders}) AND status = 'RUNNING'
+                    """,
+                    [now, message, *[row["run_id"] for row in stale_children]],
+                )
+            run_ids = sorted(parent_ids)
+            if not run_ids:
+                return len(stale_children)
+            placeholders = ",".join("?" for _ in run_ids)
+            conn.execute(
+                f"""
+                UPDATE ingest_runs
+                SET completed_at = ?, status = 'FAILED', complete = 0, error = ?
+                WHERE collection_run_id IN ({placeholders}) AND status = 'RUNNING'
+                """,
+                [now, message, *run_ids],
+            )
+            conn.execute(
+                f"""
+                UPDATE collection_runs
+                SET completed_at = ?, status = 'FAILED', error = ?
+                WHERE collection_run_id IN ({placeholders})
+                """,
+                [now, message, *run_ids],
+            )
+            orphan_count = sum(
+                row["collection_run_id"] is None for row in stale_children
+            )
+            return len(run_ids) + orphan_count
+
+    def readiness(self, *, max_collection_age_seconds: int = 0) -> dict:
+        """Return low-cost operational readiness without building projections."""
+        self.migrate()
+        with self.readonly() as conn:
+            active_markets = int(
+                conn.execute("SELECT COUNT(*) FROM markets WHERE active = 1").fetchone()[0]
+            )
+            running_runs = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM collection_runs WHERE status = 'RUNNING'"
+                ).fetchone()[0]
+            )
+            running_ingests = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM ingest_runs WHERE status = 'RUNNING'"
+                ).fetchone()[0]
+            )
+            latest = conn.execute(
+                """
+                SELECT collection_run_id, status, completed_at
+                FROM collection_runs
+                WHERE completed_at IS NOT NULL
+                ORDER BY completed_at DESC, collection_run_id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            latest_usable = conn.execute(
+                """
+                SELECT completed_at FROM collection_runs
+                WHERE status IN ('SUCCEEDED', 'PARTIAL') AND completed_at IS NOT NULL
+                ORDER BY completed_at DESC, collection_run_id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            audit_compaction = {
+                str(row["observation_table"]): {
+                    "payloads_compacted": int(row["payloads_compacted"]),
+                    "evidence_rows_pruned": int(row["evidence_rows_pruned"]),
+                    "updated_at": row["updated_at"],
+                }
+                for row in conn.execute(
+                    "SELECT * FROM audit_compaction_stats ORDER BY observation_table"
+                )
+            }
+            retained_observations = {
+                table: int(
+                    conn.execute(
+                        f"SELECT COUNT(*) FROM {table} WHERE raw_retained = 1"
+                    ).fetchone()[0]
+                )
+                for table in ("market_observations", "financing_observations")
+            }
+        age_seconds = None
+        fresh = True
+        if latest_usable is not None:
+            completed = datetime.fromisoformat(
+                str(latest_usable["completed_at"]).replace("Z", "+00:00")
+            )
+            age_seconds = max(
+                0, int((datetime.now(timezone.utc) - completed.astimezone(timezone.utc)).total_seconds())
+            )
+            if max_collection_age_seconds:
+                fresh = age_seconds <= max_collection_age_seconds
+        elif max_collection_age_seconds:
+            fresh = False
+        database_bytes = sum(
+            candidate.stat().st_size
+            for candidate in (
+                self.path,
+                Path(f"{self.path}-wal"),
+                Path(f"{self.path}-shm"),
+            )
+            if candidate.exists()
+        )
+        ready = active_markets > 0 and fresh
+        return {
+            "ready": ready,
+            "database": "ok",
+            "active_markets": active_markets,
+            "running_collections": running_runs,
+            "running_ingests": running_ingests,
+            "latest_collection": dict(latest) if latest is not None else None,
+            "last_usable_collection_age_seconds": age_seconds,
+            "collection_fresh": fresh,
+            "database_bytes": database_bytes,
+            "retained_observations": retained_observations,
+            "audit_compaction": audit_compaction,
+        }
+
+    def compact_audit_history(
+        self,
+        *,
+        unchanged_retention_days: int,
+        changed_payload_retention_days: int = 7,
+        max_retained_observations_per_table: int = 100_000,
+        batch_size: int = 10_000,
+    ) -> dict[str, int]:
+        """Bound audit rows/payloads while preserving current state and events."""
+        self.migrate()
+        if min(
+            unchanged_retention_days,
+            changed_payload_retention_days,
+            max_retained_observations_per_table,
+        ) < 0:
+            raise ValueError("audit retention values must not be negative")
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        now = datetime.now(timezone.utc)
+        unchanged_cutoff = (
+            now - timedelta(days=unchanged_retention_days)
+        ).isoformat()
+        payload_cutoff = (
+            now - timedelta(days=changed_payload_retention_days)
+        ).isoformat()
+        result = {
+            "market_observations": 0,
+            "financing_observations": 0,
+            "market_payloads_compacted": 0,
+            "financing_payloads_compacted": 0,
+            "market_evidence_rows_pruned": 0,
+            "financing_evidence_rows_pruned": 0,
+        }
+        payload_updates = {
+            "market_observations": "raw_json = '{}', payload_compacted = 1",
+            "financing_observations": (
+                "rates_json = '[]', terms_json = '[]', limits_json = '{}', "
+                "pair_symbols_json = '[]', raw_json = '{}', payload_compacted = 1"
+            ),
+        }
+        for table in ("market_observations", "financing_observations"):
+            if unchanged_retention_days > 0:
+                while True:
+                    with self.transaction() as conn:
+                        cursor = conn.execute(
+                            f"""
+                            DELETE FROM {table}
+                            WHERE rowid IN (
+                                SELECT rowid FROM {table}
+                                WHERE raw_retained = 0 AND observed_at < ?
+                                ORDER BY observed_at, rowid
+                                LIMIT ?
+                            )
+                            """,
+                            (unchanged_cutoff, batch_size),
+                        )
+                        count = max(cursor.rowcount, 0)
+                    result[table] += count
+                    if count < batch_size:
+                        break
+
+            compacted_key = (
+                "market_payloads_compacted"
+                if table == "market_observations"
+                else "financing_payloads_compacted"
+            )
+            if changed_payload_retention_days > 0:
+                while True:
+                    with self.transaction() as conn:
+                        cursor = conn.execute(
+                            f"""
+                            UPDATE {table}
+                            SET {payload_updates[table]}
+                            WHERE rowid IN (
+                                SELECT rowid FROM {table}
+                                WHERE raw_retained = 1
+                                  AND payload_compacted = 0
+                                  AND observed_at < ?
+                                ORDER BY observed_at, rowid
+                                LIMIT ?
+                            )
+                            """,
+                            (payload_cutoff, batch_size),
+                        )
+                        count = max(cursor.rowcount, 0)
+                    result[compacted_key] += count
+                    if count < batch_size:
+                        break
+
+            pruned_key = (
+                "market_evidence_rows_pruned"
+                if table == "market_observations"
+                else "financing_evidence_rows_pruned"
+            )
+            if max_retained_observations_per_table > 0:
+                while True:
+                    with self.transaction() as conn:
+                        retained = int(
+                            conn.execute(
+                                f"SELECT COUNT(*) FROM {table} WHERE raw_retained = 1"
+                            ).fetchone()[0]
+                        )
+                        excess = retained - max_retained_observations_per_table
+                        if excess <= 0:
+                            count = 0
+                        else:
+                            cursor = conn.execute(
+                                f"""
+                                DELETE FROM {table}
+                                WHERE rowid IN (
+                                    SELECT rowid FROM {table}
+                                    WHERE raw_retained = 1
+                                    ORDER BY observed_at, rowid
+                                    LIMIT ?
+                                )
+                                """,
+                                (min(excess, batch_size),),
+                            )
+                            count = max(cursor.rowcount, 0)
+                    result[pruned_key] += count
+                    if count == 0 or count < batch_size:
+                        break
+
+            if result[compacted_key] or result[pruned_key]:
+                with self.transaction() as conn:
+                    conn.execute(
+                        """
+                        UPDATE audit_compaction_stats
+                        SET payloads_compacted = payloads_compacted + ?,
+                            evidence_rows_pruned = evidence_rows_pruned + ?,
+                            updated_at = ?
+                        WHERE observation_table = ?
+                        """,
+                        (
+                            result[compacted_key],
+                            result[pruned_key],
+                            now.isoformat(),
+                            table,
+                        ),
+                    )
+        with self.readonly() as conn:
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        return result
+
+    def _assert_snapshot_order(self, *, source: str, observed_at: str) -> None:
+        candidate = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+        with self.readonly() as conn:
+            latest = conn.execute(
+                """
+                SELECT started_at FROM ingest_runs
+                WHERE source = ? AND status = 'SUCCEEDED'
+                ORDER BY julianday(started_at) DESC, run_id DESC
+                LIMIT 1
+                """,
+                (source,),
+            ).fetchone()
+        if latest is None:
+            return
+        previous = datetime.fromisoformat(str(latest["started_at"]).replace("Z", "+00:00"))
+        if candidate.astimezone(timezone.utc) < previous.astimezone(timezone.utc):
+            raise OutOfOrderSnapshotError(
+                f"{source} snapshot {observed_at} is older than applied snapshot {latest['started_at']}"
+            )
+
     def start_collection_run(self, *, scope: str, venues: list[str]) -> str:
         self.migrate()
         collection_run_id = str(uuid.uuid4())
@@ -488,6 +846,7 @@ class SQLiteStore:
     ) -> str:
         snapshot.validate()
         self.migrate()
+        self._assert_snapshot_order(source=snapshot.source, observed_at=snapshot.observed_at)
         own_collection_run = collection_run_id is None
         if collection_run_id is None:
             collection_run_id = self.start_collection_run(scope=snapshot.venue, venues=[snapshot.venue])
@@ -520,7 +879,7 @@ class SQLiteStore:
                 raw_json = canonical_json(market.raw)
                 content_hash = hashlib.sha256(raw_json.encode()).hexdigest()
                 previous = conn.execute(
-                    "SELECT status, active FROM markets WHERE market_id = ?",
+                    "SELECT status, active, content_hash FROM markets WHERE market_id = ?",
                     (market.market_id,),
                 ).fetchone()
                 normalized = normalize_venue_asset_symbol(
@@ -543,6 +902,7 @@ class SQLiteStore:
                     previous is None
                     or bool(previous["active"]) != market.active
                     or previous["status"] != normalized_status
+                    or previous["content_hash"] != content_hash
                 )
                 normalized_direction = market.contract_direction or contract_direction(
                     market_type=market.market_type,
@@ -700,6 +1060,7 @@ class SQLiteStore:
         """Apply one complete public financing universe without account data."""
         snapshot.validate()
         self.migrate()
+        self._assert_snapshot_order(source=snapshot.source, observed_at=snapshot.observed_at)
         own_collection_run = collection_run_id is None
         if collection_run_id is None:
             collection_run_id = self.start_collection_run(
@@ -748,6 +1109,7 @@ class SQLiteStore:
                     or not previous["active"]
                     or bool(previous["eligible"]) != record.eligible
                     or previous["status"] != record.status
+                    or previous["content_hash"] != content_hash
                 )
                 conn.execute(
                     """
@@ -1217,6 +1579,8 @@ class SQLiteStore:
                         "normalized_symbol": canonical_symbol,
                         "normalizer_method": identity_method,
                         "mapping_evidence_json": canonical_json(mapping_evidence),
+                        "is_stock": "EQUITY"
+                        in metadata_by_market[market["market_id"]].classifications,
                         "evidence_score": max(
                             [candidate["score"] for candidate in candidates if candidate["decision"] == "ACCEPTED"],
                             default=0.0,
@@ -1224,6 +1588,9 @@ class SQLiteStore:
                     }
                 )
             scores = score_symbol_groups(prepared)
+            stock_by_symbol: dict[str, bool] = defaultdict(bool)
+            for item in prepared:
+                stock_by_symbol[item["normalized_symbol"]] |= bool(item["is_stock"])
             for row in prepared:
                 canonical_symbol = row["normalized_symbol"]
                 asset_id = stable_asset_id(canonical_symbol)
@@ -1237,11 +1604,20 @@ class SQLiteStore:
                     confidence = min(max(confidence, row["evidence_score"]), 0.99)
                 conn.execute(
                     """
-                    INSERT INTO assets(asset_id, canonical_symbol, created_at, updated_at)
-                    VALUES (?, ?, ?, ?)
-                    ON CONFLICT(asset_id) DO UPDATE SET updated_at=excluded.updated_at
+                    INSERT INTO assets(
+                        asset_id, canonical_symbol, created_at, updated_at, is_stock
+                    ) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(asset_id) DO UPDATE SET
+                        updated_at=excluded.updated_at,
+                        is_stock=excluded.is_stock
                     """,
-                    (asset_id, canonical_symbol, now, now),
+                    (
+                        asset_id,
+                        canonical_symbol,
+                        now,
+                        now,
+                        int(stock_by_symbol[canonical_symbol]),
+                    ),
                 )
                 previous = conn.execute(
                     """
@@ -1865,8 +2241,8 @@ class SQLiteStore:
                     m.contract_multiplier, m.expires_at, m.max_market_order_size,
                     m.underlying_multiplier, m.venue_product, m.venue_status,
                     m.contract_direction, m.expiry_cycle,
-                    m.first_seen_at, m.last_seen_at, m.raw_json,
-                    a.asset_id, a.canonical_symbol
+                    m.first_seen_at, m.last_seen_at,
+                    a.asset_id, a.canonical_symbol, a.is_stock AS asset_is_stock
                 FROM markets m
                 JOIN market_asset_mappings map ON map.market_id = m.market_id
                 JOIN assets a ON a.asset_id = map.asset_id
@@ -1905,8 +2281,7 @@ class SQLiteStore:
                 """
                 SELECT f.financing_id, f.venue, f.product, f.asset_role,
                        f.raw_asset_symbol, f.status, f.regular_user_tier,
-                       f.rates_json, f.terms_json, f.limits_json,
-                       f.pair_symbols_json, f.last_seen_at, map.asset_id
+                       f.last_seen_at, map.asset_id
                 FROM financing_products f
                 JOIN financing_asset_mappings map
                   ON map.financing_id = f.financing_id
@@ -1922,6 +2297,7 @@ class SQLiteStore:
                 {
                     "asset_id": row["asset_id"],
                     "canonical_symbol": row["canonical_symbol"],
+                    "is_stock": bool(row.pop("asset_is_stock")),
                     "markets": [],
                 },
             )
@@ -1994,24 +2370,8 @@ class SQLiteStore:
             )
         financing_by_asset: dict[str, list[dict]] = {}
         for financing_row in financing_rows:
-            rates = json.loads(financing_row.pop("rates_json"))
-            terms = json.loads(financing_row.pop("terms_json"))
-            limits = json.loads(financing_row.pop("limits_json"))
-            pair_symbols = json.loads(financing_row.pop("pair_symbols_json"))
-            regular_rates = [rate for rate in rates if rate.get("regular_user")]
-            preferred_rate = next(
-                (rate for rate in regular_rates if rate.get("rate_type") == "FLEXIBLE"),
-                regular_rates[0] if regular_rates else None,
-            )
             financing_by_asset.setdefault(financing_row["asset_id"], []).append(
-                {
-                    **financing_row,
-                    "regular_rate": preferred_rate,
-                    "rate_count": len(rates),
-                    "terms": terms,
-                    "limits": limits,
-                    "pair_symbols": pair_symbols,
-                }
+                financing_row
             )
         for asset in grouped.values():
             all_markets = asset["markets"]
@@ -2033,16 +2393,10 @@ class SQLiteStore:
                 continue
             if excluded_tags & asset_tag_keys:
                 continue
+            is_stock = bool(asset["is_stock"])
             for row in all_markets:
-                try:
-                    raw_payload = json.loads(row["raw_json"] or "{}")
-                except (TypeError, ValueError):
-                    raw_payload = {}
-                row["is_stock"] = "EQUITY" in market_metadata(
-                    row, raw_payload
-                ).classifications
-                row.pop("raw_json", None)
-            is_stock = any(row["is_stock"] for row in all_markets)
+                row.pop("asset_is_stock", None)
+                row["is_stock"] = is_stock
             if included_stock and is_stock not in included_stock:
                 continue
             if is_stock in excluded_stock:
@@ -2125,11 +2479,6 @@ class SQLiteStore:
                     {"venue": market["venue"], "symbols": set(), "spot": [], "futures": []},
                 )
                 venue["symbols"].add(market["base_symbol"])
-                if include_details:
-                    market["underlying_unit"] = asset["canonical_symbol"]
-                    if market["underlying_multiplier"] != "1":
-                        market["underlying_unit"] = f"{market['underlying_multiplier']} {asset['canonical_symbol']}"
-                    market["trade_url"] = market_trade_url(market)
                 target = venue["spot"] if market["market_type"] == "SPOT" else venue["futures"]
                 target.append(market)
 
@@ -2234,8 +2583,65 @@ class SQLiteStore:
 
         assets.sort(key=lambda item: item["canonical_symbol"])
         total = len(assets)
+        assets = assets[offset : offset + limit]
+        if include_details and assets:
+            selected_ids = [asset["asset_id"] for asset in assets]
+            placeholders = ",".join("?" for _ in selected_ids)
+            with self.readonly() as conn:
+                detail_rows = [dict(row) for row in conn.execute(
+                    f"""
+                    SELECT f.financing_id, f.venue, f.product, f.asset_role,
+                           f.raw_asset_symbol, f.status, f.regular_user_tier,
+                           f.rates_json, f.terms_json, f.limits_json,
+                           f.pair_symbols_json, f.last_seen_at, map.asset_id
+                    FROM financing_products f
+                    JOIN financing_asset_mappings map
+                      ON map.financing_id = f.financing_id
+                    WHERE f.active = 1 AND f.eligible = 1
+                      AND map.asset_id IN ({placeholders})
+                    ORDER BY f.venue, f.product, f.asset_role, f.raw_asset_symbol
+                    """,
+                    selected_ids,
+                )]
+            detailed_financing: dict[str, list[dict]] = defaultdict(list)
+            for financing_row in detail_rows:
+                rates = json.loads(financing_row.pop("rates_json"))
+                terms = json.loads(financing_row.pop("terms_json"))
+                limits = json.loads(financing_row.pop("limits_json"))
+                pair_symbols = json.loads(financing_row.pop("pair_symbols_json"))
+                regular_rates = [rate for rate in rates if rate.get("regular_user")]
+                preferred_rate = next(
+                    (rate for rate in regular_rates if rate.get("rate_type") == "FLEXIBLE"),
+                    regular_rates[0] if regular_rates else None,
+                )
+                detailed_financing[financing_row["asset_id"]].append(
+                    {
+                        **financing_row,
+                        "regular_rate": preferred_rate,
+                        "rate_count": len(rates),
+                        "terms": terms,
+                        "limits": limits,
+                        "pair_symbols": pair_symbols,
+                    }
+                )
+            for asset in assets:
+                for market in asset["markets"]:
+                    market["underlying_unit"] = asset["canonical_symbol"]
+                    if market["underlying_multiplier"] != "1":
+                        market["underlying_unit"] = (
+                            f"{market['underlying_multiplier']} {asset['canonical_symbol']}"
+                        )
+                    market["trade_url"] = market_trade_url(market)
+                financing = detailed_financing.get(asset["asset_id"], [])
+                borrow = [row for row in financing if row["asset_role"] == "BORROWABLE"]
+                asset["financing"] = financing
+                asset["borrow_eligibility"] = borrow
+                for venue in asset["venues"]:
+                    venue["financing"] = [
+                        row for row in borrow if row["venue"] == venue["venue"]
+                    ]
         return {
-            "assets": assets[offset : offset + limit],
+            "assets": assets,
             "count": total,
             "supported_future_venues": supported_future_venues,
         }

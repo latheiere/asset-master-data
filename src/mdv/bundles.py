@@ -34,7 +34,10 @@ async def export_collection_bundle(
     venue: str,
     timeout_seconds: float,
     connectors: list[Connector] | None = None,
+    max_concurrent_fetches: int = 2,
 ) -> dict:
+    if max_concurrent_fetches <= 0:
+        raise ValueError("max_concurrent_fetches must be positive")
     requested = str(venue or "").strip().upper()
     available = connectors or default_collection_connectors()
     selected = [connector for connector in available if connector.venue == requested]
@@ -42,13 +45,25 @@ async def export_collection_bundle(
         choices = ", ".join(sorted({connector.venue for connector in available}))
         raise ValueError(f"VENUE must be one of: {choices}")
     timeout = httpx.Timeout(timeout_seconds)
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; AssetMasterData/0.1)"}
+    headers = {
+        "User-Agent": f"Mozilla/5.0 (compatible; AssetMasterData/{__version__})"
+    }
+    semaphore = asyncio.Semaphore(max_concurrent_fetches)
+
+    async def fetch(connector: Connector, client: httpx.AsyncClient):
+        async with semaphore:
+            return await connector.fetch(client)
+
     try:
+        limits = httpx.Limits(
+            max_connections=max(4, max_concurrent_fetches * 3),
+            max_keepalive_connections=max(2, max_concurrent_fetches * 2),
+        )
         async with httpx.AsyncClient(
-            timeout=timeout, headers=headers, follow_redirects=True
+            timeout=timeout, headers=headers, follow_redirects=True, limits=limits
         ) as client:
             values = await asyncio.gather(
-                *(connector.fetch(client) for connector in selected),
+                *(fetch(connector, client) for connector in selected),
                 return_exceptions=True,
             )
     except Exception as exc:
@@ -67,14 +82,22 @@ async def export_collection_bundle(
                 error=f"{type(value).__name__}: {value}",
             )
         else:
-            value.validate()
-            entry.update(
-                status="SUCCEEDED",
-                snapshot_type=(
-                    "FINANCING" if isinstance(value, FinancingSnapshot) else "MARKET"
-                ),
-                snapshot=json.loads(canonical_json(asdict(value))),
-            )
+            try:
+                value.validate()
+            except Exception as exc:
+                entry.update(
+                    status="FAILED", error=f"{type(exc).__name__}: {exc}"
+                )
+            else:
+                entry.update(
+                    status="SUCCEEDED",
+                    snapshot_type=(
+                        "FINANCING"
+                        if isinstance(value, FinancingSnapshot)
+                        else "MARKET"
+                    ),
+                    snapshot=json.loads(canonical_json(asdict(value))),
+                )
         entries.append(entry)
     bundle = {
         "format": BUNDLE_FORMAT,
@@ -97,6 +120,18 @@ def bundle_succeeded(bundle: dict) -> bool:
 
 
 def apply_collection_bundle(
+    store: SQLiteStore,
+    payload: object,
+    *,
+    connectors: list[Connector] | None = None,
+) -> list[CollectionResult]:
+    with store.collection_writer_lease():
+        return _apply_collection_bundle_unlocked(
+            store, payload, connectors=connectors
+        )
+
+
+def _apply_collection_bundle_unlocked(
     store: SQLiteStore,
     payload: object,
     *,

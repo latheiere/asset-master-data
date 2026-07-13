@@ -5,7 +5,7 @@ import hashlib
 import hmac
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -31,6 +31,7 @@ def _derived_hash(password: str, salt: bytes) -> bytes:
 class Entitlements:
     session_secret: bytes
     users: dict[str, str]
+    roles: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: Path) -> "Entitlements":
@@ -49,14 +50,23 @@ class Entitlements:
         if not isinstance(users, dict) or not users:
             raise RuntimeError("entitlements must define at least one user")
         normalized: dict[str, str] = {}
+        roles: dict[str, str] = {}
         for username, record in users.items():
             if not isinstance(record, dict):
                 raise RuntimeError(f"entitlement for {username!r} must be a mapping")
             password_hash = str(record.get("password_hash", "")).strip()
             if not str(username).strip() or not password_hash:
                 raise RuntimeError("every entitlement requires a username and password_hash")
+            role = str(record.get("role", "operator")).strip().lower()
+            if role not in {"reader", "operator"}:
+                raise RuntimeError(
+                    f"entitlement for {username!r} has invalid role; use reader or operator"
+                )
             normalized[str(username)] = password_hash
-        return cls(session_secret=secret.encode("utf-8"), users=normalized)
+            roles[str(username)] = role
+        return cls(
+            session_secret=secret.encode("utf-8"), users=normalized, roles=roles
+        )
 
     def authenticate(self, username: str, password: str) -> bool:
         expected = self.users.get(username)
@@ -65,6 +75,9 @@ class Entitlements:
             verify_password(password, DUMMY_PASSWORD_HASH)
             return False
         return verify_password(password, expected)
+
+    def role(self, username: str) -> str:
+        return self.roles.get(username, "operator")
 
     def issue_session(self, username: str, ttl_seconds: int) -> str:
         expires = int(time.time()) + ttl_seconds
@@ -95,17 +108,25 @@ def hash_password(password: str, *, salt: bytes | None = None) -> str:
 def verify_password(password: str, encoded: str) -> bool:
     try:
         algorithm, n, r, p, salt, expected = encoded.split("$", 5)
-        if algorithm != "scrypt":
+        parameters = (int(n), int(r), int(p))
+        decoded_salt = _unb64(salt)
+        decoded_expected = _unb64(expected)
+        if (
+            algorithm != "scrypt"
+            or parameters != (SCRYPT_N, SCRYPT_R, SCRYPT_P)
+            or len(decoded_salt) != 16
+            or len(decoded_expected) != 32
+        ):
             return False
         derived = hashlib.scrypt(
             password.encode("utf-8"),
-            salt=_unb64(salt),
-            n=int(n),
-            r=int(r),
-            p=int(p),
-            dklen=len(_unb64(expected)),
+            salt=decoded_salt,
+            n=parameters[0],
+            r=parameters[1],
+            p=parameters[2],
+            dklen=len(decoded_expected),
         )
-        return hmac.compare_digest(derived, _unb64(expected))
+        return hmac.compare_digest(derived, decoded_expected)
     except (ValueError, TypeError):
         return False
 

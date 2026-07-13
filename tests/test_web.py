@@ -1,11 +1,13 @@
 import base64
+import asyncio
+import threading
 
+import httpx
 import yaml
 from fastapi.testclient import TestClient
 
 from mdv import __version__
-from mdv.auth import hash_password
-from mdv.collection import CollectionResult
+from mdv.auth import Entitlements, hash_password
 from mdv.config import Settings
 from mdv.db import SQLiteStore
 from mdv.models import FinancingRecord, FinancingSnapshot, MarketRecord, MarketSnapshot
@@ -146,7 +148,16 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
         yaml.safe_dump(
             {
                 "session_secret": "test-session-secret-that-is-at-least-32-characters",
-                "users": {"admin": {"password_hash": hash_password("password")}},
+                "users": {
+                    "admin": {
+                        "password_hash": hash_password("password"),
+                        "role": "operator",
+                    },
+                    "reader": {
+                        "password_hash": hash_password("read-password"),
+                        "role": "reader",
+                    },
+                },
             }
         ),
         encoding="utf-8",
@@ -155,7 +166,6 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
         db_path=store.path,
         host="127.0.0.1",
         port=8090,
-        refresh_on_startup="never",
         http_timeout_seconds=1,
         collection_schedule="*-*-* 00:00:00 UTC",
         entitlements_path=entitlements_path,
@@ -163,24 +173,6 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
         session_ttl_seconds=3600,
         session_cookie_secure=False,
     )
-
-    class FakeCollectionService:
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-        async def collect(self, *, venue=None):
-            assert venue == "MEXC"
-            return [
-                CollectionResult(
-                    source="MEXC_SPOT",
-                    ok=True,
-                    records=1,
-                    run_id="ingest-run",
-                    collection_run_id="collection-run",
-                )
-            ]
-
-    monkeypatch.setattr("mdv.web.CollectionService", FakeCollectionService)
 
     with TestClient(create_app(settings=settings, store=store)) as client:
         unauthenticated_api = client.get("/api/v1/stats")
@@ -265,21 +257,40 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
         monitoring = client.get("/mdv?TAG=BINANCE:MONITORING")
         monitoring_detail = client.get("/asset?SYMBOL=WIF")
         monitoring_detail_api = client.get("/api/v1/assets?SYMBOL=WIF")
-        scoped_refresh = client.post("/api/v1/refresh?VENUE=MEXC")
+        removed_refresh = client.post("/api/v1/refresh?VENUE=MEXC")
+        reader_action = client.post(
+            "/manual-actions",
+            headers={
+                "Authorization": "Basic "
+                + base64.b64encode(b"reader:read-password").decode("ascii")
+            },
+            data={
+                "action_type": "OTHER",
+                "venue": "",
+                "source_symbol": "",
+                "target_symbol": "",
+                "note": "must not be saved",
+                "enabled": "on",
+            },
+        )
 
     assert unauthenticated_api.status_code == 401
     assert unauthenticated_api.headers["www-authenticate"] == 'Basic realm="asset-master-data"'
     assert favicon_response.status_code == 204
     assert "max-age=86400" in favicon_response.headers["cache-control"]
-    assert health_response.json() == {
-        "status": "ok",
-        "service": "asset-master-data",
-        "version": __version__,
-        "revision": revision,
-        "markets": 4,
-        "readiness": {"database": "ok", "markets": 4},
-    }
-    assert openapi_response.json()["info"]["version"] == __version__
+    health = health_response.json()
+    assert health["status"] == "ok"
+    assert health["service"] == "asset-master-data"
+    assert health["version"] == __version__
+    assert health["revision"] == revision
+    assert health["markets"] == 4
+    assert health["readiness"]["ready"] is True
+    assert health["readiness"]["active_markets"] == 4
+    assert health["readiness"]["running_collections"] == 0
+    assert health["readiness"]["collection_fresh"] is True
+    openapi = openapi_response.json()
+    assert openapi["info"]["version"] == __version__
+    assert "/api/v1/refresh" not in openapi["paths"]
     assert login_redirect.status_code == 303
     assert login_redirect.headers["location"].startswith("/login?next=")
     assert root_redirect.status_code == 303
@@ -453,6 +464,105 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
         tag["provider"] == "BINANCE" and tag["raw_tag"] == "Monitoring"
         for tag in monitoring_detail_api.json()["assets"][0]["tags"]
     )
-    assert scoped_refresh.status_code == 200
-    assert scoped_refresh.json()["scope"] == "MEXC"
-    assert scoped_refresh.json()["collection_run_id"] == "collection-run"
+    assert removed_refresh.status_code == 404
+    assert reader_action.status_code == 403
+    assert reader_action.json()["detail"] == "operator role required"
+
+
+def test_basic_auth_failures_are_rate_limited_before_more_scrypt_work(tmp_path):
+    store = SQLiteStore(tmp_path / "mdv.sqlite3")
+    settings = Settings(
+        db_path=store.path,
+        host="127.0.0.1",
+        port=8090,
+        http_timeout_seconds=1,
+        collection_schedule="*-*-* 00:00:00 UTC",
+        entitlements_path=tmp_path / "unused.yaml",
+        session_cookie_name="mdv_session",
+        session_ttl_seconds=3600,
+        session_cookie_secure=False,
+        auth_failed_attempt_limit=2,
+        auth_failed_attempt_window_seconds=60,
+    )
+    entitlements = Entitlements(
+        session_secret=b"test-session-secret-that-is-at-least-32-characters",
+        users={"admin": hash_password("password")},
+        roles={"admin": "operator"},
+    )
+    authorization = "Basic " + base64.b64encode(b"admin:wrong").decode("ascii")
+
+    with TestClient(
+        create_app(settings=settings, store=store, entitlements=entitlements)
+    ) as client:
+        responses = [
+            client.get("/health", headers={"Authorization": authorization})
+            for _ in range(3)
+        ]
+
+    assert [response.status_code for response in responses] == [401, 401, 429]
+    assert responses[-1].headers["retry-after"] == "60"
+
+
+def test_concurrent_auth_burst_does_not_queue_unbounded_scrypt_work(
+    tmp_path, monkeypatch
+):
+    store = SQLiteStore(tmp_path / "mdv.sqlite3")
+    settings = Settings(
+        db_path=store.path,
+        host="127.0.0.1",
+        port=8090,
+        http_timeout_seconds=1,
+        collection_schedule="*-*-* 00:00:00 UTC",
+        entitlements_path=tmp_path / "unused.yaml",
+        session_cookie_name="mdv_session",
+        session_ttl_seconds=3600,
+        session_cookie_secure=False,
+        auth_max_concurrent_hashes=1,
+        auth_failed_attempt_limit=10,
+        auth_failed_attempt_window_seconds=60,
+    )
+    entitlements = Entitlements(
+        session_secret=b"test-session-secret-that-is-at-least-32-characters",
+        users={"admin": hash_password("password")},
+        roles={"admin": "operator"},
+    )
+    started = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    def slow_failure(_self, _username, _password):
+        nonlocal calls
+        calls += 1
+        started.set()
+        assert release.wait(timeout=2)
+        return False
+
+    monkeypatch.setattr(Entitlements, "authenticate", slow_failure)
+    authorization = "Basic " + base64.b64encode(b"admin:wrong").decode("ascii")
+    app = create_app(settings=settings, store=store, entitlements=entitlements)
+
+    async def exercise():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as client:
+            first = asyncio.create_task(
+                client.get("/health", headers={"Authorization": authorization})
+            )
+            assert await asyncio.to_thread(started.wait, 1)
+            burst = await asyncio.gather(
+                *(
+                    client.get(
+                        "/health", headers={"Authorization": authorization}
+                    )
+                    for _ in range(8)
+                )
+            )
+            release.set()
+            return await first, burst
+
+    first, burst = asyncio.run(exercise())
+
+    assert first.status_code == 401
+    assert {response.status_code for response in burst} == {429}
+    assert calls == 1

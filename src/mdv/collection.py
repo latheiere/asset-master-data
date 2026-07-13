@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 
 import httpx
 
+from mdv import __version__
 from mdv.connectors import default_collection_connectors
 from mdv.connectors.base import Connector
 from mdv.db import SQLiteStore
@@ -28,14 +29,38 @@ class CollectionService:
         *,
         timeout_seconds: float = 20,
         connectors: list[Connector] | None = None,
-        max_concurrent_fetches: int = 4,
+        max_concurrent_fetches: int = 2,
+        stale_after_seconds: int = 7200,
+        unchanged_observation_retention_days: int = 30,
+        changed_payload_retention_days: int = 7,
+        max_retained_observations_per_table: int = 100_000,
     ):
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive")
         if max_concurrent_fetches <= 0:
             raise ValueError("max_concurrent_fetches must be positive")
+        if stale_after_seconds <= 0:
+            raise ValueError("stale_after_seconds must be positive")
+        if unchanged_observation_retention_days < 0:
+            raise ValueError(
+                "unchanged_observation_retention_days must not be negative"
+            )
+        if changed_payload_retention_days < 0:
+            raise ValueError("changed_payload_retention_days must not be negative")
+        if max_retained_observations_per_table < 0:
+            raise ValueError(
+                "max_retained_observations_per_table must not be negative"
+            )
         self.store = store
         self.timeout_seconds = timeout_seconds
         self.connectors = connectors or default_collection_connectors()
         self.max_concurrent_fetches = max_concurrent_fetches
+        self.stale_after_seconds = stale_after_seconds
+        self.unchanged_observation_retention_days = unchanged_observation_retention_days
+        self.changed_payload_retention_days = changed_payload_retention_days
+        self.max_retained_observations_per_table = (
+            max_retained_observations_per_table
+        )
 
     async def collect_all(self) -> list[CollectionResult]:
         return await self.collect()
@@ -44,6 +69,28 @@ class CollectionService:
         return await self.collect(venue=venue)
 
     async def collect(
+        self,
+        *,
+        venue: str | None = None,
+        exclude_venues: list[str] | tuple[str, ...] | None = None,
+    ) -> list[CollectionResult]:
+        with self.store.collection_writer_lease():
+            self.store.reconcile_stale_collection_runs(
+                stale_after_seconds=self.stale_after_seconds
+            )
+            results = await self._collect_unlocked(
+                venue=venue, exclude_venues=exclude_venues
+            )
+            self.store.compact_audit_history(
+                unchanged_retention_days=self.unchanged_observation_retention_days,
+                changed_payload_retention_days=self.changed_payload_retention_days,
+                max_retained_observations_per_table=(
+                    self.max_retained_observations_per_table
+                ),
+            )
+            return results
+
+    async def _collect_unlocked(
         self,
         *,
         venue: str | None = None,
@@ -81,7 +128,11 @@ class CollectionService:
         collection_run_id = self.store.start_collection_run(scope=scope, venues=venues)
         timeout = httpx.Timeout(self.timeout_seconds)
         # Some public venue CDNs reject generic library User-Agent values.
-        headers = {"User-Agent": "Mozilla/5.0 (compatible; AssetMasterData/0.1)"}
+        headers = {
+            "User-Agent": (
+                f"Mozilla/5.0 (compatible; AssetMasterData/{__version__})"
+            )
+        }
         results: list[CollectionResult | None] = [None] * len(connectors)
         tag_run_id: str | None = None
         tag_observed_at: str | None = None
@@ -96,7 +147,16 @@ class CollectionService:
 
         semaphore = asyncio.Semaphore(self.max_concurrent_fetches)
         try:
-            async with httpx.AsyncClient(timeout=timeout, headers=headers, follow_redirects=True) as client:
+            limits = httpx.Limits(
+                max_connections=max(4, self.max_concurrent_fetches * 3),
+                max_keepalive_connections=max(2, self.max_concurrent_fetches * 2),
+            )
+            async with httpx.AsyncClient(
+                timeout=timeout,
+                headers=headers,
+                follow_redirects=True,
+                limits=limits,
+            ) as client:
                 pending = {
                     asyncio.create_task(fetch(index, connector, client))
                     for index, connector in enumerate(connectors)

@@ -1,9 +1,12 @@
 import asyncio
+from dataclasses import replace
 
+import httpx
 import pytest
 
 from mdv.cli import build_parser
 from mdv.collection import CollectionService
+from mdv.connectors.base import fetch_json
 from mdv.db import SQLiteStore
 from mdv.models import FinancingRecord, FinancingSnapshot, MarketRecord, MarketSnapshot
 
@@ -127,6 +130,40 @@ def test_collection_service_records_partial_all_run_and_rejects_unknown_venue(tm
         asyncio.run(service.collect_venue("UNKNOWN"))
 
 
+@pytest.mark.parametrize(
+    ("setting", "value", "message"),
+    [
+        ("timeout_seconds", 0, "timeout_seconds must be positive"),
+        ("max_concurrent_fetches", 0, "max_concurrent_fetches must be positive"),
+        ("stale_after_seconds", 0, "stale_after_seconds must be positive"),
+        (
+            "unchanged_observation_retention_days",
+            -1,
+            "unchanged_observation_retention_days must not be negative",
+        ),
+        (
+            "changed_payload_retention_days",
+            -1,
+            "changed_payload_retention_days must not be negative",
+        ),
+        (
+            "max_retained_observations_per_table",
+            -1,
+            "max_retained_observations_per_table must not be negative",
+        ),
+    ],
+)
+def test_collection_rejects_unsafe_operational_limits(
+    tmp_path, setting, value, message
+):
+    with pytest.raises(ValueError, match=message):
+            CollectionService(
+                SQLiteStore(tmp_path / "mdv.sqlite3"),
+                connectors=[FakeConnector(source="BINANCE_SPOT", venue="BINANCE")],
+                **{setting: value},
+            )
+
+
 def test_collect_cli_accepts_venue_scope():
     args = build_parser().parse_args(["collect", "--venue", "MEXC"])
     assert args.command == "collect"
@@ -202,3 +239,49 @@ def test_collection_bounds_fetches_and_rebuilds_projections_once(tmp_path, monke
     assert state["peak"] == 2
     assert len(rebuild_calls) == 1
     assert store.market_count() == 5
+
+
+def test_snapshot_validation_rejects_cross_universe_and_naive_timestamps():
+    connector = FakeConnector(source="BINANCE_SPOT", venue="BINANCE")
+    valid = asyncio.run(connector.fetch(None))
+    with pytest.raises(ValueError, match="without a timezone"):
+        replace(valid, observed_at="2026-07-03T00:00:00").validate()
+    with pytest.raises(ValueError, match="another venue"):
+        replace(valid, markets=(replace(valid.markets[0], venue="MEXC"),)).validate()
+    with pytest.raises(ValueError, match="settled spot market"):
+        replace(
+            valid,
+            markets=(replace(valid.markets[0], settle_symbol="USDT"),),
+        ).validate()
+
+
+def test_connector_retry_is_bounded_and_skips_permanent_http_errors(monkeypatch):
+    calls = {"permanent": 0, "transient": 0}
+
+    def permanent(request):
+        calls["permanent"] += 1
+        return httpx.Response(400, request=request)
+
+    transient_responses = iter((503, 200))
+
+    def transient(request):
+        calls["transient"] += 1
+        status = next(transient_responses)
+        return httpx.Response(status, request=request, json={"ok": True})
+
+    async def no_sleep(_delay):
+        return None
+
+    monkeypatch.setattr("mdv.connectors.base.asyncio.sleep", no_sleep)
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(permanent)) as client:
+            with pytest.raises(httpx.HTTPStatusError):
+                await fetch_json(client, "https://example.test", attempts=3)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(transient)) as client:
+            assert await fetch_json(client, "https://example.test", attempts=3) == {
+                "ok": True
+            }
+
+    asyncio.run(run())
+    assert calls == {"permanent": 1, "transient": 2}
