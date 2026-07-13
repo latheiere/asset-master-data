@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "asset-master-data"
-version = "0.10.1"
+version = "0.11.0"
 description = "Local-first master view of crypto assets and exchange markets"
 readme = "README.md"
 license = "Apache-2.0"
@@ -19,7 +19,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "build>=1,<2",
   "httpx2>=2,<3",
+  "pip-tools>=7,<8",
   "pytest>=8,<9",
 ]
 

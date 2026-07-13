@@ -13,4 +13,5 @@ dist/
 build/
 *.egg-info/
 .local/
+.tmp/
 Makefile.local

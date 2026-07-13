@@ -1,17 +1,44 @@
 PYTHON ?= .venv/bin/python
 PYTHON_BOOTSTRAP ?= python3.13
 COLLECT_COMMAND ?= $(PYTHON) -m mdv.cli --config config/config.yaml collect
+PACKAGE_DIR ?= .tmp/package-dist
+PACKAGE_SMOKE_VENV ?= .tmp/package-smoke
+BACKUP_DIR ?= .local/backups
+BACKUP_FILE ?= $(BACKUP_DIR)/asset-master-data-runtime.tar.gz
+DB_PATH ?= .data/mdv.sqlite3
 
 -include Makefile.local
 
-.PHONY: install test collect collect-prod serve install-systemd deploy-prod clean-data
+.PHONY: install test check run package package-smoke backup restore-check collect collect-prod serve install-systemd deploy-prod prod-status prod-logs clean-data
 
 install:
 	$(PYTHON_BOOTSTRAP) -m venv .venv
-	.venv/bin/pip install -e '.[dev]'
+	.venv/bin/pip install --require-hashes -r requirements-dev.lock
+	.venv/bin/pip install --no-deps -e .
 
 test:
 	$(PYTHON) -m pytest -q
+
+check: test package-smoke
+	git diff --check
+
+run: serve
+
+package:
+	mkdir -p $(PACKAGE_DIR)
+	$(PYTHON) -m build --wheel --no-isolation --outdir $(PACKAGE_DIR)
+
+package-smoke: package
+	$(PYTHON_BOOTSTRAP) -m venv $(PACKAGE_SMOKE_VENV)
+	$(PACKAGE_SMOKE_VENV)/bin/pip install --no-deps --force-reinstall $$(ls -t $(PACKAGE_DIR)/*.whl | head -1)
+	$(PACKAGE_SMOKE_VENV)/bin/python -c 'from importlib.metadata import version; import mdv; assert version("asset-master-data") == mdv.__version__'
+
+backup:
+	mkdir -p $(BACKUP_DIR)
+	$(PYTHON) scripts/runtime_backup.py create --output $(BACKUP_FILE) --sqlite $(DB_PATH) --path config/config.yaml --path config/entitlements.yaml
+
+restore-check:
+	$(PYTHON) scripts/runtime_backup.py verify $(BACKUP_FILE)
 
 collect:
 	$(COLLECT_COMMAND)
@@ -24,6 +51,12 @@ install-systemd:
 
 deploy-prod:
 	ssh tradier 'cd /home/ubuntu/asset-master-data && bash deploy/systemd/deploy.sh'
+
+prod-status:
+	ssh tradier 'systemctl is-active asset-master-data.service asset-master-refresh.timer && systemctl --no-pager list-timers asset-master-refresh.timer'
+
+prod-logs:
+	ssh tradier 'journalctl -u asset-master-data -u asset-master-refresh --since "30 minutes ago" --no-pager | tail -200'
 
 collect-prod:
 	ssh tradier 'cd /home/ubuntu/asset-master-data && .venv/bin/python -m mdv.cli --config config/config.yaml collect'

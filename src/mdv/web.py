@@ -225,11 +225,14 @@ def create_app(
 
     @app.get("/health")
     async def health():
+        markets = store.market_count()
         return {
             "status": "ok",
+            "service": "asset-master-data",
             "version": __version__,
             "revision": build_revision(),
-            "markets": store.market_count(),
+            "markets": markets,
+            "readiness": {"database": "ok", "markets": markets},
         }
 
     @app.get("/api/v1/markets")

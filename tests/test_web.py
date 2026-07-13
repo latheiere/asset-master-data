@@ -273,9 +273,11 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
     assert "max-age=86400" in favicon_response.headers["cache-control"]
     assert health_response.json() == {
         "status": "ok",
+        "service": "asset-master-data",
         "version": __version__,
         "revision": revision,
         "markets": 4,
+        "readiness": {"database": "ok", "markets": 4},
     }
     assert openapi_response.json()["info"]["version"] == __version__
     assert login_redirect.status_code == 303
