@@ -55,6 +55,7 @@ Every production deployment is an immutable SemVer release tagged on `main`. Dep
 
 - [HTTP API contract](docs/API.md)
 - [Detailed behavior and operations](OPERATIONS_REFERENCE.md)
+- [Versioning and release contract](docs/VERSIONING.md)
 - [Known technical debt](docs/TECHNICAL_DEBT.md)
 - [Contributing](CONTRIBUTING.md)
 - [Security policy](SECURITY.md)

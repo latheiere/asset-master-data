@@ -74,6 +74,8 @@ implemented behavior.
   operation, and links to detailed contracts.
 - `docs/API.md`: every external HTTP route, auth, filters, schemas, examples,
   errors, compatibility, and pagination semantics.
+- `docs/VERSIONING.md`: the package version, runtime metadata, verification,
+  tag, and release contract shared with sibling repositories.
 - `AGENTS.md`: coding-agent constraints, workflow, architecture invariants, and
   validation requirements. Do not move these instructions into README.
 - Update `docs/TECHNICAL_DEBT.md` when a documented invariant is intentionally
@@ -81,6 +83,8 @@ implemented behavior.
 
 ## Release versioning
 
+- Follow [`docs/VERSIONING.md`](docs/VERSIONING.md). Repository versions are
+  independent even though their versioning mechanism is uniform.
 - Use Semantic Versioning at release boundaries, not per commit.
 - `project.version` in `pyproject.toml` is the sole editable version source.
   Runtime, CLI, OpenAPI, and health output must derive it from installed package

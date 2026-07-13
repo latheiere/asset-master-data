@@ -1,3 +1,4 @@
+import re
 import tomllib
 from importlib.metadata import version
 from pathlib import Path
@@ -19,6 +20,7 @@ def test_release_disclosure_matches_single_editable_source():
     project_version = tomllib.loads(
         (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     )["project"]["version"]
+    assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", project_version)
     assert __version__ == project_version
     assert f"current release is `{project_version}`" in (
         ROOT / "README.md"

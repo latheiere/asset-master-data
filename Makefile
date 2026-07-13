@@ -14,7 +14,7 @@ DB_PATH ?= .data/mdv.sqlite3
 install:
 	$(PYTHON_BOOTSTRAP) -m venv .venv
 	.venv/bin/pip install --require-hashes -r requirements-dev.lock
-	.venv/bin/pip install --no-deps -e .
+	cd / && "$(CURDIR)/.venv/bin/pip" install --no-deps -e "$(CURDIR)"
 
 test:
 	$(PYTHON) -m pytest -q
@@ -29,9 +29,9 @@ package:
 	$(PYTHON) -m build --wheel --no-isolation --outdir $(PACKAGE_DIR)
 
 package-smoke: package
-	$(PYTHON_BOOTSTRAP) -m venv $(PACKAGE_SMOKE_VENV)
-	$(PACKAGE_SMOKE_VENV)/bin/pip install --no-deps --force-reinstall $$(ls -t $(PACKAGE_DIR)/*.whl | head -1)
-	$(PACKAGE_SMOKE_VENV)/bin/python -c 'from importlib.metadata import version; import mdv; assert version("asset-master-data") == mdv.__version__'
+	$(PYTHON_BOOTSTRAP) -m venv --clear $(PACKAGE_SMOKE_VENV)
+	cd / && "$(CURDIR)/$(PACKAGE_SMOKE_VENV)/bin/pip" install --no-deps "$$(ls -t "$(CURDIR)/$(PACKAGE_DIR)"/*.whl | head -1)"
+	$(PACKAGE_SMOKE_VENV)/bin/python -c 'import re; from importlib.metadata import version; import mdv; installed = version("asset-master-data"); assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", installed); assert installed == mdv.__version__'
 
 backup:
 	mkdir -p $(BACKUP_DIR)
