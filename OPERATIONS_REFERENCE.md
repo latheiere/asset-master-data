@@ -309,7 +309,7 @@ collection:
   max_concurrent_fetches: 2
   stale_after_seconds: 7200
   readiness_max_age_seconds: 129600  # 0 disables the age check
-  schedule: "*-*-* 00:00:00 UTC"  # systemd OnCalendar syntax
+  schedule: "*-*-* 00:40:00 UTC"  # systemd OnCalendar syntax
 
 audit:
   unchanged_observation_retention_days: 30  # 0 disables pruning
@@ -421,6 +421,11 @@ The deployment bundle installs:
 - `asset-master-data.service`: localhost API, enabled for boot.
 - `asset-master-refresh.service`: one-shot collection.
 - `asset-master-refresh.timer`: collection schedule from configuration.
+
+The default collection remains daily and runs at `00:40:00 UTC`. The timer has
+no persistent catch-up or randomized delay and uses one-second accuracy, so a
+missed run stays missed instead of starting at an arbitrary minute after boot,
+deployment, or timer re-enablement.
 
 Prepare units without starting the API:
 

@@ -3,9 +3,9 @@ Description=Scheduled asset master-data collection
 
 [Timer]
 OnCalendar=__ON_CALENDAR__
-Persistent=true
-RandomizedDelaySec=5m
-AccuracySec=1m
+Persistent=false
+RandomizedDelaySec=0
+AccuracySec=1s
 Unit=asset-master-refresh.service
 
 [Install]

@@ -356,7 +356,7 @@ def _write_default_config(path: Path, *, force: bool) -> None:
             "max_concurrent_fetches": 2,
             "stale_after_seconds": 7200,
             "readiness_max_age_seconds": 129600,
-            "schedule": "*-*-* 00:00:00 UTC",
+            "schedule": "*-*-* 00:40:00 UTC",
         },
         "audit": {
             "unchanged_observation_retention_days": 30,

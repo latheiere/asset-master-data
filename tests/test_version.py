@@ -81,6 +81,19 @@ def test_systemd_enforces_aggregate_limited_host_budget():
     assert "MemoryMax=224M" in collector
 
 
+def test_collection_timer_runs_only_at_configured_calendar_slot():
+    timer = (
+        ROOT / "deploy" / "systemd" / "asset-master-refresh.timer.tpl"
+    ).read_text()
+
+    assert "OnCalendar=__ON_CALENDAR__" in timer
+    assert "Persistent=false" in timer
+    assert "RandomizedDelaySec=0" in timer
+    assert "AccuracySec=1s" in timer
+    assert "OnBootSec=" not in timer
+    assert "OnUnitInactiveSec=" not in timer
+
+
 def test_deploy_requires_clean_annotated_release_tag():
     script = (ROOT / "deploy" / "systemd" / "deploy.sh").read_text(
         encoding="utf-8"

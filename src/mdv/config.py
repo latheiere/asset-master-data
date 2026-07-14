@@ -77,7 +77,7 @@ class Settings:
                 maximum=300,
             ),
             collection_schedule=str(
-                collection.get("schedule", "*-*-* 00:00:00 UTC")
+                collection.get("schedule", "*-*-* 00:40:00 UTC")
             ).strip(),
             max_concurrent_fetches=_bounded_positive_int(
                 collection.get("max_concurrent_fetches", 2),

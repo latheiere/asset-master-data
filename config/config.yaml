@@ -12,7 +12,7 @@ collection:
   # Set 0 to disable collection-age readiness checks.
   readiness_max_age_seconds: 129600
   # systemd OnCalendar syntax. The installer renders this into the timer unit.
-  schedule: "*-*-* 00:00:00 UTC"
+  schedule: "*-*-* 00:40:00 UTC"
 
 audit:
   # Unchanged observations older than this are compacted after collection.
