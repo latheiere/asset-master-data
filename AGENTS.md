@@ -104,15 +104,25 @@ implemented behavior.
 ## Workflow
 
 1. Run `git status --short --branch`.
-2. Read `README.md`, relevant modules, migrations, and tests.
-3. Make focused changes with backward-compatible schema migrations.
-4. Run `.venv/bin/python -m pytest -q`.
-5. For connector changes, test recorded fixtures before optional live calls.
-6. Update `README.md` for behavior, API, configuration, schema, or operations
+2. Inspect the latest `main` CI result with
+   `gh run list --workflow CI --branch main --limit 5`. If it is red, inspect
+   the failed job with `gh run view <run-id> --log-failed` and address the
+   relevant failure before unrelated development, or report the blocker
+   explicitly.
+3. Read `README.md`, relevant modules, migrations, and tests.
+4. Make focused changes with backward-compatible schema migrations.
+5. Run `.venv/bin/python -m pytest -q`.
+6. When changing syntax, dependencies, or locks, validate every Python version
+   in the CI matrix. Locks generated with the development interpreter must
+   include dependencies needed by the oldest supported interpreter. Do not
+   remove a matrix version merely to bypass a failure; update CI,
+   `requires-python`, and the README together when support policy changes.
+7. For connector changes, test recorded fixtures before optional live calls.
+8. Update `README.md` for behavior, API, configuration, schema, or operations
    changes.
-7. Do not create an origin, push, deploy, or expose the service publicly unless
+9. Do not create an origin, push, deploy, or expose the service publicly unless
    explicitly requested.
-8. After an authorized production deploy, verify the deployed commit, schema,
+10. After an authorized production deploy, verify the deployed commit, schema,
    release version/revision, collection result, API service, refresh timer, and
    authentication boundary.
 
@@ -148,6 +158,8 @@ http://127.0.0.1:8090/mdv?TYPE=FUTURE
 At task completion, report:
 
 - Tests and live checks run
+- Latest observed GitHub CI result, and whether the local commit was pushed and
+  therefore verified remotely
 - Files changed
 - Schema/API behavior changed
 - Origin, push, and deployment status

@@ -152,7 +152,8 @@ def _unb64(value: str) -> bytes:
     return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
 
 
+DUMMY_PASSWORD_SALT = b"\0" * 16
 DUMMY_PASSWORD_HASH = (
-    f"scrypt${SCRYPT_N}${SCRYPT_R}${SCRYPT_P}${_b64(b'\0' * 16)}$"
-    f"{_b64(_derived_hash('invalid-password', b'\0' * 16))}"
+    f"scrypt${SCRYPT_N}${SCRYPT_R}${SCRYPT_P}${_b64(DUMMY_PASSWORD_SALT)}$"
+    f"{_b64(_derived_hash('invalid-password', DUMMY_PASSWORD_SALT))}"
 )

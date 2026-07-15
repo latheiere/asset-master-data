@@ -64,7 +64,11 @@ make check           # tests, wheel smoke, diff validation
 make package
 ```
 
-Dependency declarations live in `pyproject.toml`. `requirements.lock` is the production lock and `requirements-dev.lock` is the development lock.
+Dependency declarations live in `pyproject.toml`. `requirements.lock` is the
+production lock and `requirements-dev.lock` is the development lock. CI covers
+every advertised Python version. A lock refreshed with Python 3.13 must still
+contain transitive packages required by Python 3.11; declare such portability
+dependencies directly when environment-specific resolution would omit them.
 
 ## Operations
 
