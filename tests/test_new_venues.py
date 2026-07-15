@@ -73,6 +73,30 @@ def test_okx_skips_official_preopen_listing_placeholders_without_symbols():
     assert [market.raw_symbol for market in snapshot.markets] == ["BTC-USDT"]
 
 
+def test_okx_derives_named_preopen_spot_currencies_from_instrument_id():
+    payload = fixture("okx_success.json")["spot"]
+    payload["data"] = [
+        {
+            "instId": "XAAPL-USDT",
+            "instType": "SPOT",
+            "state": "preopen",
+            "baseCcy": "",
+            "quoteCcy": "",
+            "listTime": "1784181600000",
+        }
+    ]
+
+    market = okx_connectors()[0].parse(
+        payload, observed_at=OBSERVED_AT
+    ).markets[0]
+
+    assert market.raw_symbol == "XAAPL-USDT"
+    assert market.base_symbol == "XAAPL"
+    assert market.quote_symbol == "USDT"
+    assert market.status == "PRELAUNCH"
+    assert market.active is False
+
+
 def test_hyperliquid_recorded_spot_and_all_perp_dex_fixtures():
     payload = fixture("hyperliquid_success.json")
     spot = HyperliquidSpotConnector().parse(payload["spot"], observed_at=OBSERVED_AT)

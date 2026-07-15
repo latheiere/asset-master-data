@@ -62,15 +62,18 @@ class OkxConnector:
         raw_symbol = _required(row, "instId", source=self.source)
         venue_status = str(row.get("state") or "UNKNOWN").strip().upper()
         if self.market_type == "SPOT":
-            if (
-                venue_status == "PREOPEN"
-                and raw_symbol.startswith("LISTING-SPOT-")
-                and not str(row.get("baseCcy") or "").strip()
-                and not str(row.get("quoteCcy") or "").strip()
-            ):
-                return None
-            base_symbol = _required(row, "baseCcy", source=self.source).upper()
-            quote_symbol = _required(row, "quoteCcy", source=self.source).upper()
+            raw_base = str(row.get("baseCcy") or "").strip()
+            raw_quote = str(row.get("quoteCcy") or "").strip()
+            if venue_status == "PREOPEN" and not raw_base and not raw_quote:
+                symbol_parts = raw_symbol.split("-")
+                if len(symbol_parts) == 2 and all(symbol_parts):
+                    raw_base, raw_quote = symbol_parts
+                elif raw_symbol.startswith("LISTING-SPOT-"):
+                    return None
+            base_symbol = (raw_base or _required(row, "baseCcy", source=self.source)).upper()
+            quote_symbol = (
+                raw_quote or _required(row, "quoteCcy", source=self.source)
+            ).upper()
             settle_symbol = None
             contract_type = "SPOT"
             expires_at = None
