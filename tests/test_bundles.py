@@ -12,7 +12,7 @@ from mdv.bundles import (
     export_collection_bundle,
 )
 from mdv.db import SQLiteStore
-from mdv.models import FinancingRecord, FinancingSnapshot, MarketRecord, MarketSnapshot
+from mdv.models import FinancingRecord, FinancingSnapshot, MarketRecord, MarketSnapshot, TradingSchedule
 
 
 class BundleMarketConnector:
@@ -43,6 +43,9 @@ class BundleMarketConnector:
             raw={"symbol": "btc_usdt"},
             venue_product="SPOT",
             venue_status="ONLINE",
+            trading_schedule=TradingSchedule(
+                session_status="OPEN", market_group="TEST_SESSION"
+            ),
         )
         return MarketSnapshot(
             self.source,
@@ -103,6 +106,7 @@ def test_collection_bundle_round_trip_applies_market_and_financing_snapshots(tmp
     assert bundle_succeeded(bundle) is True
     assert [result.ok for result in results] == [True, True]
     assert store.list_markets({})[0]["raw_symbol"] == "BTC_USDT"
+    assert store.list_markets({})[0]["trading_schedule"]["market_group"] == "TEST_SESSION"
     assert store.list_financing({})["financing"][0]["raw_asset_symbol"] == "BTC"
     assert store.list_collection_runs()["runs"][0]["scope"] == "TEST"
 

@@ -36,6 +36,8 @@ def test_bitmart_recorded_spot_and_futures_fixtures_normalize_dimensions():
     assert futures.markets[2].expires_at == "2026-09-25T08:00:00+00:00"
     assert futures.markets[2].max_market_order_size == "10000"
     assert futures.markets[2].raw["_metadata"]["ASSET_TAGS"][0]["tag"] == "TRADFI"
+    assert futures.markets[2].trading_schedule is not None
+    assert futures.markets[2].trading_schedule.market_group == "US_MARKET"
 
 
 @pytest.mark.parametrize(

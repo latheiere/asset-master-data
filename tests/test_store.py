@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from importlib import resources
 
@@ -9,7 +10,7 @@ from mdv.db import (
     SQLiteStore,
     market_trade_url,
 )
-from mdv.models import FinancingRecord, FinancingSnapshot, MarketRecord, MarketSnapshot
+from mdv.models import FinancingRecord, FinancingSnapshot, MarketRecord, MarketSnapshot, TradingSchedule
 
 
 def snapshot(*, active: bool = True, status: str = "TRADING") -> MarketSnapshot:
@@ -124,6 +125,102 @@ def test_store_records_status_transition(tmp_path):
             "SELECT event_type FROM market_lifecycle_events ORDER BY rowid"
         )]
     assert event_types == ["DISCOVERED", "DEACTIVATED", "STATUS_CHANGED"]
+
+
+def test_scheduled_session_transition_stays_active_and_has_no_change_event(tmp_path):
+    store = SQLiteStore(tmp_path / "mdv.sqlite3")
+    schedule_open = TradingSchedule(session_status="OPEN", market_group="EQUITY")
+    schedule_closed = TradingSchedule(session_status="CLOSED", market_group="EQUITY")
+    first = MarketRecord(
+        source="TEST_FUTURE", venue="BINANCE", market_type="FUTURE",
+        product="PERP", raw_symbol="AAPLUSDT", base_symbol="AAPL",
+        quote_symbol="USDT", settle_symbol="USDT", contract_type="PERP",
+        status="TRADING", active=True, contract_multiplier=None,
+        raw={"symbol": "AAPLUSDT", "status": "TRADING"},
+        trading_schedule=schedule_open,
+    )
+    second = MarketRecord(
+        **{
+            **first.__dict__,
+            "status": "PAUSED",
+            "active": False,
+            "raw": {"symbol": "AAPLUSDT", "status": "PAUSED"},
+            "trading_schedule": schedule_closed,
+        }
+    )
+    store.apply_snapshot(MarketSnapshot(
+        first.source, first.venue, first.market_type, first.product,
+        "2026-07-03T00:00:00+00:00", (first,),
+    ))
+    second_run = store.apply_snapshot(MarketSnapshot(
+        second.source, second.venue, second.market_type, second.product,
+        "2026-07-03T12:00:00+00:00", (second,),
+    ))
+
+    saved = store.list_markets({})[0]
+    with store.readonly() as conn:
+        events = [tuple(row) for row in conn.execute(
+            "SELECT event_type, old_value, new_value FROM market_lifecycle_events ORDER BY rowid"
+        )]
+    assert saved["active"] == 1
+    assert saved["status"] == "PAUSED"
+    assert saved["trading_schedule"]["session_status"] == "CLOSED"
+    assert events == [("DISCOVERED", None, "TRADING")]
+
+    # Old databases can already contain these paired session-only events. The
+    # collection log hides them through the normalized schedule contract.
+    with store.transaction() as conn:
+        conn.execute(
+            """
+            INSERT INTO market_lifecycle_events(
+                event_id, market_id, run_id, event_type, old_value, new_value, observed_at
+            ) VALUES ('legacy-status', ?, ?, 'STATUS_CHANGED', 'TRADING', 'PAUSED', ?)
+            """,
+            (second.market_id, second_run, "2026-07-03T12:00:00+00:00"),
+        )
+        conn.execute(
+            """
+            INSERT INTO market_lifecycle_events(
+                event_id, market_id, run_id, event_type, old_value, new_value, observed_at
+            ) VALUES ('legacy-active', ?, ?, 'DEACTIVATED', 'True', 'False', ?)
+            """,
+            (second.market_id, second_run, "2026-07-03T12:00:00+00:00"),
+        )
+        second_parent = conn.execute(
+            "SELECT collection_run_id FROM ingest_runs WHERE run_id = ?",
+            (second_run,),
+        ).fetchone()[0]
+    log = store.list_collection_runs(limit=10)
+    session_run = next(
+        run for run in log["runs"] if run["collection_run_id"] == second_parent
+    )
+    assert session_run["change_count"] == 0
+
+    terminal = MarketRecord(
+        **{
+            **second.__dict__,
+            "status": "CLOSED",
+            "active": False,
+            "raw": {"symbol": "AAPLUSDT", "status": "DELISTED"},
+            "venue_status": "DELISTED",
+            "trading_schedule": TradingSchedule(
+                session_status="UNKNOWN", market_group="EQUITY"
+            ),
+        }
+    )
+    store.apply_snapshot(MarketSnapshot(
+        terminal.source, terminal.venue, terminal.market_type, terminal.product,
+        "2026-07-04T00:00:00+00:00", (terminal,),
+    ))
+    with store.readonly() as conn:
+        terminal_events = [tuple(row) for row in conn.execute(
+            "SELECT event_type, old_value, new_value FROM market_lifecycle_events "
+            "WHERE event_id NOT LIKE 'legacy-%' ORDER BY rowid"
+        )]
+    assert terminal_events[-2:] == [
+        ("DEACTIVATED", "True", "False"),
+        ("STATUS_CHANGED", "PAUSED", "CLOSED"),
+    ]
 
 
 def test_collection_log_groups_market_and_tag_changes_by_venue(tmp_path):
@@ -475,13 +572,16 @@ def test_financing_migration_upgrades_schema_12_without_rewriting_market_data(tm
         asset_columns = {
             row[1] for row in migrated.execute("PRAGMA table_info(assets)")
         }
+        market_columns = {
+            row[1] for row in migrated.execute("PRAGMA table_info(markets)")
+        }
         indexes = {
             row[0]
             for row in migrated.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'index'"
             )
         }
-    assert versions[-1] == 17
+    assert versions[-1] == 18
     assert {
         "financing_products", "financing_observations",
         "financing_lifecycle_events", "financing_asset_mappings",
@@ -489,6 +589,7 @@ def test_financing_migration_upgrades_schema_12_without_rewriting_market_data(tm
         "manual_asset_actions", "manual_asset_action_tombstones",
     }.issubset(tables)
     assert "is_stock" in asset_columns
+    assert "trading_schedule_json" in market_columns
     assert {
         "idx_collection_runs_status_started",
         "idx_market_observations_retention",
@@ -498,6 +599,60 @@ def test_financing_migration_upgrades_schema_12_without_rewriting_market_data(tm
     }.issubset(indexes)
     assert "audit_compaction_stats" in tables
     assert venue == "Bybit"
+
+
+def test_schedule_migration_backfills_existing_session_market(tmp_path):
+    path = tmp_path / "schema17.sqlite3"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, filename TEXT NOT NULL, applied_at TEXT NOT NULL)"
+    )
+    migration_dir = resources.files("mdv.migrations")
+    for version in range(1, 18):
+        entry = next(
+            item for item in migration_dir.iterdir()
+            if item.name.startswith(f"{version:03d}_")
+        )
+        conn.executescript(entry.read_text(encoding="utf-8"))
+        conn.execute(
+            "INSERT INTO schema_migrations(version, filename, applied_at) VALUES (?, ?, ?)",
+            (version, entry.name, "2026-07-15T00:00:00+00:00"),
+        )
+    conn.execute("INSERT INTO venues(venue, display_name) VALUES ('BITGET', 'Bitget')")
+    raw = {
+        "symbol": "RTZAUSDT", "baseCoin": "rTZA", "quoteCoin": "USDT",
+        "status": "halt", "areaSymbol": "yes",
+    }
+    conn.execute(
+        """
+        INSERT INTO markets(
+            market_id, source, venue, market_type, product, raw_symbol,
+            base_symbol, quote_symbol, settle_symbol, contract_type,
+            status, active, contract_multiplier, first_seen_at, last_seen_at,
+            raw_json, content_hash, venue_product, venue_status
+        ) VALUES (
+            'BITGET_SPOT:RTZAUSDT', 'BITGET_SPOT', 'BITGET', 'SPOT', 'SPOT',
+            'RTZAUSDT', 'RTZA', 'USDT', NULL, 'SPOT', 'PAUSED', 0, NULL,
+            '2026-07-14T00:00:00+00:00', '2026-07-15T00:00:00+00:00',
+            ?, 'hash', 'SPOT', 'HALT'
+        )
+        """,
+        (json.dumps(raw),),
+    )
+    conn.commit()
+    conn.close()
+
+    store = SQLiteStore(path)
+    store.migrate()
+
+    row = store.list_markets({})[0]
+    assert row["active"] == 1
+    assert row["status"] == "PAUSED"
+    assert row["trading_schedule"]["market_group"] == "TOKENIZED_STOCK"
+    with store.readonly() as migrated:
+        assert migrated.execute(
+            "SELECT COUNT(*) FROM data_backfills WHERE name = 'market-trading-schedules-v1'"
+        ).fetchone()[0] == 1
 
 
 def test_observations_retain_raw_payloads_only_for_lifecycle_changes(tmp_path):

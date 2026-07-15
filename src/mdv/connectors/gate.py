@@ -4,8 +4,8 @@ from datetime import datetime, timezone
 
 import httpx
 
-from mdv.connectors.base import fetch_json, utc_now
-from mdv.models import MarketRecord, MarketSnapshot
+from mdv.connectors.base import fetch_json, market_availability, session_status, utc_now
+from mdv.models import MarketRecord, MarketSnapshot, TradingSchedule
 from mdv.normalization import contract_direction, normalize_product, normalize_status
 
 
@@ -21,6 +21,18 @@ def _asset_tags(row: dict, tags: list[dict]) -> dict:
     if tags:
         raw["_metadata"] = {"ASSET_TAGS": tags}
     return raw
+
+
+def gate_market_schedule(market: dict, raw: dict) -> TradingSchedule | None:
+    market_group = str(raw.get("contract_type") or "").strip().upper()
+    if market.get("market_type") != "FUTURE" or market_group not in {
+        "STOCKS", "FOREX", "INDICES", "COMMODITIES", "METALS",
+    }:
+        return None
+    return TradingSchedule(
+        session_status=session_status(str(market.get("status") or "UNKNOWN")),
+        market_group=market_group,
+    )
 
 
 class GateSpotConnector:
@@ -114,7 +126,14 @@ class GateFutureConnector:
             in_delisting = row.get("in_delisting") is True
             raw_status = str(row.get("status") or "").strip().upper()
             venue_status = "DELISTING" if in_delisting else (raw_status or "TRADING")
-            active = venue_status == "TRADING" and not in_delisting
+            schedule = gate_market_schedule(
+                {"market_type": self.market_type, "status": venue_status}, row
+            )
+            availability = market_availability(
+                venue_status=venue_status,
+                default_active=venue_status == "TRADING" and not in_delisting,
+                trading_schedule=schedule,
+            )
             contract_type = self._contract_type(row)
             markets.append(
                 MarketRecord(
@@ -127,8 +146,8 @@ class GateFutureConnector:
                     quote_symbol=quote_symbol,
                     settle_symbol=self.settle,
                     contract_type=contract_type,
-                    status=normalize_status(venue_status),
-                    active=active,
+                    status=availability.status,
+                    active=availability.active,
                     contract_multiplier=(
                         str(row["quanto_multiplier"])
                         if row.get("quanto_multiplier") is not None
@@ -150,6 +169,7 @@ class GateFutureConnector:
                         settle_symbol=self.settle,
                     ),
                     expiry_cycle=self._expiry_cycle(row),
+                    trading_schedule=availability.trading_schedule,
                 )
             )
         snapshot = MarketSnapshot(

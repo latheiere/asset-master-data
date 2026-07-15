@@ -201,7 +201,7 @@ def test_binance_tradifi_perpetual_uses_short_contract_code():
                     "quoteAsset": "USDT",
                     "marginAsset": "USDT",
                     "contractType": "TRADIFI_PERPETUAL",
-                    "status": "TRADING",
+                    "status": "TRADING_HALT",
                     "underlyingType": "EQUITY",
                 }
             ]
@@ -209,6 +209,49 @@ def test_binance_tradifi_perpetual_uses_short_contract_code():
         observed_at="2026-07-03T00:00:00+00:00",
     )
     assert snapshot.markets[0].contract_type == "PERP"
+    assert snapshot.markets[0].status == "PAUSED"
+    assert snapshot.markets[0].active is True
+    assert snapshot.markets[0].trading_schedule.session_status == "CLOSED"
+
+
+def test_session_based_provider_markets_remain_listed_while_closed():
+    bitget = BitgetSpotConnector().parse(
+        {"code": "00000", "data": [{
+            "symbol": "RTZAUSDT", "baseCoin": "rTZA", "quoteCoin": "USDT",
+            "status": "halt", "areaSymbol": "yes",
+        }]},
+        observed_at="2026-07-15T00:00:00+00:00",
+    ).markets[0]
+    gate = GateFutureConnector(settle="USDT").parse(
+        [{
+            "name": "SOXS_USDT", "status": "suspend", "in_delisting": False,
+            "contract_type": "stocks", "quanto_multiplier": "1",
+        }],
+        observed_at="2026-07-15T00:00:00+00:00",
+    ).markets[0]
+    mexc = MexcFutureConnector().parse(
+        {"success": True, "data": [{
+            "symbol": "AUD_USDT", "baseCoin": "AUD", "quoteCoin": "USDT",
+            "settleCoin": "USDT", "state": 4,
+            "conceptPlate": ["mc-trade-zone-tradfi", "mc-trade-zone-Forex"],
+        }]},
+        observed_at="2026-07-15T00:00:00+00:00",
+    ).markets[0]
+    bybit = BybitConnector(
+        source="BYBIT_LINEAR_FUTURE", category="linear",
+        market_type="FUTURE", product="LINEAR",
+    ).parse(
+        {"retCode": 0, "result": {"category": "linear", "list": [{
+            "symbol": "AAPLUSDT", "baseCoin": "AAPL", "quoteCoin": "USDT",
+            "settleCoin": "USDT", "contractType": "LinearPerpetual",
+            "symbolType": "stock", "status": "Paused",
+        }]}},
+        observed_at="2026-07-15T00:00:00+00:00",
+    ).markets[0]
+
+    assert [market.active for market in (bitget, gate, mexc, bybit)] == [True] * 4
+    assert [market.status for market in (bitget, gate, mexc, bybit)] == ["PAUSED"] * 4
+    assert all(market.trading_schedule is not None for market in (bitget, gate, mexc, bybit))
 
 
 def test_mexc_parsers_accept_official_shapes():

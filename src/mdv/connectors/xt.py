@@ -7,9 +7,34 @@ from urllib.parse import urlencode
 
 import httpx
 
-from mdv.connectors.base import fetch_json, utc_now
-from mdv.models import FinancingRecord, FinancingSnapshot, MarketRecord, MarketSnapshot
-from mdv.normalization import contract_direction, normalize_contract_type, normalize_product, normalize_status
+from mdv.connectors.base import epoch_timestamp, fetch_json, market_availability, session_status, utc_now
+from mdv.models import FinancingRecord, FinancingSnapshot, MarketRecord, MarketSnapshot, TradingSchedule
+from mdv.normalization import contract_direction, normalize_contract_type, normalize_product
+
+
+def xt_market_schedule(market: dict, raw: dict) -> TradingSchedule | None:
+    labels = {
+        str(value).strip().upper()
+        for field in ("labels", "tags")
+        for value in (raw.get(field) or [])
+    }
+    groups = labels & {"STOCK", "FOREX", "INDEX", "COMMODITY", "METAL"}
+    if not groups:
+        return None
+    next_at = None
+    next_status = None
+    candidate = raw.get("nextStateTime") if market.get("market_type") == "SPOT" else raw.get("nextOpenTime")
+    parsed = epoch_timestamp(candidate, milliseconds=True)
+    observed_at = str(market.get("observed_at") or market.get("last_seen_at") or "")
+    if parsed and parsed > observed_at:
+        next_at = parsed
+        next_status = "OPEN"
+    return TradingSchedule(
+        session_status=session_status(str(market.get("status") or "UNKNOWN")),
+        market_group="/".join(sorted(groups)),
+        next_transition_at=next_at,
+        next_transition_status=next_status,
+    )
 
 
 def _required(row: dict, name: str, *, source: str) -> str:
@@ -70,6 +95,20 @@ class XtSpotConnector:
                 raise ValueError(f"{self.source}: symbol is not an object")
             venue_status = str(row.get("state") or "UNKNOWN").strip().upper()
             active = venue_status == "ONLINE" and row.get("tradingEnabled") is True
+            schedule = xt_market_schedule(
+                {
+                    "market_type": self.market_type,
+                    "status": "TRADING" if active else "PAUSED",
+                    "observed_at": observed_at,
+                },
+                row,
+            )
+            availability = market_availability(
+                venue_status=venue_status,
+                normalized_status="TRADING" if active else ("PAUSED" if schedule else venue_status),
+                default_active=active,
+                trading_schedule=schedule,
+            )
             markets.append(
                 MarketRecord(
                     source=self.source,
@@ -81,12 +120,13 @@ class XtSpotConnector:
                     quote_symbol=_required(row, "quoteCurrency", source=self.source),
                     settle_symbol=None,
                     contract_type="SPOT",
-                    status=normalize_status(venue_status),
-                    active=active,
+                    status=availability.status,
+                    active=availability.active,
                     contract_multiplier=None,
                     raw=_asset_tags(row, "tags", source="XT_SPOT_SYMBOL"),
                     venue_product=str(row.get("type") or "SPOT").strip().upper(),
                     venue_status=venue_status,
+                    trading_schedule=availability.trading_schedule,
                 )
             )
         snapshot = MarketSnapshot(
@@ -132,6 +172,19 @@ class XtFutureConnector:
                 venue_status = "CLOSE_ONLY"
             else:
                 venue_status = "PAUSED"
+            schedule = xt_market_schedule(
+                {
+                    "market_type": self.market_type,
+                    "status": venue_status,
+                    "observed_at": observed_at,
+                },
+                row,
+            )
+            availability = market_availability(
+                venue_status=venue_status,
+                default_active=trade_enabled and not completed,
+                trading_schedule=schedule,
+            )
             expires_at = self._expires_at(row.get("deliveryDate"), contract_type)
             markets.append(
                 MarketRecord(
@@ -144,8 +197,8 @@ class XtFutureConnector:
                     quote_symbol=quote_symbol,
                     settle_symbol=quote_symbol,
                     contract_type=contract_type,
-                    status=normalize_status(venue_status),
-                    active=trade_enabled and not completed,
+                    status=availability.status,
+                    active=availability.active,
                     contract_multiplier=(
                         str(row["contractSize"])
                         if row.get("contractSize") is not None
@@ -171,6 +224,7 @@ class XtFutureConnector:
                     expiry_cycle={"CURRENT_QUARTER": "Q", "NEXT_QUARTER": "BQ"}.get(
                         raw_contract_type
                     ),
+                    trading_schedule=availability.trading_schedule,
                 )
             )
         snapshot = MarketSnapshot(

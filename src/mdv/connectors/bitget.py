@@ -5,9 +5,9 @@ from urllib.parse import urlencode
 
 import httpx
 
-from mdv.connectors.base import fetch_json, utc_now
-from mdv.models import MarketRecord, MarketSnapshot
-from mdv.normalization import contract_direction, normalize_product, normalize_status
+from mdv.connectors.base import fetch_json, market_availability, session_status, utc_now
+from mdv.models import MarketRecord, MarketSnapshot, TradingSchedule
+from mdv.normalization import contract_direction, normalize_product
 
 
 def _required(row: dict, name: str, *, source: str) -> str:
@@ -32,6 +32,25 @@ def _data(payload: object, *, source: str) -> list:
     if not isinstance(data, list):
         raise ValueError(f"{source}: response has no data array")
     return data
+
+
+def bitget_market_schedule(market: dict, raw: dict) -> TradingSchedule | None:
+    tokenized_stock = (
+        market.get("market_type") == "SPOT"
+        and str(raw.get("areaSymbol") or "").lower() == "yes"
+        and str(raw.get("baseCoin") or "").startswith("r")
+        and str(raw.get("baseCoin") or "")[1:].isupper()
+    )
+    rwa_future = (
+        market.get("market_type") == "FUTURE"
+        and str(raw.get("isRwa") or "").upper() == "YES"
+    )
+    if not (tokenized_stock or rwa_future):
+        return None
+    return TradingSchedule(
+        session_status=session_status(str(market.get("status") or "UNKNOWN")),
+        market_group="TOKENIZED_STOCK" if tokenized_stock else "RWA",
+    )
 
 
 class BitgetSpotConnector:
@@ -60,6 +79,15 @@ class BitgetSpotConnector:
                         "source": "BITGET_SPOT_SYMBOL",
                     }
                 )
+            raw = _asset_tags(row, tags)
+            schedule = bitget_market_schedule(
+                {"market_type": self.market_type, "status": venue_status}, raw
+            )
+            availability = market_availability(
+                venue_status=venue_status,
+                default_active=venue_status == "ONLINE",
+                trading_schedule=schedule,
+            )
             markets.append(
                 MarketRecord(
                     source=self.source,
@@ -71,12 +99,13 @@ class BitgetSpotConnector:
                     quote_symbol=_required(row, "quoteCoin", source=self.source),
                     settle_symbol=None,
                     contract_type="SPOT",
-                    status=normalize_status(venue_status),
-                    active=venue_status == "ONLINE",
+                    status=availability.status,
+                    active=availability.active,
                     contract_multiplier=None,
-                    raw=_asset_tags(row, tags),
+                    raw=raw,
                     venue_product=self.product,
                     venue_status=venue_status,
+                    trading_schedule=availability.trading_schedule,
                 )
             )
         snapshot = MarketSnapshot(
@@ -126,6 +155,15 @@ class BitgetFutureConnector:
             quote_symbol = _required(row, "quoteCoin", source=self.source)
             settle_symbol = base_symbol if self.product_type == "COIN-FUTURES" else quote_symbol
             contract_type = self._contract_type(row)
+            raw = _asset_tags(row, tags)
+            schedule = bitget_market_schedule(
+                {"market_type": self.market_type, "status": venue_status}, raw
+            )
+            availability = market_availability(
+                venue_status=venue_status,
+                default_active=venue_status == "NORMAL",
+                trading_schedule=schedule,
+            )
             markets.append(
                 MarketRecord(
                     source=self.source,
@@ -137,10 +175,10 @@ class BitgetFutureConnector:
                     quote_symbol=quote_symbol,
                     settle_symbol=settle_symbol,
                     contract_type=contract_type,
-                    status=normalize_status(venue_status),
-                    active=venue_status == "NORMAL",
+                    status=availability.status,
+                    active=availability.active,
                     contract_multiplier=None,
-                    raw=_asset_tags(row, tags),
+                    raw=raw,
                     expires_at=self._expires_at(row),
                     max_market_order_size=(
                         str(row["maxMarketOrderQty"])
@@ -156,6 +194,7 @@ class BitgetFutureConnector:
                         settle_symbol=settle_symbol,
                     ),
                     expiry_cycle=self._expiry_cycle(row),
+                    trading_schedule=availability.trading_schedule,
                 )
             )
         snapshot = MarketSnapshot(

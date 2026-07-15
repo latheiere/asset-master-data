@@ -175,8 +175,17 @@ Returns the active asset-first hierarchy. Supports all common filters except
 
 `venues` contains each venue’s base symbols plus `spot` and `futures` market
 arrays. Market rows include normalized fields, source fields, timestamps,
-`underlying_unit`, and `trade_url`; they do not include `raw_json`. `count` is
-the filtered total before `LIMIT`/`OFFSET`.
+`underlying_unit`, `trade_url`, and `trading_schedule`; they do not include
+`raw_json`. `trading_schedule` is null for 24x7 or unclassified markets. For a
+provider-classified session-based market it contains `session_status`
+(`OPEN`, `CLOSED`, or `UNKNOWN`), a description, optional `market_group`, and
+optional `next_transition_at`, `next_transition_status`, and `timezone`.
+`count` is the filtered total before `LIMIT`/`OFFSET`.
+
+Session-based markets remain active through ordinary venue-session closures.
+Their normalized `status` can still be `PAUSED`, but routine transitions between
+`TRADING` and `PAUSED` do not create collection-log lifecycle changes. Terminal
+venue states and absence from a complete snapshot deactivate the market normally.
 
 `perp_venues` and `dated_venues` split active derivative coverage by normalized
 duration. `margin_venues` and `loan_venues` split mapped borrow eligibility by
@@ -274,6 +283,7 @@ active markets. Pass `ACTIVE=false` only when inactive history is required.
       "settle_symbol": "USDT",
       "status": "TRADING",
       "active": 1,
+      "trading_schedule": null,
       "canonical_symbol": "BTC",
       "match_method": "SAME_VENUE_SPOT_FUTURE_SYMBOL",
       "match_confidence": 0.97,

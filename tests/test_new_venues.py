@@ -253,6 +253,19 @@ def test_whitebit_recorded_spot_crypto_and_tradfi_perp_fixtures():
     assert futures.markets[0].contract_direction == "LINEAR"
     assert futures.markets[1].active is False
     assert futures.markets[1].raw["_metadata"]["ASSET_TAGS"][0]["tag"] == "TRADFI"
+    assert futures.markets[1].trading_schedule.market_group == "TRADFI"
+
+    session_closed = WhitebitConnector(market_type="FUTURE").parse(
+        [{
+            "name": "AAPL_PERP", "stock": "AAPL", "money": "USDT",
+            "tradesEnabled": False, "type": "tradfiFutures",
+            "isTradFiFutures": True,
+        }],
+        observed_at=OBSERVED_AT,
+    ).markets[0]
+    assert session_closed.status == "PAUSED"
+    assert session_closed.active is True
+    assert session_closed.trading_schedule.session_status == "CLOSED"
 
 
 def test_coinbase_recorded_spot_fixture_preserves_native_status_and_restrictions():
@@ -285,6 +298,8 @@ def test_coinbase_recorded_perpetual_and_margin_fixtures_normalize_dimensions():
     assert perpetuals.markets[0].contract_multiplier == "1"
     assert perpetuals.markets[0].contract_direction == "LINEAR"
     assert perpetuals.markets[1].status == "PAUSED"
+    assert perpetuals.markets[1].active is True
+    assert perpetuals.markets[1].trading_schedule.session_status == "CLOSED"
     assert perpetuals.markets[1].venue_status == "STANDARD"
     assert perpetuals.markets[1].raw["future_product_details"]["perpetual_details"]["underlying_type"] == "EQUITY"
     assert "EQUITY" in market_metadata(

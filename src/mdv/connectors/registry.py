@@ -6,14 +6,14 @@ from typing import Callable
 from urllib.parse import quote
 
 from mdv.connectors.base import Connector
-from mdv.connectors.binance import binance_connectors
+from mdv.connectors.binance import binance_connectors, binance_market_schedule
 from mdv.connectors.bitfinex import bitfinex_connectors, bitfinex_financing_connectors
-from mdv.connectors.bitmart import bitmart_connectors
-from mdv.connectors.bitget import bitget_connectors
-from mdv.connectors.bybit import bybit_connectors
-from mdv.connectors.coinbase import coinbase_connectors, coinbase_financing_connectors
+from mdv.connectors.bitmart import bitmart_connectors, bitmart_market_schedule
+from mdv.connectors.bitget import bitget_connectors, bitget_market_schedule
+from mdv.connectors.bybit import bybit_connectors, bybit_market_schedule
+from mdv.connectors.coinbase import coinbase_connectors, coinbase_financing_connectors, coinbase_market_schedule
 from mdv.connectors.deribit import deribit_connectors
-from mdv.connectors.gate import gate_connectors
+from mdv.connectors.gate import gate_connectors, gate_market_schedule
 from mdv.connectors.gemini import gemini_connectors
 from mdv.connectors.htx import htx_connectors
 from mdv.connectors.hyperliquid import hyperliquid_connectors
@@ -24,16 +24,18 @@ from mdv.connectors.financing import (
     gate_financing_connectors,
     kucoin_financing_connectors,
 )
-from mdv.connectors.mexc import mexc_connectors
+from mdv.connectors.mexc import mexc_connectors, mexc_market_schedule
 from mdv.connectors.kucoin import kucoin_connectors
 from mdv.connectors.okx import okx_connectors
-from mdv.connectors.whitebit import whitebit_connectors
-from mdv.connectors.xt import xt_connectors, xt_financing_connectors
+from mdv.connectors.whitebit import whitebit_connectors, whitebit_market_schedule
+from mdv.connectors.xt import xt_connectors, xt_financing_connectors, xt_market_schedule
 from mdv.matching import AliasHint, normalize_asset_symbol
+from mdv.models import TradingSchedule
 
 
 ConnectorFactory = Callable[[], list[Connector]]
 TradeUrlBuilder = Callable[[dict], str | None]
+MarketScheduleBuilder = Callable[[dict, dict], TradingSchedule | None]
 
 
 @dataclass(frozen=True)
@@ -49,6 +51,7 @@ class VenueIntegration:
     connector_factory: ConnectorFactory
     trade_url_builder: TradeUrlBuilder
     financing_factory: ConnectorFactory | None = None
+    market_schedule_builder: MarketScheduleBuilder | None = None
 
 
 def _encoded_market(market: dict) -> tuple[str, str, str, str, str]:
@@ -211,32 +214,38 @@ INTEGRATIONS = {
     for integration in (
         VenueIntegration(
             "BINANCE", binance_connectors, _binance_trade_url,
-            binance_financing_connectors,
+            binance_financing_connectors, binance_market_schedule,
         ),
         VenueIntegration(
             "BITGET", bitget_connectors, _bitget_trade_url,
-            bitget_financing_connectors,
+            bitget_financing_connectors, bitget_market_schedule,
         ),
         VenueIntegration(
             "BITFINEX", bitfinex_connectors, _bitfinex_trade_url,
             bitfinex_financing_connectors,
         ),
-        VenueIntegration("BITMART", bitmart_connectors, _bitmart_trade_url),
+        VenueIntegration(
+            "BITMART", bitmart_connectors, _bitmart_trade_url,
+            market_schedule_builder=bitmart_market_schedule,
+        ),
         VenueIntegration(
             "BYBIT", bybit_connectors, _bybit_trade_url,
-            bybit_financing_connectors,
+            bybit_financing_connectors, bybit_market_schedule,
         ),
         VenueIntegration(
             "GATE", gate_connectors, _gate_trade_url,
-            gate_financing_connectors,
+            gate_financing_connectors, gate_market_schedule,
         ),
         VenueIntegration(
             "COINBASE", coinbase_connectors, _coinbase_trade_url,
-            coinbase_financing_connectors,
+            coinbase_financing_connectors, coinbase_market_schedule,
         ),
         VenueIntegration("DERIBIT", deribit_connectors, _deribit_trade_url),
         VenueIntegration("GEMINI", gemini_connectors, _gemini_trade_url),
-        VenueIntegration("MEXC", mexc_connectors, _mexc_trade_url),
+        VenueIntegration(
+            "MEXC", mexc_connectors, _mexc_trade_url,
+            market_schedule_builder=mexc_market_schedule,
+        ),
         VenueIntegration("OKX", okx_connectors, _okx_trade_url),
         VenueIntegration(
             "HYPERLIQUID", hyperliquid_connectors, _hyperliquid_trade_url
@@ -245,8 +254,14 @@ INTEGRATIONS = {
         VenueIntegration(
             "KUCOIN", kucoin_connectors, _kucoin_trade_url, kucoin_financing_connectors,
         ),
-        VenueIntegration("WHITEBIT", whitebit_connectors, _whitebit_trade_url),
-        VenueIntegration("XT", xt_connectors, _xt_trade_url, xt_financing_connectors),
+        VenueIntegration(
+            "WHITEBIT", whitebit_connectors, _whitebit_trade_url,
+            market_schedule_builder=whitebit_market_schedule,
+        ),
+        VenueIntegration(
+            "XT", xt_connectors, _xt_trade_url, xt_financing_connectors,
+            xt_market_schedule,
+        ),
     )
 }
 
@@ -281,6 +296,14 @@ def supported_venues() -> tuple[str, ...]:
 def market_trade_url(market: dict) -> str | None:
     integration = INTEGRATIONS.get(str(market.get("venue") or "").upper())
     return integration.trade_url_builder(market) if integration else None
+
+
+def market_trading_schedule(market: dict, raw: dict) -> TradingSchedule | None:
+    """Dispatch provider evidence through the registered normalized contract."""
+    integration = INTEGRATIONS.get(str(market.get("venue") or "").upper())
+    if integration is None or integration.market_schedule_builder is None:
+        return None
+    return integration.market_schedule_builder(market, raw)
 
 
 def _strings(value: object) -> list[str]:

@@ -10,7 +10,7 @@ from mdv import __version__
 from mdv.auth import Entitlements, hash_password
 from mdv.config import Settings
 from mdv.db import SQLiteStore
-from mdv.models import FinancingRecord, FinancingSnapshot, MarketRecord, MarketSnapshot
+from mdv.models import FinancingRecord, FinancingSnapshot, MarketRecord, MarketSnapshot, TradingSchedule
 from mdv.web import create_app
 
 
@@ -33,6 +33,9 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
         contract_multiplier="0.0001",
         raw={"symbol": "BTC_USDT", "state": 0},
         max_market_order_size="5000000",
+        trading_schedule=TradingSchedule(
+            session_status="OPEN", market_group="FOREX"
+        ),
     )
     store.apply_snapshot(
         MarketSnapshot(
@@ -327,6 +330,8 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
     assert "https://www.bybit.com/trade/usdt/SOLUSDT-25SEP26" in asset_detail_api_response.text
     assert "2026-09-25T08:00:00+00:00" in asset_detail_api_response.text
     assert '"max_market_order_size":"5000000"' in btc_detail_api_response.text
+    assert btc_detail_api_response.json()["assets"][0]["markets"][0]["trading_schedule"]["session_status"] == "OPEN"
+    assert "Trading schedule:" in response.text
     assert "Contract size:" not in asset_detail_page.text
     assert '<details class="asset" data-symbol="SOL">' in asset_detail_page.text
     assert 'loadAssetDetail(details)' in response.text

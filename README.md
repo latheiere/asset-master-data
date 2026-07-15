@@ -4,7 +4,7 @@ Local-first, auditable canonical asset and exchange-market metadata from public 
 
 ## Status and scope
 
-The current release is `0.12.3`. The service discovers public spot, derivatives, margin, and loan catalogs; preserves raw observations and lifecycle history; builds evidence-backed canonical mappings; and serves authenticated HTML and JSON views. It is not a price feed, trading engine, or order router.
+The current release is `0.13.0`. The service discovers public spot, derivatives, margin, and loan catalogs; preserves raw observations and lifecycle history; builds evidence-backed canonical mappings; and serves authenticated HTML and JSON views. It is not a price feed, trading engine, or order router.
 
 ## Architecture
 
@@ -19,6 +19,12 @@ public venue catalogs -> transactional SQLite history -> versioned identity mapp
 - Raw symbols, lifecycle events, and mapping revisions remain auditable.
   Unchanged rows expire, old change payloads compact to hashes/state, and
   retained change rows have a hard per-table ceiling exposed in health data.
+- Provider-classified TradFi, RWA, stock, forex, index, commodity, and similar
+  session-based markets remain active while their venue or underlying market is
+  closed. Market details expose normalized trading-session metadata and the next
+  provider-published transition when available. Routine `TRADING`/`PAUSED`
+  session flips are not lifecycle changes; a terminal status or disappearance
+  from a complete snapshot still is.
 - Consumers integrate only through the documented API or exports.
 - SQLite runs locally with WAL, migrations, and online backups.
 

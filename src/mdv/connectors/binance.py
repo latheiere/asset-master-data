@@ -5,9 +5,28 @@ from datetime import datetime, timezone
 
 import httpx
 
-from mdv.connectors.base import fetch_json, utc_now
-from mdv.models import MarketRecord, MarketSnapshot
+from mdv.connectors.base import fetch_json, market_availability, session_status, utc_now
+from mdv.models import MarketRecord, MarketSnapshot, TradingSchedule
 from mdv.normalization import contract_direction, normalize_contract_type, normalize_product, normalize_status
+
+
+def binance_market_schedule(market: dict, raw: dict) -> TradingSchedule | None:
+    if market.get("market_type") != "FUTURE":
+        return None
+    subtypes = [str(value).upper() for value in raw.get("underlyingSubType") or []]
+    if not (
+        str(raw.get("contractType") or "").upper() == "TRADIFI_PERPETUAL"
+        or str(raw.get("underlyingType") or "").upper() == "EQUITY"
+        or "TRADFI" in subtypes
+    ):
+        return None
+    provider_status = str(market.get("status") or "UNKNOWN")
+    if normalize_status(provider_status) == "UNKNOWN":
+        provider_status = str(market.get("venue_status") or provider_status)
+    return TradingSchedule(
+        session_status=session_status(provider_status),
+        market_group=str(raw.get("underlyingType") or "TRADFI").upper(),
+    )
 
 
 class BinanceConnector:
@@ -60,6 +79,14 @@ class BinanceConnector:
             raw = dict(row)
             if metadata is not None:
                 raw["_metadata"] = {"BINANCE_PRODUCT": metadata}
+            schedule = binance_market_schedule(
+                {"market_type": self.market_type, "status": venue_status}, raw
+            )
+            availability = market_availability(
+                venue_status=venue_status,
+                default_active=venue_status == "TRADING",
+                trading_schedule=schedule,
+            )
             market_lot_size = next(
                 (
                     item
@@ -79,8 +106,8 @@ class BinanceConnector:
                     quote_symbol=str(row["quoteAsset"]).upper(),
                     settle_symbol=settle_symbol,
                     contract_type=contract_type,
-                    status=normalize_status(venue_status),
-                    active=venue_status == "TRADING",
+                    status=availability.status,
+                    active=availability.active,
                     contract_multiplier=str(row.get("contractSize")) if row.get("contractSize") is not None else None,
                     raw=raw,
                     max_market_order_size=(
@@ -103,6 +130,7 @@ class BinanceConnector:
                         "CURRENT_QUARTER": "Q",
                         "NEXT_QUARTER": "BQ",
                     }.get(raw_contract_type),
+                    trading_schedule=availability.trading_schedule,
                 )
             )
         snapshot = MarketSnapshot(

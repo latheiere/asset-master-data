@@ -5,9 +5,21 @@ from urllib.parse import urlencode
 
 import httpx
 
-from mdv.connectors.base import fetch_json, utc_now
-from mdv.models import MarketRecord, MarketSnapshot
-from mdv.normalization import contract_direction, normalize_contract_type, normalize_product, normalize_status
+from mdv.connectors.base import fetch_json, market_availability, session_status, utc_now
+from mdv.models import MarketRecord, MarketSnapshot, TradingSchedule
+from mdv.normalization import contract_direction, normalize_contract_type, normalize_product
+
+
+def bybit_market_schedule(market: dict, raw: dict) -> TradingSchedule | None:
+    if (
+        market.get("market_type") != "FUTURE"
+        or str(raw.get("symbolType") or "").lower() != "stock"
+    ):
+        return None
+    return TradingSchedule(
+        session_status=session_status(str(market.get("status") or "UNKNOWN")),
+        market_group="STOCK",
+    )
 
 
 class BybitConnector:
@@ -85,6 +97,14 @@ class BybitConnector:
                     value = lot_size_filter.get("maxMktOrderQty")
                     if value is not None:
                         max_market_order_size = str(value)
+                schedule = bybit_market_schedule(
+                    {"market_type": self.market_type, "status": venue_status}, row
+                )
+                availability = market_availability(
+                    venue_status=venue_status,
+                    default_active=venue_status == "TRADING",
+                    trading_schedule=schedule,
+                )
                 markets.append(
                     MarketRecord(
                         source=self.source,
@@ -96,8 +116,8 @@ class BybitConnector:
                         quote_symbol=quote_symbol,
                         settle_symbol=settle_symbol,
                         contract_type=contract_type,
-                        status=normalize_status(venue_status),
-                        active=venue_status == "TRADING",
+                        status=availability.status,
+                        active=availability.active,
                         contract_multiplier=None,
                         raw=row,
                         expires_at=self._expires_at(row.get("deliveryTime")),
@@ -110,6 +130,7 @@ class BybitConnector:
                             quote_symbol=quote_symbol,
                             settle_symbol=settle_symbol,
                         ),
+                        trading_schedule=availability.trading_schedule,
                     )
                 )
         snapshot = MarketSnapshot(

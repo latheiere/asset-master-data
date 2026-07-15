@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import random
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
 import httpx
 
-from mdv.models import FinancingSnapshot, MarketSnapshot
+from mdv.models import FinancingSnapshot, MarketSnapshot, TradingSchedule
+from mdv.normalization import normalize_status
 
 
 def utc_now() -> str:
@@ -23,6 +25,57 @@ class Connector(Protocol):
     async def fetch(
         self, client: httpx.AsyncClient
     ) -> MarketSnapshot | FinancingSnapshot: ...
+
+
+@dataclass(frozen=True)
+class MarketAvailability:
+    """Generic lifecycle result after applying a provider's session policy."""
+
+    status: str
+    active: bool
+    trading_schedule: TradingSchedule | None
+
+
+def market_availability(
+    *,
+    venue_status: str,
+    default_active: bool,
+    trading_schedule: TradingSchedule | None = None,
+    normalized_status: str | None = None,
+) -> MarketAvailability:
+    """Keep session-based markets listed while preserving terminal states."""
+    status = normalize_status(normalized_status or venue_status)
+    if trading_schedule is not None and trading_schedule.session_status == "CLOSED" and status == "CLOSED":
+        status = "PAUSED"
+    terminal = {"DELISTING", "DELIVERING", "SETTLING", "CLOSED", "MISSING"}
+    active = False if status in terminal else (default_active or trading_schedule is not None)
+    return MarketAvailability(status, active, trading_schedule)
+
+
+def session_status(status: str) -> str:
+    normalized = normalize_status(status)
+    if normalized == "TRADING":
+        return "OPEN"
+    if normalized == "PAUSED":
+        return "CLOSED"
+    return "UNKNOWN"
+
+
+def epoch_timestamp(value: object, *, milliseconds: bool) -> str | None:
+    if value in (None, "", 0, "0", -1, "-1"):
+        return None
+    text = str(value).strip()
+    if not text.lstrip("-").isdigit():
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            return parsed.isoformat() if parsed.tzinfo is not None else None
+        except ValueError:
+            return None
+    try:
+        divisor = 1000 if milliseconds else 1
+        return datetime.fromtimestamp(int(text) / divisor, timezone.utc).isoformat()
+    except (OverflowError, TypeError, ValueError):
+        return None
 
 
 async def fetch_json(client: httpx.AsyncClient, url: str, *, attempts: int = 3) -> Any:

@@ -13,7 +13,7 @@ from mdv.collection import CollectionResult
 from mdv.connectors import default_collection_connectors
 from mdv.connectors.base import Connector, utc_now
 from mdv.db import SQLiteStore
-from mdv.models import FinancingRecord, FinancingSnapshot, MarketRecord, MarketSnapshot
+from mdv.models import FinancingRecord, FinancingSnapshot, MarketRecord, MarketSnapshot, TradingSchedule
 
 
 BUNDLE_FORMAT = "mdv.collection-bundle"
@@ -300,13 +300,26 @@ def _decode_snapshot(
         if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
             raise ValueError(f"collection bundle {connector.source} has invalid markets")
         try:
+            decoded_rows = []
+            for row in rows:
+                schedule = row.get("trading_schedule")
+                decoded_rows.append(
+                    {
+                        **row,
+                        "trading_schedule": (
+                            TradingSchedule(**schedule)
+                            if isinstance(schedule, dict)
+                            else None
+                        ),
+                    }
+                )
             snapshot = MarketSnapshot(
                 source=value["source"],
                 venue=value["venue"],
                 market_type=value["market_type"],
                 product=value["product"],
                 observed_at=value["observed_at"],
-                markets=tuple(MarketRecord(**row) for row in rows),
+                markets=tuple(MarketRecord(**row) for row in decoded_rows),
             )
         except (KeyError, TypeError) as exc:
             raise ValueError(

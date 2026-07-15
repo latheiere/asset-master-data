@@ -4,8 +4,8 @@ from datetime import datetime, timezone
 
 import httpx
 
-from mdv.connectors.base import fetch_json, utc_now
-from mdv.models import MarketRecord, MarketSnapshot
+from mdv.connectors.base import epoch_timestamp, fetch_json, market_availability, session_status, utc_now
+from mdv.models import MarketRecord, MarketSnapshot, TradingSchedule
 from mdv.normalization import contract_direction, normalize_status
 
 
@@ -24,6 +24,34 @@ def _required(row: dict, name: str, *, source: str) -> str:
     if not value:
         raise ValueError(f"{source}: market has no {name}")
     return value.upper()
+
+
+def bitmart_market_schedule(market: dict, raw: dict) -> TradingSchedule | None:
+    details = raw.get("tradfi_info")
+    if not isinstance(details, dict):
+        return None
+    status_codes = {1: "OPEN", 2: "CLOSED"}
+    if normalize_status(market.get("status")) in {
+        "DELISTING", "DELIVERING", "SETTLING", "CLOSED", "MISSING",
+    }:
+        current = "UNKNOWN"
+    else:
+        try:
+            current = status_codes.get(int(details.get("market_session_status")), "UNKNOWN")
+        except (TypeError, ValueError):
+            current = session_status(str(market.get("status") or "UNKNOWN"))
+    try:
+        upcoming = status_codes.get(int(details.get("next_session_switch_status")))
+    except (TypeError, ValueError):
+        upcoming = None
+    return TradingSchedule(
+        session_status=current,
+        market_group=str(details.get("market_group") or "TRADFI").upper(),
+        next_transition_at=epoch_timestamp(
+            details.get("next_session_switch_ts"), milliseconds=False
+        ),
+        next_transition_status=upcoming,
+    )
 
 
 class BitmartSpotConnector:
@@ -102,6 +130,14 @@ class BitmartFutureConnector:
                         }
                     ]
                 }
+            schedule = bitmart_market_schedule(
+                {"market_type": self.market_type, "status": venue_status}, raw
+            )
+            availability = market_availability(
+                venue_status=venue_status,
+                default_active=venue_status == "TRADING",
+                trading_schedule=schedule,
+            )
             markets.append(
                 MarketRecord(
                     self.source,
@@ -113,8 +149,8 @@ class BitmartFutureConnector:
                     quote_symbol,
                     settle_symbol,
                     contract_type,
-                    normalize_status(venue_status),
-                    venue_status == "TRADING",
+                    availability.status,
+                    availability.active,
                     (
                         str(row["contract_size"])
                         if row.get("contract_size") not in (None, "")
@@ -135,6 +171,7 @@ class BitmartFutureConnector:
                         quote_symbol=quote_symbol,
                         settle_symbol=settle_symbol,
                     ),
+                    trading_schedule=availability.trading_schedule,
                 )
             )
         snapshot = MarketSnapshot(

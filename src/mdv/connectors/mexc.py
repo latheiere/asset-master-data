@@ -2,9 +2,25 @@ from __future__ import annotations
 
 import httpx
 
-from mdv.connectors.base import fetch_json, utc_now
-from mdv.models import MarketRecord, MarketSnapshot
+from mdv.connectors.base import fetch_json, market_availability, session_status, utc_now
+from mdv.models import MarketRecord, MarketSnapshot, TradingSchedule
 from mdv.normalization import contract_direction, normalize_status
+
+
+def mexc_market_schedule(market: dict, raw: dict) -> TradingSchedule | None:
+    concepts = [str(value).lower() for value in raw.get("conceptPlate") or []]
+    if market.get("market_type") != "FUTURE" or not any(
+        "tradfi" in value or "stock" in value for value in concepts
+    ):
+        return None
+    group = next(
+        (value.rsplit("-", 1)[-1].upper() for value in concepts if "tradfi" in value),
+        "TRADFI",
+    )
+    return TradingSchedule(
+        session_status=session_status(str(market.get("status") or "UNKNOWN")),
+        market_group=group,
+    )
 
 
 class MexcSpotConnector:
@@ -71,6 +87,14 @@ class MexcFutureConnector:
             base_symbol = str(row["baseCoin"]).upper()
             quote_symbol = str(row["quoteCoin"]).upper()
             settle_symbol = str(row.get("settleCoin") or row.get("quoteCoin") or "").upper() or None
+            schedule = mexc_market_schedule(
+                {"market_type": self.market_type, "status": venue_status}, row
+            )
+            availability = market_availability(
+                venue_status=venue_status,
+                default_active=state == 0,
+                trading_schedule=schedule,
+            )
             markets.append(
                 MarketRecord(
                     source=self.source,
@@ -82,8 +106,8 @@ class MexcFutureConnector:
                     quote_symbol=quote_symbol,
                     settle_symbol=settle_symbol,
                     contract_type="PERP",
-                    status=normalize_status(venue_status),
-                    active=state == 0,
+                    status=availability.status,
+                    active=availability.active,
                     contract_multiplier=str(row.get("contractSize")) if row.get("contractSize") is not None else None,
                     raw=row,
                     max_market_order_size=(
@@ -97,6 +121,7 @@ class MexcFutureConnector:
                         quote_symbol=quote_symbol,
                         settle_symbol=settle_symbol,
                     ),
+                    trading_schedule=availability.trading_schedule,
                 )
             )
         snapshot = MarketSnapshot(self.source, self.venue, self.market_type, self.product, observed_at, tuple(markets))

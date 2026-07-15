@@ -20,6 +20,32 @@ def _required_text(value: object, *, source: str, field: str) -> None:
 
 
 @dataclass(frozen=True)
+class TradingSchedule:
+    """Provider-normalized metadata for markets that do not trade 24x7."""
+
+    session_status: str
+    description: str = "Follows the provider or underlying market session; not 24x7."
+    market_group: str | None = None
+    next_transition_at: str | None = None
+    next_transition_status: str | None = None
+    timezone: str | None = None
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            key: value
+            for key, value in (
+                ("session_status", self.session_status),
+                ("description", self.description),
+                ("market_group", self.market_group),
+                ("next_transition_at", self.next_transition_at),
+                ("next_transition_status", self.next_transition_status),
+                ("timezone", self.timezone),
+            )
+            if value is not None
+        }
+
+
+@dataclass(frozen=True)
 class MarketRecord:
     source: str
     venue: str
@@ -40,6 +66,7 @@ class MarketRecord:
     venue_status: str | None = None
     contract_direction: str | None = None
     expiry_cycle: str | None = None
+    trading_schedule: TradingSchedule | None = None
 
     @property
     def market_id(self) -> str:
@@ -85,6 +112,27 @@ class MarketSnapshot:
                 _required_text(getattr(market, field), source=self.source, field=field)
             if not isinstance(market.active, bool) or not isinstance(market.raw, dict):
                 raise ValueError(f"{self.source} returned malformed active/raw fields")
+            if market.trading_schedule is not None:
+                session_values = {"OPEN", "CLOSED", "UNKNOWN"}
+                if market.trading_schedule.session_status not in session_values:
+                    raise ValueError(f"{self.source} returned an invalid session status")
+                if (
+                    market.trading_schedule.next_transition_status is not None
+                    and market.trading_schedule.next_transition_status not in session_values
+                ):
+                    raise ValueError(
+                        f"{self.source} returned an invalid next session status"
+                    )
+                if market.trading_schedule.next_transition_at is not None:
+                    _validate_observed_at(
+                        market.trading_schedule.next_transition_at,
+                        source=f"{self.source} trading schedule",
+                    )
+                _required_text(
+                    market.trading_schedule.description,
+                    source=self.source,
+                    field="trading schedule description",
+                )
             if market.market_type == "SPOT" and market.settle_symbol is not None:
                 raise ValueError(f"{self.source} returned a settled spot market")
 

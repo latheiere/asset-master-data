@@ -5,8 +5,8 @@ from urllib.parse import urlencode
 
 import httpx
 
-from mdv.connectors.base import fetch_json, utc_now
-from mdv.models import FinancingRecord, FinancingSnapshot, MarketRecord, MarketSnapshot
+from mdv.connectors.base import epoch_timestamp, fetch_json, market_availability, session_status, utc_now
+from mdv.models import FinancingRecord, FinancingSnapshot, MarketRecord, MarketSnapshot, TradingSchedule
 from mdv.normalization import contract_direction, normalize_status
 
 
@@ -25,6 +25,40 @@ def _active_status(venue_status: str, row: dict) -> tuple[bool, str]:
     active = venue_status in {"LIVE", "ONLINE", "STANDARD", "TRADING"} and not _restricted(row)
     normalized_status = "TRADING" if active else ("PAUSED" if _restricted(row) else venue_status)
     return active, normalize_status(normalized_status)
+
+
+def coinbase_market_schedule(market: dict, raw: dict) -> TradingSchedule | None:
+    details = raw.get("future_product_details")
+    perpetual = details.get("perpetual_details") if isinstance(details, dict) else None
+    if not (
+        market.get("market_type") == "FUTURE"
+        and isinstance(perpetual, dict)
+        and str(perpetual.get("underlying_type") or "").upper() == "EQUITY"
+    ):
+        return None
+    session = raw.get("fcm_trading_session_details")
+    session = session if isinstance(session, dict) else {}
+    session_state = str(session.get("session_state") or "").upper()
+    if raw.get("trading_disabled") is True:
+        current = "CLOSED"
+    elif "UNDEFINED" not in session_state and session.get("is_session_open") is True:
+        current = "OPEN"
+    elif "UNDEFINED" not in session_state and session.get("is_session_open") is False:
+        current = "CLOSED"
+    else:
+        current = session_status(str(market.get("status") or "UNKNOWN"))
+    open_at = epoch_timestamp(session.get("open_time"), milliseconds=False)
+    close_at = epoch_timestamp(session.get("close_time"), milliseconds=False)
+    next_at = open_at if current == "CLOSED" else close_at
+    return TradingSchedule(
+        session_status=current,
+        market_group="EQUITY",
+        next_transition_at=next_at,
+        next_transition_status=(
+            "OPEN" if current == "CLOSED" and next_at
+            else ("CLOSED" if current == "OPEN" and next_at else None)
+        ),
+    )
 
 
 class CoinbaseSpotConnector:
@@ -135,6 +169,15 @@ class CoinbasePerpetualConnector:
         active, status = _active_status(venue_status, row)
         base_symbol = _required(details, "contract_root_unit", source=self.source).upper()
         quote_symbol = _required(row, "quote_currency_id", source=self.source).upper()
+        schedule = coinbase_market_schedule(
+            {"market_type": self.market_type, "status": status}, row
+        )
+        availability = market_availability(
+            venue_status=venue_status,
+            normalized_status=status,
+            default_active=active,
+            trading_schedule=schedule,
+        )
         return MarketRecord(
             self.source,
             self.venue,
@@ -145,8 +188,8 @@ class CoinbasePerpetualConnector:
             quote_symbol,
             quote_symbol,
             "PERP",
-            status,
-            active,
+            availability.status,
+            availability.active,
             str(details["contract_size"]) if details.get("contract_size") not in (None, "") else None,
             dict(row),
             max_market_order_size=(
@@ -160,6 +203,7 @@ class CoinbasePerpetualConnector:
                 quote_symbol=quote_symbol,
                 settle_symbol=quote_symbol,
             ),
+            trading_schedule=availability.trading_schedule,
         )
 
 

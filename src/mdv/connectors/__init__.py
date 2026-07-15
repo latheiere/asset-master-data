@@ -18,6 +18,7 @@ from mdv.connectors.registry import (
     default_collection_connectors,
     default_connectors,
     market_metadata,
+    market_trading_schedule,
     market_trade_url,
     supported_venues,
 )
@@ -45,6 +46,7 @@ __all__ = [
     "default_connectors",
     "default_collection_connectors",
     "market_metadata",
+    "market_trading_schedule",
     "market_trade_url",
     "supported_venues",
 ]

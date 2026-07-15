@@ -2,9 +2,21 @@ from __future__ import annotations
 
 import httpx
 
-from mdv.connectors.base import fetch_json, utc_now
-from mdv.models import MarketRecord, MarketSnapshot
-from mdv.normalization import normalize_status
+from mdv.connectors.base import fetch_json, market_availability, utc_now
+from mdv.models import MarketRecord, MarketSnapshot, TradingSchedule
+
+
+def whitebit_market_schedule(market: dict, raw: dict) -> TradingSchedule | None:
+    if market.get("market_type") != "FUTURE" or raw.get("isTradFiFutures") is not True:
+        return None
+    current = (
+        "UNKNOWN" if raw.get("delistedAt") not in (None, "")
+        else ("OPEN" if raw.get("tradesEnabled") is True else "CLOSED")
+    )
+    return TradingSchedule(
+        session_status=current,
+        market_group="TRADFI",
+    )
 
 
 def _required(row: dict, name: str, *, source: str) -> str:
@@ -56,6 +68,14 @@ class WhitebitConnector:
                         }
                     ]
                 }
+            schedule = whitebit_market_schedule(
+                {"market_type": self.market_type, "status": venue_status}, raw
+            )
+            availability = market_availability(
+                venue_status=venue_status,
+                default_active=active,
+                trading_schedule=schedule,
+            )
             markets.append(
                 MarketRecord(
                     self.source,
@@ -67,8 +87,8 @@ class WhitebitConnector:
                     quote_symbol,
                     None if self.market_type == "SPOT" else quote_symbol,
                     self.product,
-                    normalize_status(venue_status),
-                    active,
+                    availability.status,
+                    availability.active,
                     None,
                     raw,
                     max_market_order_size=(
@@ -77,6 +97,7 @@ class WhitebitConnector:
                     venue_product=str(row.get("type") or self.product).upper(),
                     venue_status=venue_status,
                     contract_direction=None if self.market_type == "SPOT" else "LINEAR",
+                    trading_schedule=availability.trading_schedule,
                 )
             )
         snapshot = MarketSnapshot(

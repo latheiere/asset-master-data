@@ -14,7 +14,8 @@ from importlib import resources
 from pathlib import Path
 from typing import Iterator
 
-from mdv.connectors import market_metadata, market_trade_url
+from mdv.connectors import market_metadata, market_trade_url, market_trading_schedule
+from mdv.connectors.base import market_availability
 
 from mdv.matching import (
     MATCHER_VERSION,
@@ -201,9 +202,71 @@ class SQLiteStore:
                         "COMMIT;"
                     )
                 self._sync_delivery_manual_actions(conn)
+                schedule_backfill = "market-trading-schedules-v1"
+                pending_backfill = conn.execute(
+                    "SELECT 1 FROM data_backfills WHERE name = ?",
+                    (schedule_backfill,),
+                ).fetchone() is None
+                if pending_backfill:
+                    conn.execute("BEGIN IMMEDIATE")
+                    try:
+                        self._sync_market_schedules(conn)
+                        conn.execute(
+                            "INSERT INTO data_backfills(name, completed_at) VALUES (?, ?)",
+                            (schedule_backfill, utc_now()),
+                        )
+                        conn.execute("COMMIT")
+                    except Exception:
+                        conn.execute("ROLLBACK")
+                        raise
                 self._migrated = True
             finally:
                 conn.close()
+
+    @staticmethod
+    def _sync_market_schedules(conn: sqlite3.Connection) -> None:
+        """Backfill normalized schedules through provider-registered policies."""
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(markets)")}
+        if "trading_schedule_json" not in columns:
+            return
+        rows = conn.execute(
+            """
+            SELECT market_id, source, venue, market_type, product, status, active,
+                   venue_status, last_seen_at, raw_json
+            FROM markets
+            """
+        ).fetchall()
+        for row in rows:
+            market = dict(row)
+            market["observed_at"] = market["last_seen_at"]
+            try:
+                raw = json.loads(market.pop("raw_json") or "{}")
+            except (TypeError, ValueError):
+                raw = {}
+            schedule = market_trading_schedule(market, raw)
+            normalized_status = market["status"]
+            venue_normalized = normalize_status(market.get("venue_status"))
+            if schedule is not None and normalized_status == "UNKNOWN" and venue_normalized != "UNKNOWN":
+                normalized_status = venue_normalized
+            availability = market_availability(
+                venue_status=str(market.get("venue_status") or normalized_status),
+                normalized_status=normalized_status,
+                default_active=bool(market["active"]),
+                trading_schedule=schedule,
+            )
+            conn.execute(
+                """
+                UPDATE markets
+                SET status = ?, active = ?, trading_schedule_json = ?
+                WHERE market_id = ?
+                """,
+                (
+                    availability.status,
+                    int(availability.active),
+                    canonical_json(schedule.as_dict()) if schedule else None,
+                    market["market_id"],
+                ),
+            )
 
     @staticmethod
     def _normalize_manual_symbol(value: object, *, field: str, required: bool = True) -> str | None:
@@ -879,7 +942,10 @@ class SQLiteStore:
                 raw_json = canonical_json(market.raw)
                 content_hash = hashlib.sha256(raw_json.encode()).hexdigest()
                 previous = conn.execute(
-                    "SELECT status, active, content_hash FROM markets WHERE market_id = ?",
+                    """
+                    SELECT status, active, content_hash, trading_schedule_json
+                    FROM markets WHERE market_id = ?
+                    """,
                     (market.market_id,),
                 ).fetchone()
                 normalized = normalize_venue_asset_symbol(
@@ -898,10 +964,32 @@ class SQLiteStore:
                 venue_product = market.venue_product or market.product
                 venue_status = market.venue_status or market.status
                 normalized_status = normalize_status(market.status)
+                schedule = market.trading_schedule or market_trading_schedule(
+                    {
+                        "source": market.source,
+                        "venue": market.venue,
+                        "market_type": market.market_type,
+                        "product": normalized_product,
+                        "status": normalized_status,
+                        "venue_status": venue_status,
+                        "observed_at": snapshot.observed_at,
+                    },
+                    market.raw,
+                )
+                availability = market_availability(
+                    venue_status=venue_status,
+                    normalized_status=normalized_status,
+                    default_active=market.active,
+                    trading_schedule=schedule,
+                )
+                normalized_status = availability.status
+                active = availability.active
+                schedule_json = canonical_json(schedule.as_dict()) if schedule else None
                 retain_observation_raw = (
                     previous is None
-                    or bool(previous["active"]) != market.active
+                    or bool(previous["active"]) != active
                     or previous["status"] != normalized_status
+                    or previous["trading_schedule_json"] != schedule_json
                     or previous["content_hash"] != content_hash
                 )
                 normalized_direction = market.contract_direction or contract_direction(
@@ -918,9 +1006,9 @@ class SQLiteStore:
                         base_symbol, quote_symbol, settle_symbol, contract_type,
                         status, active, contract_multiplier, expires_at, max_market_order_size,
                         underlying_multiplier, venue_product, venue_status,
-                        contract_direction, expiry_cycle,
+                        contract_direction, expiry_cycle, trading_schedule_json,
                         first_seen_at, last_seen_at, raw_json, content_hash
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(market_id) DO UPDATE SET
                         product=excluded.product,
                         base_symbol=excluded.base_symbol,
@@ -937,6 +1025,7 @@ class SQLiteStore:
                         venue_status=excluded.venue_status,
                         contract_direction=excluded.contract_direction,
                         expiry_cycle=excluded.expiry_cycle,
+                        trading_schedule_json=excluded.trading_schedule_json,
                         last_seen_at=excluded.last_seen_at,
                         raw_json=excluded.raw_json,
                         content_hash=excluded.content_hash
@@ -953,7 +1042,7 @@ class SQLiteStore:
                         market.settle_symbol,
                         normalized_contract_type,
                         normalized_status,
-                        int(market.active),
+                        int(active),
                         market.contract_multiplier,
                         market.expires_at,
                         market.max_market_order_size,
@@ -962,6 +1051,7 @@ class SQLiteStore:
                         venue_status,
                         normalized_direction,
                         expiry_cycle,
+                        schedule_json,
                         snapshot.observed_at,
                         snapshot.observed_at,
                         raw_json,
@@ -980,7 +1070,7 @@ class SQLiteStore:
                         market.market_id,
                         snapshot.observed_at,
                         normalized_status,
-                        int(market.active),
+                        int(active),
                         content_hash,
                         raw_json if retain_observation_raw else "{}",
                         int(retain_observation_raw),
@@ -989,18 +1079,23 @@ class SQLiteStore:
                 if previous is None:
                     self._insert_event(conn, run_id, market.market_id, "DISCOVERED", None, normalized_status, snapshot.observed_at)
                 else:
-                    if bool(previous["active"]) != market.active:
-                        event_type = "ACTIVATED" if market.active else "DEACTIVATED"
+                    session_only_status_change = (
+                        schedule is not None
+                        and previous["status"] in {"TRADING", "PAUSED", "UNKNOWN"}
+                        and normalized_status in {"TRADING", "PAUSED", "UNKNOWN"}
+                    )
+                    if bool(previous["active"]) != active and not session_only_status_change:
+                        event_type = "ACTIVATED" if active else "DEACTIVATED"
                         self._insert_event(
                             conn,
                             run_id,
                             market.market_id,
                             event_type,
                             str(bool(previous["active"])),
-                            str(market.active),
+                            str(active),
                             snapshot.observed_at,
                         )
-                    if previous["status"] != normalized_status:
+                    if previous["status"] != normalized_status and not session_only_status_change:
                         self._insert_event(
                             conn,
                             run_id,
@@ -1902,7 +1997,7 @@ class SQLiteStore:
                     m.settle_symbol, m.contract_type, m.status, m.active,
                     m.contract_multiplier, m.expires_at, m.max_market_order_size,
                     m.underlying_multiplier, m.venue_product, m.venue_status,
-                    m.contract_direction, m.expiry_cycle,
+                    m.contract_direction, m.expiry_cycle, m.trading_schedule_json,
                     m.first_seen_at, m.last_seen_at, m.raw_json,
                     a.asset_id, a.canonical_symbol,
                     map.method AS match_method,
@@ -1917,7 +2012,13 @@ class SQLiteStore:
                 """,
                 params,
             ).fetchall()
-        return [dict(row) for row in rows]
+        result = [dict(row) for row in rows]
+        for row in result:
+            encoded_schedule = row.pop("trading_schedule_json")
+            row["trading_schedule"] = (
+                json.loads(encoded_schedule) if encoded_schedule else None
+            )
+        return result
 
     def resolve_venue_mappings(
         self,
@@ -2240,7 +2341,7 @@ class SQLiteStore:
                     m.settle_symbol, m.contract_type, m.status,
                     m.contract_multiplier, m.expires_at, m.max_market_order_size,
                     m.underlying_multiplier, m.venue_product, m.venue_status,
-                    m.contract_direction, m.expiry_cycle,
+                    m.contract_direction, m.expiry_cycle, m.trading_schedule_json,
                     m.first_seen_at, m.last_seen_at,
                     a.asset_id, a.canonical_symbol, a.is_stock AS asset_is_stock
                 FROM markets m
@@ -2253,6 +2354,11 @@ class SQLiteStore:
                 """,
                 symbol_params,
             )]
+            for row in rows:
+                encoded_schedule = row.pop("trading_schedule_json")
+                row["trading_schedule"] = (
+                    json.loads(encoded_schedule) if encoded_schedule else None
+                )
             supported_future_venues = [row[0] for row in conn.execute(
                 """
                 SELECT DISTINCT venue
@@ -2999,9 +3105,11 @@ class SQLiteStore:
             lifecycle_rows = [dict(row) for row in conn.execute(
                 f"""
                 SELECT ir.collection_run_id, ir.run_id, ir.venue, ir.source,
+                       e.market_id,
                        e.event_type, e.old_value, e.new_value, e.observed_at,
                        m.raw_symbol, m.base_symbol, m.product, m.market_type,
-                       m.first_seen_at, map.asset_id AS mapping_asset_id,
+                       m.first_seen_at, m.trading_schedule_json,
+                       map.asset_id AS mapping_asset_id,
                        COALESCE(a.canonical_symbol, m.base_symbol) AS canonical_symbol
                 FROM market_lifecycle_events e
                 JOIN ingest_runs ir ON ir.run_id = e.run_id
@@ -3053,8 +3161,22 @@ class SQLiteStore:
             "ACTIVATED": "activated",
             "DEACTIVATED": "deactivated",
         }
+        session_values = {"TRADING", "PAUSED", "UNKNOWN"}
+        session_transition_keys = {
+            (row["run_id"], row["market_id"])
+            for row in lifecycle_rows
+            if row["trading_schedule_json"]
+            and row["event_type"] == "STATUS_CHANGED"
+            and row["old_value"] in session_values
+            and row["new_value"] in session_values
+        }
         for row in lifecycle_rows:
             event_type = row["event_type"]
+            session_transition = (row["run_id"], row["market_id"]) in session_transition_keys
+            if session_transition and event_type in {
+                "STATUS_CHANGED", "ACTIVATED", "DEACTIVATED",
+            }:
+                continue
             asset = row["canonical_symbol"]
             kind = f"MARKET_{event_type}"
             if event_type == "STATUS_CHANGED":

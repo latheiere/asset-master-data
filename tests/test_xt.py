@@ -63,6 +63,27 @@ def test_xt_recorded_financing_fixtures_cover_margin_and_crypto_loans():
     assert loan.records[1].limits["initial_pledge_rate"] == 0.8
 
 
+def test_xt_session_based_future_pause_remains_active():
+    payload = {
+        "rc": 0,
+        "result": {"symbols": [{
+            "symbol": "aud_usdt", "baseCoin": "aud", "quoteCoin": "usdt",
+            "contractType": "PERPETUAL", "productType": "perpetual",
+            "deliveryCompletion": False, "inPreMarket": False,
+            "tradeSwitch": False, "openSwitch": False, "labels": ["FOREX"],
+            "nextOpenTime": 1784160000000,
+        }]},
+    }
+    market = XtFutureConnector().parse(
+        payload, observed_at="2026-07-15T00:00:00+00:00"
+    ).markets[0]
+
+    assert market.status == "PAUSED"
+    assert market.active is True
+    assert market.trading_schedule.session_status == "CLOSED"
+    assert market.trading_schedule.market_group == "FOREX"
+
+
 def test_xt_crypto_loan_fetch_follows_public_pagination():
     connector = XtCryptoLoanConnector()
     requested = []

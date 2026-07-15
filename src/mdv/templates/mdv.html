@@ -137,6 +137,17 @@
       return node;
     }
 
+    function scheduleText(schedule) {
+      const parts = [schedule.description, `Session: ${schedule.session_status.toLowerCase()}`];
+      if (schedule.market_group) parts.push(schedule.market_group);
+      if (schedule.next_transition_at) {
+        const action = schedule.next_transition_status ? schedule.next_transition_status.toLowerCase() : 'transition';
+        parts.push(`Next ${action}: ${schedule.next_transition_at}`);
+      }
+      if (schedule.timezone) parts.push(schedule.timezone);
+      return `Trading schedule: ${parts.join(' · ')}`;
+    }
+
     function marketRow(market, derivative) {
       const row = element('div', 'market');
       const symbol = market.trade_url ? element('a', '', market.raw_symbol) : element('strong', '', market.raw_symbol);
@@ -147,9 +158,10 @@
       }
       row.append(symbol);
       const detail = derivative
-        ? [market.product, market.contract_direction, market.settle_symbol && `settle ${market.settle_symbol}`].filter(Boolean).join(' · ')
+        ? [market.product, market.status, market.contract_direction, market.settle_symbol && `settle ${market.settle_symbol}`].filter(Boolean).join(' · ')
         : `${market.base_symbol}/${market.quote_symbol} · ${market.status}`;
       row.append(element('div', 'market-meta', detail));
+      if (market.trading_schedule) row.append(element('div', 'market-meta', scheduleText(market.trading_schedule)));
       if (market.expires_at) row.append(element('div', 'market-meta', `Expires: ${market.expires_at}`));
       if (market.underlying_multiplier && market.underlying_multiplier !== '1') row.append(element('div', 'market-meta', `Underlying unit: ${market.underlying_unit}`));
       if (market.max_market_order_size) row.append(element('div', 'market-meta', `Max market order size: ${market.max_market_order_size}`));
