@@ -13,7 +13,8 @@ http://127.0.0.1:8090
 
 All routes, including `/health`, require HTTP Basic Auth for service clients.
 Browser session cookies are an HTML UI mechanism and should not be used by
-service integrations.
+service integrations. The browser-only `/login` and `/favicon.ico` routes are
+public so the login page can render without an authenticated session.
 
 Entitlements have `reader` and `operator` roles. All documented consumer routes
 are readable by both roles. Operator-only mutation is currently limited to the

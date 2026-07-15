@@ -279,8 +279,10 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
 
     assert unauthenticated_api.status_code == 401
     assert unauthenticated_api.headers["www-authenticate"] == 'Basic realm="asset-master-data"'
-    assert favicon_response.status_code == 204
+    assert favicon_response.status_code == 200
+    assert favicon_response.headers["content-type"] == "image/svg+xml"
     assert "max-age=86400" in favicon_response.headers["cache-control"]
+    assert favicon_response.text.startswith("<svg")
     health = health_response.json()
     assert health["status"] == "ok"
     assert health["service"] == "asset-master-data"
@@ -410,6 +412,16 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
     assert manual_actions_response.status_code == 200
     assert "Manual asset actions" in manual_actions_response.text
     assert "mexc-tsemstock-to-tsem" in manual_actions_response.text
+    for html_response in (
+        failed_login,
+        response,
+        asset_detail_page,
+        coverage_page,
+        metadata_html_response,
+        logs_response,
+        manual_actions_response,
+    ):
+        assert '<link rel="icon" href="/favicon.ico" type="image/svg+xml">' in html_response.text
     assert manual_action_create_response.status_code == 303
     assert manual_action_create_response.headers["location"] == "/manual-actions"
     assert 'id="timezone-select"' in logs_response.text

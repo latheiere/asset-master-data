@@ -32,7 +32,7 @@ mdv = "mdv.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-mdv = ["templates/*.html", "templates/partials/*.html", "migrations/*.sql", "manual_asset_actions.json"]
+mdv = ["favicon.svg", "templates/*.html", "templates/partials/*.html", "migrations/*.sql", "manual_asset_actions.json"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

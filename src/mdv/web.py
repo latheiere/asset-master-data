@@ -10,7 +10,7 @@ from importlib import resources
 from urllib.parse import parse_qs, quote, urlencode
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from mdv import __version__, build_revision
@@ -116,6 +116,7 @@ def create_app(
     store = store or SQLiteStore(settings.db_path)
     entitlements = entitlements or Entitlements.load(settings.entitlements_path)
     templates = Jinja2Templates(directory=str(resources.files("mdv").joinpath("templates")))
+    favicon_path = resources.files("mdv").joinpath("favicon.svg")
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -243,8 +244,9 @@ def create_app(
 
     @app.get("/favicon.ico", include_in_schema=False)
     async def favicon():
-        return Response(
-            status_code=204,
+        return FileResponse(
+            favicon_path,
+            media_type="image/svg+xml",
             headers={"Cache-Control": "public, max-age=86400"},
         )
 

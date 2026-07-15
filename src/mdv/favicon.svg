@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="master-glow" x1="14" y1="50" x2="50" y2="14" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0ea5e9"/>
+      <stop offset="1" stop-color="#6366f1"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="15" fill="#0b1020"/>
+  <path d="m12 37 20-11 20 11-20 12z" fill="#1d4ed8" opacity=".72"/>
+  <path d="m12 29 20-11 20 11-20 12z" fill="#2563eb"/>
+  <path d="m12 21 20-11 20 11-20 12z" fill="url(#master-glow)"/>
+  <path d="m22 21 10-5.5L42 21l-10 5.5z" fill="#fff"/>
+  <circle cx="32" cy="21" r="3" fill="#0f172a"/>
+</svg>
