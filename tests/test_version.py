@@ -171,6 +171,7 @@ def test_deploy_requires_clean_annotated_release_tag():
     assert 'wait_for_release_health "$previous" "$previous_revision" || return 1' in script
     assert 'MDV_GIT_SHA="$revision"' in script
     assert "http://127.0.0.1:$port/favicon.ico" in script
+    assert "response.status in (200, 204)" in script
     assert 'grep -Fqx "MDV_GIT_SHA=$revision"' in script
     assert 'mktemp -d "$LOCAL_DIR/.current-switch-XXXXXX"' in script
     assert 'if ! ln -s "$target" "$temporary_link"' in script

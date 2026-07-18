@@ -372,7 +372,7 @@ PY
       sudo systemctl is-active --quiet asset-master-data.service && \
       running_revision_matches "$revision" && \
       "$release/venv/bin/python" -c \
-        'import sys,urllib.request; response=urllib.request.urlopen(sys.argv[1], timeout=2); raise SystemExit(0 if response.status == 204 else 1)' \
+        'import sys,urllib.request; response=urllib.request.urlopen(sys.argv[1], timeout=2); raise SystemExit(0 if response.status in (200, 204) else 1)' \
         "http://127.0.0.1:$port/favicon.ico"; then
       rm -f -- "$output"
       return 0

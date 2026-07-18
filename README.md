@@ -4,7 +4,7 @@ Local-first, auditable canonical asset and exchange-market metadata from public 
 
 ## Status and scope
 
-The current release is `0.14.0`. The service discovers public spot, derivatives, margin, and loan catalogs; preserves raw observations and lifecycle history; builds evidence-backed canonical mappings; and serves authenticated HTML and JSON views. It is not a price feed, trading engine, or order router.
+The current release is `0.14.1`. The service discovers public spot, derivatives, margin, and loan catalogs; preserves raw observations and lifecycle history; builds evidence-backed canonical mappings; and serves authenticated HTML and JSON views. It is not a price feed, trading engine, or order router.
 
 ## Architecture
 
