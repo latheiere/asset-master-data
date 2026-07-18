@@ -1,0 +1,12 @@
+[
+  {
+    "name": "BTC_USD",
+    "type": "inverse",
+    "status": "trading",
+    "in_delisting": false,
+    "quanto_multiplier": "0",
+    "market_order_size_max": "350000",
+    "order_size_min": 1,
+    "order_size_max": 530000
+  }
+]

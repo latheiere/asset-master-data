@@ -13,7 +13,14 @@ from mdv.collection import CollectionResult
 from mdv.connectors import default_collection_connectors
 from mdv.connectors.base import Connector, utc_now
 from mdv.db import SQLiteStore
-from mdv.models import FinancingRecord, FinancingSnapshot, MarketRecord, MarketSnapshot, TradingSchedule
+from mdv.models import (
+    FinancingRecord,
+    FinancingSnapshot,
+    MarketIngestIssue,
+    MarketRecord,
+    MarketSnapshot,
+    TradingSchedule,
+)
 
 
 BUNDLE_FORMAT = "mdv.collection-bundle"
@@ -114,7 +121,13 @@ async def export_collection_bundle(
 def bundle_succeeded(bundle: dict) -> bool:
     entries = bundle.get("entries")
     return bool(entries) and all(
-        isinstance(entry, dict) and entry.get("status") == "SUCCEEDED"
+        isinstance(entry, dict)
+        and entry.get("status") == "SUCCEEDED"
+        and not (
+            entry.get("snapshot_type") == "MARKET"
+            and isinstance(entry.get("snapshot"), dict)
+            and entry["snapshot"].get("issues")
+        )
         for entry in entries
     )
 
@@ -177,9 +190,22 @@ def _apply_collection_bundle_unlocked(
                 if isinstance(snapshot, FinancingSnapshot)
                 else len(snapshot.markets)
             )
+            symbol_error = None
+            if isinstance(snapshot, MarketSnapshot) and snapshot.issues:
+                details = "; ".join(
+                    f"{issue.raw_symbol}: {issue.error}" for issue in snapshot.issues
+                )
+                symbol_error = (
+                    f"{len(snapshot.issues)} symbol error(s): {details}"
+                )[:2000]
             results.append(
                 CollectionResult(
-                    entry["source"], True, count, run_id, collection_run_id
+                    entry["source"],
+                    symbol_error is None,
+                    count,
+                    run_id,
+                    collection_run_id,
+                    symbol_error,
                 )
             )
             if not isinstance(snapshot, FinancingSnapshot) and (
@@ -320,6 +346,9 @@ def _decode_snapshot(
                 product=value["product"],
                 observed_at=value["observed_at"],
                 markets=tuple(MarketRecord(**row) for row in decoded_rows),
+                issues=tuple(
+                    MarketIngestIssue(**issue) for issue in value.get("issues", ())
+                ),
             )
         except (KeyError, TypeError) as exc:
             raise ValueError(

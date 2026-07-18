@@ -6,6 +6,7 @@ from urllib.parse import urlencode
 import httpx
 
 from mdv.connectors.base import fetch_json, market_availability, session_status, utc_now
+from mdv.contract_metadata import NORMALIZATION_VERSION, positive_decimal, with_contract_evidence
 from mdv.models import MarketRecord, MarketSnapshot, TradingSchedule
 from mdv.normalization import contract_direction, normalize_product
 
@@ -155,7 +156,24 @@ class BitgetFutureConnector:
             quote_symbol = _required(row, "quoteCoin", source=self.source)
             settle_symbol = base_symbol if self.product_type == "COIN-FUTURES" else quote_symbol
             contract_type = self._contract_type(row)
-            raw = _asset_tags(row, tags)
+            direction = contract_direction(
+                market_type=self.market_type,
+                base_symbol=base_symbol,
+                quote_symbol=quote_symbol,
+                settle_symbol=settle_symbol,
+            )
+            oi_unit = "QUOTE_ASSET" if direction == "INVERSE" else "BASE_ASSET"
+            multiplier_unit = quote_symbol if direction == "INVERSE" else base_symbol
+            raw = with_contract_evidence(
+                _asset_tags(row, tags),
+                {
+                    "source": self.url,
+                    "normalization_version": NORMALIZATION_VERSION,
+                    "open_interest_unit": oi_unit,
+                    "quantity_increment": positive_decimal(row.get("sizeMultiplier")),
+                    "quantity_increment_is_not_contract_multiplier": True,
+                },
+            )
             schedule = bitget_market_schedule(
                 {"market_type": self.market_type, "status": venue_status}, raw
             )
@@ -177,7 +195,7 @@ class BitgetFutureConnector:
                     contract_type=contract_type,
                     status=availability.status,
                     active=availability.active,
-                    contract_multiplier=None,
+                    contract_multiplier="1",
                     raw=raw,
                     expires_at=self._expires_at(row),
                     max_market_order_size=(
@@ -187,14 +205,15 @@ class BitgetFutureConnector:
                     ),
                     venue_product=self.product,
                     venue_status=venue_status,
-                    contract_direction=contract_direction(
-                        market_type=self.market_type,
-                        base_symbol=base_symbol,
-                        quote_symbol=quote_symbol,
-                        settle_symbol=settle_symbol,
-                    ),
+                    contract_direction=direction,
                     expiry_cycle=self._expiry_cycle(row),
                     trading_schedule=availability.trading_schedule,
+                    contract_multiplier_unit=multiplier_unit,
+                    contract_value_currency=multiplier_unit,
+                    open_interest_unit=oi_unit,
+                    contract_metadata_source=self.url,
+                    contract_metadata_observed_at=observed_at,
+                    contract_metadata_normalization_version=NORMALIZATION_VERSION,
                 )
             )
         snapshot = MarketSnapshot(

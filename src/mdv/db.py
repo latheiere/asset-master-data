@@ -786,8 +786,8 @@ class SQLiteStore:
                 """
                 SELECT
                     COUNT(*) AS universe_count,
-                    SUM(CASE WHEN status = 'SUCCEEDED' THEN 1 ELSE 0 END) AS succeeded_count,
-                    SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END) AS failed_count,
+                    SUM(CASE WHEN status IN ('SUCCEEDED', 'PARTIAL') THEN 1 ELSE 0 END) AS succeeded_count,
+                    SUM(CASE WHEN status IN ('FAILED', 'PARTIAL') THEN 1 ELSE 0 END) AS failed_count,
                     COALESCE(SUM(record_count), 0) AS record_count
                 FROM ingest_runs
                 WHERE collection_run_id = ?
@@ -1004,11 +1004,16 @@ class SQLiteStore:
                     INSERT INTO markets(
                         market_id, source, venue, market_type, product, raw_symbol,
                         base_symbol, quote_symbol, settle_symbol, contract_type,
-                        status, active, contract_multiplier, expires_at, max_market_order_size,
+                        status, active, contract_multiplier, contract_multiplier_unit,
+                        contract_value_currency, open_interest_unit,
+                        contract_metadata_reason, contract_metadata_source,
+                        contract_metadata_observed_at,
+                        contract_metadata_normalization_version,
+                        expires_at, max_market_order_size,
                         underlying_multiplier, venue_product, venue_status,
                         contract_direction, expiry_cycle, trading_schedule_json,
                         first_seen_at, last_seen_at, raw_json, content_hash
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(market_id) DO UPDATE SET
                         product=excluded.product,
                         base_symbol=excluded.base_symbol,
@@ -1018,6 +1023,13 @@ class SQLiteStore:
                         status=excluded.status,
                         active=excluded.active,
                         contract_multiplier=excluded.contract_multiplier,
+                        contract_multiplier_unit=excluded.contract_multiplier_unit,
+                        contract_value_currency=excluded.contract_value_currency,
+                        open_interest_unit=excluded.open_interest_unit,
+                        contract_metadata_reason=excluded.contract_metadata_reason,
+                        contract_metadata_source=excluded.contract_metadata_source,
+                        contract_metadata_observed_at=excluded.contract_metadata_observed_at,
+                        contract_metadata_normalization_version=excluded.contract_metadata_normalization_version,
                         expires_at=excluded.expires_at,
                         max_market_order_size=excluded.max_market_order_size,
                         underlying_multiplier=excluded.underlying_multiplier,
@@ -1044,6 +1056,13 @@ class SQLiteStore:
                         normalized_status,
                         int(active),
                         market.contract_multiplier,
+                        market.contract_multiplier_unit,
+                        market.contract_value_currency,
+                        market.open_interest_unit,
+                        market.contract_metadata_reason,
+                        market.contract_metadata_source,
+                        market.contract_metadata_observed_at,
+                        market.contract_metadata_normalization_version,
                         market.expires_at,
                         market.max_market_order_size,
                         str(normalized.multiplier),
@@ -1106,35 +1125,67 @@ class SQLiteStore:
                             snapshot.observed_at,
                         )
 
-            existing = conn.execute(
-                "SELECT market_id, status FROM markets WHERE source = ? AND active = 1",
-                (snapshot.source,),
-            ).fetchall()
-            for row in existing:
-                if row["market_id"] in seen_ids:
-                    continue
+            for issue_index, issue in enumerate(snapshot.issues):
                 conn.execute(
-                    "UPDATE markets SET active = 0, status = 'MISSING' WHERE market_id = ?",
-                    (row["market_id"],),
+                    """
+                    INSERT INTO market_ingest_issues(
+                        run_id, issue_index, source, raw_symbol, error, raw_json
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        issue_index,
+                        snapshot.source,
+                        issue.raw_symbol,
+                        issue.error[:2000],
+                        canonical_json(issue.raw),
+                    ),
                 )
-                self._insert_event(
-                    conn,
-                    run_id,
-                    row["market_id"],
-                    "MISSING",
-                    row["status"],
-                    "MISSING",
-                    snapshot.observed_at,
+
+            if not snapshot.issues:
+                existing = conn.execute(
+                    "SELECT market_id, status FROM markets WHERE source = ? AND active = 1",
+                    (snapshot.source,),
+                ).fetchall()
+                for row in existing:
+                    if row["market_id"] in seen_ids:
+                        continue
+                    conn.execute(
+                        "UPDATE markets SET active = 0, status = 'MISSING' WHERE market_id = ?",
+                        (row["market_id"],),
+                    )
+                    self._insert_event(
+                        conn,
+                        run_id,
+                        row["market_id"],
+                        "MISSING",
+                        row["status"],
+                        "MISSING",
+                        snapshot.observed_at,
+                    )
+
+            issue_error = None
+            if snapshot.issues:
+                details = "; ".join(
+                    f"{issue.raw_symbol}: {issue.error}" for issue in snapshot.issues
                 )
+                issue_error = f"{len(snapshot.issues)} symbol error(s): {details}"[:2000]
 
             conn.execute(
                 """
                 UPDATE ingest_runs
-                SET completed_at = ?, status = 'SUCCEEDED', complete = 1,
-                    record_count = ?
+                SET completed_at = ?, status = ?, complete = ?,
+                    record_count = ?, error = ?
                 WHERE run_id = ?
                 """,
-                (utc_now(), len(snapshot.markets), run_id),
+                (
+                    utc_now(),
+                    "PARTIAL" if snapshot.issues else "SUCCEEDED",
+                    0 if snapshot.issues else 1,
+                    len(snapshot.markets),
+                    issue_error,
+                    run_id,
+                ),
             )
 
         if rebuild:
@@ -1995,7 +2046,12 @@ class SQLiteStore:
                     m.market_id, m.venue, m.market_type, m.product,
                     m.raw_symbol, m.base_symbol, m.quote_symbol,
                     m.settle_symbol, m.contract_type, m.status, m.active,
-                    m.contract_multiplier, m.expires_at, m.max_market_order_size,
+                    m.contract_multiplier, m.contract_multiplier_unit,
+                    m.contract_value_currency, m.open_interest_unit,
+                    m.contract_metadata_reason, m.contract_metadata_source,
+                    m.contract_metadata_observed_at,
+                    m.contract_metadata_normalization_version,
+                    m.expires_at, m.max_market_order_size,
                     m.underlying_multiplier, m.venue_product, m.venue_status,
                     m.contract_direction, m.expiry_cycle, m.trading_schedule_json,
                     m.first_seen_at, m.last_seen_at, m.raw_json,
@@ -2339,7 +2395,12 @@ class SQLiteStore:
                     m.market_id, m.venue, m.market_type, m.product,
                     m.raw_symbol, m.base_symbol, m.quote_symbol,
                     m.settle_symbol, m.contract_type, m.status,
-                    m.contract_multiplier, m.expires_at, m.max_market_order_size,
+                    m.contract_multiplier, m.contract_multiplier_unit,
+                    m.contract_value_currency, m.open_interest_unit,
+                    m.contract_metadata_reason, m.contract_metadata_source,
+                    m.contract_metadata_observed_at,
+                    m.contract_metadata_normalization_version,
+                    m.expires_at, m.max_market_order_size,
                     m.underlying_multiplier, m.venue_product, m.venue_status,
                     m.contract_direction, m.expiry_cycle, m.trading_schedule_json,
                     m.first_seen_at, m.last_seen_at,
@@ -3292,7 +3353,9 @@ class SQLiteStore:
                 if change_filters_active and not venue_changes:
                     continue
                 statuses = {row["status"] for row in venue_universes}
-                if "FAILED" in statuses and "SUCCEEDED" in statuses:
+                if "PARTIAL" in statuses or (
+                    "FAILED" in statuses and "SUCCEEDED" in statuses
+                ):
                     venue_status = "PARTIAL"
                 elif "FAILED" in statuses:
                     venue_status = "FAILED"

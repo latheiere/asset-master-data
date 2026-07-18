@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
+from decimal import Decimal
 from urllib.parse import urlencode
 
 import httpx
 
 from mdv.connectors.base import epoch_timestamp, fetch_json, market_availability, session_status, utc_now
+from mdv.contract_metadata import NORMALIZATION_VERSION, positive_decimal, with_contract_evidence
+from mdv.matching import normalize_venue_asset_symbol
 from mdv.models import FinancingRecord, FinancingSnapshot, MarketRecord, MarketSnapshot, TradingSchedule
 from mdv.normalization import contract_direction, normalize_status
 
@@ -117,8 +121,20 @@ class CoinbasePerpetualConnector:
     market_type = "FUTURE"
     product = "PERP"
     base_url = "https://api.coinbase.com/api/v3/brokerage/market/products"
+    international_url = "https://api.international.coinbase.com/api/v1/instruments"
 
     async def fetch(self, client: httpx.AsyncClient) -> MarketSnapshot:
+        products, instruments = await asyncio.gather(
+            self._fetch_products(client),
+            fetch_json(client, self.international_url),
+        )
+        return self.parse(
+            {"products": products},
+            observed_at=utc_now(),
+            instruments_payload=instruments,
+        )
+
+    async def _fetch_products(self, client: httpx.AsyncClient) -> list:
         query = {
             "product_type": "FUTURE",
             "contract_expiry_type": "PERPETUAL",
@@ -132,21 +148,31 @@ class CoinbasePerpetualConnector:
             if not isinstance(pagination, dict):
                 raise ValueError(f"{self.source}: response has no pagination object")
             if pagination.get("has_next") is not True:
-                return self.parse({"products": products}, observed_at=utc_now())
+                return products
             cursor = str(pagination.get("next_cursor") or "").strip()
             if not cursor:
                 raise ValueError(f"{self.source}: pagination has no next_cursor")
             query["cursor"] = cursor
         raise ValueError(f"{self.source}: pagination exceeded 100 pages")
 
-    def parse(self, payload: object, *, observed_at: str) -> MarketSnapshot:
+    def parse(
+        self,
+        payload: object,
+        *,
+        observed_at: str,
+        instruments_payload: object | None = None,
+    ) -> MarketSnapshot:
+        instruments = self._international_instruments(instruments_payload)
         snapshot = MarketSnapshot(
             self.source,
             self.venue,
             self.market_type,
             self.product,
             observed_at,
-            tuple(self._market(row) for row in self._products(payload)),
+            tuple(
+                self._market(row, observed_at=observed_at, instruments=instruments)
+                for row in self._products(payload)
+            ),
         )
         snapshot.validate()
         return snapshot
@@ -157,7 +183,40 @@ class CoinbasePerpetualConnector:
             raise ValueError(f"{self.source}: response has no products array")
         return products
 
-    def _market(self, row: object) -> MarketRecord:
+    def _international_instruments(
+        self, payload: object | None
+    ) -> tuple[dict[str, dict], dict[tuple[str, str], dict]]:
+        if payload is None:
+            return {}, {}
+        if not isinstance(payload, list):
+            raise ValueError(f"{self.source}: international response is not an array")
+        by_symbol = {}
+        by_assets = {}
+        for row in payload:
+            if not isinstance(row, dict):
+                raise ValueError(f"{self.source}: international instrument is not an object")
+            if str(row.get("type") or "").upper() != "PERP":
+                continue
+            symbol = _required(row, "symbol", source=self.source).upper()
+            asset_key = (
+                _required(row, "base_asset_name", source=self.source).upper(),
+                _required(row, "quote_asset_name", source=self.source).upper(),
+            )
+            if symbol in by_symbol or asset_key in by_assets:
+                raise ValueError(
+                    f"{self.source}: duplicate international instrument {symbol}"
+                )
+            by_symbol[symbol] = row
+            by_assets[asset_key] = row
+        return by_symbol, by_assets
+
+    def _market(
+        self,
+        row: object,
+        *,
+        observed_at: str,
+        instruments: tuple[dict[str, dict], dict[tuple[str, str], dict]],
+    ) -> MarketRecord:
         if not isinstance(row, dict):
             raise ValueError(f"{self.source}: product is not an object")
         details = row.get("future_product_details")
@@ -169,6 +228,53 @@ class CoinbasePerpetualConnector:
         active, status = _active_status(venue_status, row)
         base_symbol = _required(details, "contract_root_unit", source=self.source).upper()
         quote_symbol = _required(row, "quote_currency_id", source=self.source).upper()
+        product_id = _required(row, "product_id", source=self.source)
+        instrument = instruments[0].get(product_id.upper().removesuffix("-INTX"))
+        if instrument is None:
+            instrument = instruments[1].get((base_symbol, quote_symbol))
+        normalized_root = normalize_venue_asset_symbol(
+            base_symbol,
+            venue=self.venue,
+            market_type=self.market_type,
+        )
+        raw_brokerage_multiplier = positive_decimal(details.get("contract_size"))
+        brokerage_multiplier = (
+            positive_decimal(
+                Decimal(raw_brokerage_multiplier) * normalized_root.multiplier
+            )
+            if raw_brokerage_multiplier is not None
+            else None
+        )
+        international_multiplier = positive_decimal(
+            instrument.get("base_asset_multiplier") if instrument else None
+        )
+        contract_metadata_reason = None
+        if instrument is None:
+            multiplier = brokerage_multiplier
+            contract_metadata_reason = "COINBASE_INTX_INSTRUMENT_MISSING"
+        elif international_multiplier is None:
+            multiplier = None
+            contract_metadata_reason = "COINBASE_INTX_MULTIPLIER_INVALID"
+        elif (
+            brokerage_multiplier is not None
+            and brokerage_multiplier != international_multiplier
+        ):
+            multiplier = None
+            contract_metadata_reason = "COINBASE_CONTRACT_MULTIPLIER_CONFLICT"
+        else:
+            multiplier = international_multiplier
+        raw = with_contract_evidence(
+            dict(row),
+            {
+                "source": self.international_url,
+                "normalization_version": NORMALIZATION_VERSION,
+                "brokerage_contract_size_raw": raw_brokerage_multiplier,
+                "brokerage_contract_unit": base_symbol,
+                "brokerage_contract_size": brokerage_multiplier,
+                "international_instrument": instrument,
+                "reason": contract_metadata_reason,
+            },
+        )
         schedule = coinbase_market_schedule(
             {"market_type": self.market_type, "status": status}, row
         )
@@ -183,15 +289,15 @@ class CoinbasePerpetualConnector:
             self.venue,
             self.market_type,
             self.product,
-            _required(row, "product_id", source=self.source),
+            product_id,
             base_symbol,
             quote_symbol,
             quote_symbol,
             "PERP",
             availability.status,
             availability.active,
-            str(details["contract_size"]) if details.get("contract_size") not in (None, "") else None,
-            dict(row),
+            multiplier,
+            raw,
             max_market_order_size=(
                 str(row["base_max_size"]) if row.get("base_max_size") not in (None, "") else None
             ),
@@ -204,6 +310,21 @@ class CoinbasePerpetualConnector:
                 settle_symbol=quote_symbol,
             ),
             trading_schedule=availability.trading_schedule,
+            contract_multiplier_unit=(
+                str(instrument["base_asset_name"]).upper()
+                if multiplier is not None and instrument is not None
+                else (normalized_root.symbol if multiplier is not None else None)
+            ),
+            contract_value_currency=(
+                str(instrument["base_asset_name"]).upper()
+                if multiplier is not None and instrument is not None
+                else (normalized_root.symbol if multiplier is not None else None)
+            ),
+            open_interest_unit=("CONTRACT" if multiplier is not None else None),
+            contract_metadata_reason=contract_metadata_reason,
+            contract_metadata_source=self.international_url,
+            contract_metadata_observed_at=observed_at,
+            contract_metadata_normalization_version=NORMALIZATION_VERSION,
         )
 
 

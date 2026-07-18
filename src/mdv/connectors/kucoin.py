@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 
 import httpx
 
 from mdv.connectors.base import fetch_json, utc_now
+from mdv.contract_metadata import NORMALIZATION_VERSION, positive_decimal
 from mdv.models import MarketRecord, MarketSnapshot
 from mdv.normalization import contract_direction, normalize_status
 
@@ -106,6 +108,17 @@ class KucoinFutureConnector:
             base_symbol = _required(row, "baseCurrency", source=self.source).upper()
             quote_symbol = _required(row, "quoteCurrency", source=self.source).upper()
             settle_symbol = _required(row, "settleCurrency", source=self.source).upper()
+            direction = contract_direction(
+                market_type=self.market_type,
+                base_symbol=base_symbol,
+                quote_symbol=quote_symbol,
+                settle_symbol=settle_symbol,
+            )
+            raw_multiplier = row.get("multiplier")
+            contract_multiplier, contract_metadata_reason = self._contract_multiplier(
+                raw_multiplier,
+                direction=direction,
+            )
             markets.append(
                 MarketRecord(
                     self.source,
@@ -119,7 +132,7 @@ class KucoinFutureConnector:
                     contract_type,
                     normalize_status(venue_status),
                     venue_status == "OPEN",
-                    str(row["multiplier"]) if row.get("multiplier") is not None else None,
+                    contract_multiplier,
                     dict(row),
                     expires_at=(
                         self._expires_at(row.get("expireDate"))
@@ -133,11 +146,14 @@ class KucoinFutureConnector:
                     ),
                     venue_product=str(row.get("type") or self.product).upper(),
                     venue_status=venue_status,
-                    contract_direction=contract_direction(
-                        market_type=self.market_type,
-                        base_symbol=base_symbol,
-                        quote_symbol=quote_symbol,
-                        settle_symbol=settle_symbol,
+                    contract_direction=direction,
+                    contract_metadata_reason=contract_metadata_reason,
+                    contract_metadata_source=(self.url if contract_metadata_reason else None),
+                    contract_metadata_observed_at=(
+                        observed_at if contract_metadata_reason else None
+                    ),
+                    contract_metadata_normalization_version=(
+                        NORMALIZATION_VERSION if contract_metadata_reason else None
                     ),
                 )
             )
@@ -146,6 +162,26 @@ class KucoinFutureConnector:
         )
         snapshot.validate()
         return snapshot
+
+    def _contract_multiplier(
+        self,
+        value: object,
+        *,
+        direction: str | None,
+    ) -> tuple[str | None, str | None]:
+        if value in (None, ""):
+            return None, None
+        try:
+            multiplier = Decimal(str(value).strip())
+        except (InvalidOperation, TypeError, ValueError):
+            return None, "SOURCE_RETURNED_INVALID_CONTRACT_MULTIPLIER"
+        if not multiplier.is_finite() or multiplier == 0:
+            return None, "SOURCE_RETURNED_NON_POSITIVE_CONTRACT_MULTIPLIER"
+        if multiplier < 0:
+            if direction != "INVERSE":
+                return None, "SOURCE_RETURNED_UNEXPECTED_SIGNED_CONTRACT_MULTIPLIER"
+            multiplier = abs(multiplier)
+        return positive_decimal(multiplier), None
 
     def _contract_type(self, row: dict) -> str:
         contract_kind = str(row.get("type") or "").strip().upper()

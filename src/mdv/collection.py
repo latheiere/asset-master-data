@@ -216,8 +216,22 @@ class CollectionService:
                             if isinstance(value, FinancingSnapshot)
                             else len(value.markets)
                         )
+                        symbol_error = None
+                        if not isinstance(value, FinancingSnapshot) and value.issues:
+                            details = "; ".join(
+                                f"{issue.raw_symbol}: {issue.error}"
+                                for issue in value.issues
+                            )
+                            symbol_error = (
+                                f"{len(value.issues)} symbol error(s): {details}"
+                            )[:2000]
                         results[index] = CollectionResult(
-                            connector.source, True, record_count, run_id, collection_run_id
+                            connector.source,
+                            symbol_error is None,
+                            record_count,
+                            run_id,
+                            collection_run_id,
+                            symbol_error,
                         )
         except Exception as exc:
             for index, connector in enumerate(connectors):

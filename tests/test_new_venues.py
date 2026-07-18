@@ -253,11 +253,16 @@ def test_kucoin_recorded_spot_perp_and_expiry_fixtures():
 
     assert spot.markets[0].active is True
     assert spot.markets[0].raw["_metadata"]["ASSET_TAGS"][0]["tag"] == "ST"
-    assert [market.product for market in futures.markets] == ["PERP", "DATED"]
-    assert all(market.contract_direction == "LINEAR" for market in futures.markets)
+    assert [market.product for market in futures.markets] == ["PERP", "DATED", "PERP"]
+    assert [market.contract_direction for market in futures.markets] == [
+        "LINEAR", "LINEAR", "INVERSE",
+    ]
     assert futures.markets[0].contract_multiplier == "0.001"
     assert futures.markets[0].max_market_order_size == "1000000"
     assert futures.markets[1].expires_at == "2026-09-25T08:00:00+00:00"
+    assert futures.markets[2].contract_multiplier == "1"
+    assert futures.markets[2].contract_metadata_reason is None
+    assert futures.markets[2].raw["multiplier"] == -1.0
 
 
 def test_whitebit_recorded_spot_crypto_and_tradfi_perp_fixtures():
@@ -266,7 +271,9 @@ def test_whitebit_recorded_spot_crypto_and_tradfi_perp_fixtures():
         payload, observed_at=OBSERVED_AT
     )
     futures = WhitebitConnector(market_type="FUTURE").parse(
-        payload, observed_at=OBSERVED_AT
+        payload,
+        observed_at=OBSERVED_AT,
+        futures_payload=fixture("whitebit_futures_success.json"),
     )
 
     assert [market.raw_symbol for market in spot.markets] == ["BTC_USDT"]
@@ -275,6 +282,9 @@ def test_whitebit_recorded_spot_crypto_and_tradfi_perp_fixtures():
         "TSLA_PERP",
     ]
     assert futures.markets[0].contract_direction == "LINEAR"
+    assert futures.markets[0].contract_multiplier == "1"
+    assert futures.markets[0].contract_multiplier_unit == "BTC"
+    assert futures.markets[0].open_interest_unit == "BASE_ASSET"
     assert futures.markets[1].active is False
     assert futures.markets[1].raw["_metadata"]["ASSET_TAGS"][0]["tag"] == "TRADFI"
     assert futures.markets[1].trading_schedule.market_group == "TRADFI"
@@ -308,7 +318,9 @@ def test_coinbase_recorded_spot_fixture_preserves_native_status_and_restrictions
 
 def test_coinbase_recorded_perpetual_and_margin_fixtures_normalize_dimensions():
     perpetuals = CoinbasePerpetualConnector().parse(
-        fixture("coinbase_perpetuals_success.json"), observed_at=OBSERVED_AT
+        fixture("coinbase_perpetuals_success.json"),
+        observed_at=OBSERVED_AT,
+        instruments_payload=fixture("coinbase_international_instruments.json"),
     )
     margin = CoinbaseCrossMarginConnector().parse(
         fixture("coinbase_success.json"), observed_at=OBSERVED_AT
@@ -317,10 +329,14 @@ def test_coinbase_recorded_perpetual_and_margin_fixtures_normalize_dimensions():
     assert [market.raw_symbol for market in perpetuals.markets] == [
         "BTC-PERP-INTX",
         "META-PERP-INTX",
+        "1000BONK-PERP-INTX",
     ]
     assert perpetuals.markets[0].active is True
     assert perpetuals.markets[0].contract_multiplier == "1"
     assert perpetuals.markets[0].contract_direction == "LINEAR"
+    assert perpetuals.markets[0].contract_multiplier_unit == "BTC"
+    assert perpetuals.markets[0].open_interest_unit == "CONTRACT"
+    assert perpetuals.markets[0].contract_metadata_reason is None
     assert perpetuals.markets[1].status == "PAUSED"
     assert perpetuals.markets[1].active is True
     assert perpetuals.markets[1].trading_schedule.session_status == "CLOSED"
@@ -329,10 +345,44 @@ def test_coinbase_recorded_perpetual_and_margin_fixtures_normalize_dimensions():
     assert "EQUITY" in market_metadata(
         {"market_type": "FUTURE", "base_symbol": "META"}, perpetuals.markets[1].raw
     ).classifications
+    assert perpetuals.markets[2].contract_multiplier == "1000"
+    assert perpetuals.markets[2].contract_multiplier_unit == "BONK"
+    assert perpetuals.markets[2].open_interest_unit == "CONTRACT"
 
     eligible = {record.raw_asset_symbol for record in margin.records if record.eligible}
     assert eligible == {"BTC", "USD"}
     assert margin.records[0].raw["evidence_granularity"] == "PAIR"
+
+
+def test_coinbase_conflicting_multiplier_is_null_and_explicit():
+    instruments = fixture("coinbase_international_instruments.json")
+    instruments[0]["base_asset_multiplier"] = "2"
+
+    market = CoinbasePerpetualConnector().parse(
+        fixture("coinbase_perpetuals_success.json"),
+        observed_at=OBSERVED_AT,
+        instruments_payload=instruments,
+    ).markets[0]
+
+    assert market.contract_multiplier is None
+    assert market.contract_multiplier_unit is None
+    assert market.open_interest_unit is None
+    assert market.contract_metadata_reason == "COINBASE_CONTRACT_MULTIPLIER_CONFLICT"
+
+
+def test_whitebit_conflicting_contract_spec_is_null_and_explicit():
+    futures = fixture("whitebit_futures_success.json")
+    futures["result"][0]["stock_currency"] = "XBT"
+
+    market = WhitebitConnector(market_type="FUTURE").parse(
+        fixture("whitebit_success.json"),
+        observed_at=OBSERVED_AT,
+        futures_payload=futures,
+    ).markets[0]
+
+    assert market.contract_multiplier is None
+    assert market.open_interest_unit is None
+    assert market.contract_metadata_reason == "WHITEBIT_FUTURES_SPEC_CONFLICT"
 
 
 @pytest.mark.parametrize(

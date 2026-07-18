@@ -1,0 +1,5 @@
+[
+  ["tBTCF0:USTF0", 1784396166000, null, 118000, 118010, null, 65000000, null, 1784419200000, 0, 1, null, 0, null, null, 118005, null, null, 1234.5],
+  ["tETHF0:BTCF0", 1784396166000, null, 0.03, 0.03, null, 65000000, null, 1784419200000, 0, 1, null, 0, null, null, 0.03, null, null, 500.25],
+  ["tJASMYF0:USTF0", 1784396166000, null, 0.01, 0.01, null, 65000000, null, 1784419200000, 0, 1, null, 0, null, null, 0.01, null, null, 1000]
+]

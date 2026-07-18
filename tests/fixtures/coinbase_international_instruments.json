@@ -1,0 +1,5 @@
+[
+  {"instrument_id": "1", "symbol": "BTC-PERP", "type": "PERP", "base_asset_name": "BTC", "quote_asset_name": "USDC", "open_interest": "100", "base_asset_multiplier": "1", "execution_exchange": "COINBASE_INTERNATIONAL_EXCHANGE"},
+  {"instrument_id": "2", "symbol": "META-PERP", "type": "PERP", "base_asset_name": "META", "quote_asset_name": "USDC", "open_interest": "50", "base_asset_multiplier": "1", "execution_exchange": "COINBASE_INTERNATIONAL_EXCHANGE"},
+  {"instrument_id": "3", "symbol": "1000BONK-PERP", "type": "PERP", "base_asset_name": "BONK", "quote_asset_name": "USDC", "open_interest": "500", "base_asset_multiplier": "1000", "execution_exchange": "COINBASE_INTERNATIONAL_EXCHANGE"}
+]

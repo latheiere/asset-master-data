@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from dataclasses import replace
 from importlib import resources
 
 import pytest
@@ -91,6 +92,130 @@ def test_store_applies_snapshot_matches_asset_and_filters(tmp_path):
     assert rows[0]["venue_product"] == "USD-M"
     assert rows[0]["contract_direction"] == "LINEAR"
     assert rows[0]["active"] == 1
+
+
+def test_market_and_asset_projections_share_contract_metadata_semantics(tmp_path):
+    store = SQLiteStore(tmp_path / "contract-metadata.sqlite3")
+    row = MarketRecord(
+        source="COINBASE_PERP_FUTURE",
+        venue="COINBASE",
+        market_type="FUTURE",
+        product="PERP",
+        raw_symbol="BLUR-PERP-INTX",
+        base_symbol="BLUR",
+        quote_symbol="USDC",
+        settle_symbol="USDC",
+        contract_type="PERP",
+        status="TRADING",
+        active=True,
+        contract_multiplier="0.1",
+        raw={"product_id": "BLUR-PERP-INTX"},
+        contract_direction="LINEAR",
+        contract_multiplier_unit="BLUR",
+        contract_value_currency="BLUR",
+        open_interest_unit="CONTRACT",
+        contract_metadata_source="https://api.international.coinbase.com/api/v1/instruments",
+        contract_metadata_observed_at="2026-07-19T00:00:00+00:00",
+        contract_metadata_normalization_version="derivative-contract-metadata-v1",
+    )
+    store.apply_snapshot(MarketSnapshot(
+        source=row.source,
+        venue=row.venue,
+        market_type=row.market_type,
+        product=row.product,
+        observed_at="2026-07-19T00:00:00+00:00",
+        markets=(row,),
+    ))
+
+    flat = store.list_markets({"venue": "COINBASE"})[0]
+    nested = store.list_assets({"venue": "COINBASE"})["assets"][0]["venues"][0]["futures"][0]
+    fields = (
+        "contract_multiplier", "contract_multiplier_unit",
+        "contract_value_currency", "open_interest_unit",
+        "contract_metadata_reason", "contract_metadata_source",
+        "contract_metadata_observed_at",
+        "contract_metadata_normalization_version",
+    )
+    assert {field: flat[field] for field in fields} == {
+        field: nested[field] for field in fields
+    }
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "NaN", "Infinity", "not-a-number"])
+def test_snapshot_nulls_unsafe_contract_multiplier_per_symbol(value):
+    current = snapshot()
+    normalized = replace(
+        current,
+        markets=(replace(current.markets[0], contract_multiplier=value),),
+    )
+
+    normalized.validate()
+    market = normalized.markets[0]
+    assert market.contract_multiplier is None
+    assert market.contract_metadata_reason in {
+        "SOURCE_RETURNED_INVALID_CONTRACT_MULTIPLIER",
+        "SOURCE_RETURNED_NON_POSITIVE_CONTRACT_MULTIPLIER",
+    }
+    assert market.contract_metadata_observed_at == normalized.observed_at
+    assert normalized.issues == ()
+
+
+def test_partial_snapshot_updates_valid_symbol_and_preserves_failed_sibling(tmp_path):
+    store = SQLiteStore(tmp_path / "partial-symbol.sqlite3")
+    current = snapshot()
+    eth = replace(
+        current.markets[0],
+        raw_symbol="ETHUSDT",
+        base_symbol="ETH",
+        raw={"symbol": "ETHUSDT", "status": "TRADING"},
+    )
+    baseline = replace(current, markets=(current.markets[0], eth))
+    store.apply_snapshot(baseline)
+
+    changed_btc = replace(
+        current.markets[0],
+        status="BREAK",
+        active=False,
+        raw={"symbol": "BTCUSDT", "status": "BREAK"},
+    )
+    malformed_eth = replace(eth, quote_symbol="")
+    partial = MarketSnapshot(
+        source=current.source,
+        venue=current.venue,
+        market_type=current.market_type,
+        product=current.product,
+        observed_at="2026-07-04T00:00:00+00:00",
+        markets=(changed_btc, malformed_eth),
+    )
+
+    run_id = store.apply_snapshot(partial)
+
+    with store.readonly() as conn:
+        rows = {
+            row["raw_symbol"]: dict(row)
+            for row in conn.execute(
+                "SELECT raw_symbol, active, last_seen_at FROM markets"
+            )
+        }
+        run = dict(conn.execute(
+            "SELECT status, complete, record_count, error FROM ingest_runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone())
+        issue = dict(conn.execute(
+            "SELECT raw_symbol, error, raw_json FROM market_ingest_issues WHERE run_id = ?",
+            (run_id,),
+        ).fetchone())
+    assert bool(rows["BTCUSDT"]["active"]) is False
+    assert rows["BTCUSDT"]["last_seen_at"] == "2026-07-04T00:00:00+00:00"
+    assert bool(rows["ETHUSDT"]["active"]) is True
+    assert rows["ETHUSDT"]["last_seen_at"] == "2026-07-03T00:00:00+00:00"
+    assert run["status"] == "PARTIAL"
+    assert run["complete"] == 0
+    assert run["record_count"] == 1
+    assert "ETHUSDT" in run["error"]
+    assert issue["raw_symbol"] == "ETHUSDT"
+    assert "quote_symbol" in issue["error"]
+    assert json.loads(issue["raw_json"])["symbol"] == "ETHUSDT"
 
 
 def test_filter_metadata_describes_filters_and_current_values(tmp_path):
@@ -581,7 +706,7 @@ def test_financing_migration_upgrades_schema_12_without_rewriting_market_data(tm
                 "SELECT name FROM sqlite_master WHERE type = 'index'"
             )
         }
-    assert versions[-1] == 18
+    assert versions[-1] == 20
     assert {
         "financing_products", "financing_observations",
         "financing_lifecycle_events", "financing_asset_mappings",
@@ -590,6 +715,12 @@ def test_financing_migration_upgrades_schema_12_without_rewriting_market_data(tm
     }.issubset(tables)
     assert "is_stock" in asset_columns
     assert "trading_schedule_json" in market_columns
+    assert {
+        "contract_multiplier_unit", "contract_value_currency",
+        "open_interest_unit", "contract_metadata_reason",
+        "contract_metadata_source", "contract_metadata_observed_at",
+        "contract_metadata_normalization_version",
+    }.issubset(market_columns)
     assert {
         "idx_collection_runs_status_started",
         "idx_market_observations_retention",

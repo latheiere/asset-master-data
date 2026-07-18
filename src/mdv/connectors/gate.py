@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import httpx
 
 from mdv.connectors.base import fetch_json, market_availability, session_status, utc_now
+from mdv.contract_metadata import NORMALIZATION_VERSION, positive_decimal
 from mdv.models import MarketRecord, MarketSnapshot, TradingSchedule
 from mdv.normalization import contract_direction, normalize_product, normalize_status
 
@@ -135,6 +136,11 @@ class GateFutureConnector:
                 trading_schedule=schedule,
             )
             contract_type = self._contract_type(row)
+            raw_multiplier = row.get("quanto_multiplier")
+            contract_multiplier = positive_decimal(raw_multiplier)
+            contract_metadata_reason = None
+            if raw_multiplier is not None and contract_multiplier is None:
+                contract_metadata_reason = "SOURCE_RETURNED_NON_POSITIVE_CONTRACT_MULTIPLIER"
             markets.append(
                 MarketRecord(
                     source=self.source,
@@ -148,11 +154,7 @@ class GateFutureConnector:
                     contract_type=contract_type,
                     status=availability.status,
                     active=availability.active,
-                    contract_multiplier=(
-                        str(row["quanto_multiplier"])
-                        if row.get("quanto_multiplier") is not None
-                        else None
-                    ),
+                    contract_multiplier=contract_multiplier,
                     raw=row,
                     expires_at=self._expires_at(row.get("expire_time")),
                     max_market_order_size=(
@@ -170,6 +172,14 @@ class GateFutureConnector:
                     ),
                     expiry_cycle=self._expiry_cycle(row),
                     trading_schedule=availability.trading_schedule,
+                    contract_metadata_reason=contract_metadata_reason,
+                    contract_metadata_source=(self.url if contract_metadata_reason else None),
+                    contract_metadata_observed_at=(
+                        observed_at if contract_metadata_reason else None
+                    ),
+                    contract_metadata_normalization_version=(
+                        NORMALIZATION_VERSION if contract_metadata_reason else None
+                    ),
                 )
             )
         snapshot = MarketSnapshot(

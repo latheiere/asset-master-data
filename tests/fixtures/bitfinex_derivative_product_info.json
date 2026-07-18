@@ -1,0 +1,7 @@
+[
+  [
+    ["BTCF0:USTF0", [null, null, null, "0.00004", "100", null, null, null, 0.01, 0.005]],
+    ["ETHF0:BTCF0", [null, null, null, "0.0008", "100", null, null, null, 0.01, 0.005]],
+    ["JASMYF0:USTF0", [null, null, null, "144", "2500000", null, null, null, 0.01, 0.005]]
+  ]
+]

@@ -410,6 +410,24 @@ def test_gate_parsers_accept_spot_perpetual_and_delivery_shapes():
     assert delivery.markets[0].expires_at == "2026-07-10T08:00:00+00:00"
 
 
+def test_gate_zero_multiplier_is_explicitly_unresolved():
+    market = GateFutureConnector(settle="BTC").parse(
+        fixture("gate_btc_future_zero_multiplier.json"),
+        observed_at="2026-07-19T00:00:00+00:00",
+    ).markets[0]
+
+    assert market.active is True
+    assert market.contract_direction == "INVERSE"
+    assert market.contract_multiplier is None
+    assert (
+        market.contract_metadata_reason
+        == "SOURCE_RETURNED_NON_POSITIVE_CONTRACT_MULTIPLIER"
+    )
+    assert market.contract_metadata_source.endswith("/futures/btc/contracts")
+    assert market.contract_metadata_observed_at == "2026-07-19T00:00:00+00:00"
+    assert market.raw["quanto_multiplier"] == "0"
+
+
 def test_bitget_parsers_accept_spot_and_all_future_product_shapes():
     spot = BitgetSpotConnector().parse(
         {
@@ -466,10 +484,39 @@ def test_bitget_parsers_accept_spot_and_all_future_product_shapes():
     assert future.markets[0].raw["_metadata"]["ASSET_TAGS"][0]["tag"] == "RWA"
     assert future.markets[0].contract_direction == "INVERSE"
     assert future.markets[0].venue_product == "COIN-M"
+    assert future.markets[0].contract_multiplier == "1"
+    assert future.markets[0].contract_multiplier_unit == "USD"
+    assert future.markets[0].open_interest_unit == "QUOTE_ASSET"
     assert future.markets[1].contract_type == "DATED"
     assert future.markets[1].product == "DATED"
     assert future.markets[1].expiry_cycle == "Q"
     assert future.markets[1].expires_at == "2026-06-26T07:59:59+00:00"
+
+
+def test_bitget_recorded_linear_and_inverse_oi_units_are_unambiguous():
+    payload = fixture("bitget_contracts.json")
+    linear = BitgetFutureConnector(
+        product_type="USDC-FUTURES", product="USDC-M"
+    ).parse(payload["usdc"], observed_at="2026-07-03T00:00:00+00:00").markets[0]
+    inverse = BitgetFutureConnector(
+        product_type="COIN-FUTURES", product="COIN-M"
+    ).parse(payload["coin"], observed_at="2026-07-03T00:00:00+00:00").markets[0]
+
+    assert (linear.contract_direction, linear.contract_multiplier) == ("LINEAR", "1")
+    assert (linear.contract_multiplier_unit, linear.open_interest_unit) == (
+        "WIF", "BASE_ASSET"
+    )
+    assert (inverse.contract_direction, inverse.contract_multiplier) == ("INVERSE", "1")
+    assert (inverse.contract_multiplier_unit, inverse.open_interest_unit) == (
+        "USD", "QUOTE_ASSET"
+    )
+    assert inverse.raw["_metadata"]["CONTRACT_METADATA"] == {
+        "source": "https://api.bitget.com/api/v2/mix/market/contracts",
+        "normalization_version": "derivative-contract-metadata-v1",
+        "open_interest_unit": "QUOTE_ASSET",
+        "quantity_increment": "0.0001",
+        "quantity_increment_is_not_contract_multiplier": True,
+    }
 
 
 def test_financing_parsers_keep_margin_and_crypto_loan_separate():

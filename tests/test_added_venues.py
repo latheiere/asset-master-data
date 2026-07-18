@@ -49,7 +49,12 @@ def test_gemini_recorded_spot_and_future_fixtures_normalize_dimensions():
 def test_bitfinex_recorded_spot_and_future_fixtures_normalize_dimensions():
     payload = fixture("bitfinex_success.json")
     spot = BitfinexConnector(market_type="SPOT").parse(payload, observed_at=OBSERVED_AT)
-    futures = BitfinexConnector(market_type="FUTURE").parse(payload, observed_at=OBSERVED_AT)
+    futures = BitfinexConnector(market_type="FUTURE").parse(
+        payload,
+        observed_at=OBSERVED_AT,
+        product_info_payload=fixture("bitfinex_derivative_product_info.json"),
+        status_payload=fixture("bitfinex_derivatives_status.json"),
+    )
 
     assert [(market.base_symbol, market.quote_symbol) for market in spot.markets] == [
         ("BTC", "USD"), ("AAVE", "USD")
@@ -57,6 +62,29 @@ def test_bitfinex_recorded_spot_and_future_fixtures_normalize_dimensions():
     assert futures.markets[0].settle_symbol == "UST"
     assert futures.markets[0].contract_direction == "LINEAR"
     assert futures.markets[1].contract_direction == "LINEAR"
+    jasmy = futures.markets[2]
+    assert jasmy.raw_symbol == "JASMYF0:USTF0"
+    assert jasmy.contract_multiplier == "1"
+    assert jasmy.contract_multiplier_unit == "JASMY"
+    assert jasmy.contract_value_currency == "JASMY"
+    assert jasmy.open_interest_unit == "CONTRACT"
+    assert jasmy.contract_metadata_reason is None
+    assert jasmy.raw["_metadata"]["CONTRACT_METADATA"]["status"][18] == 1000
+
+
+def test_bitfinex_missing_instrument_status_is_explicitly_unresolved():
+    status = fixture("bitfinex_derivatives_status.json")[:-1]
+    futures = BitfinexConnector(market_type="FUTURE").parse(
+        fixture("bitfinex_success.json"),
+        observed_at=OBSERVED_AT,
+        product_info_payload=fixture("bitfinex_derivative_product_info.json"),
+        status_payload=status,
+    )
+
+    jasmy = futures.markets[2]
+    assert jasmy.contract_multiplier is None
+    assert jasmy.open_interest_unit is None
+    assert jasmy.contract_metadata_reason == "BITFINEX_DERIVATIVES_STATUS_MISSING"
 
 
 def test_bitfinex_recorded_margin_fixture_preserves_pair_level_eligibility():

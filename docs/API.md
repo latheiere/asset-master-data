@@ -188,6 +188,58 @@ Their normalized `status` can still be `PAUSED`, but routine transitions between
 `TRADING` and `PAUSED` do not create collection-log lifecycle changes. Terminal
 venue states and absence from a complete snapshot deactivate the market normally.
 
+Derivative market rows in this endpoint and `/api/v1/markets` use identical
+contract-value fields:
+
+| Field | Meaning |
+| --- | --- |
+| `contract_multiplier` | Positive decimal conversion factor from one native OI unit to `contract_value_currency`; null when unresolved |
+| `contract_multiplier_unit` | Asset symbol carried by the multiplier, such as `BTC`, `WIF`, `USD`, or `USDC` |
+| `contract_value_currency` | Asset in which `OI × contract_multiplier` is expressed before a linear price conversion |
+| `open_interest_unit` | Venue-native OI quantity: `CONTRACT`, `BASE_ASSET`, or `QUOTE_ASSET` |
+| `contract_metadata_reason` | Stable reason when authoritative metadata is missing, invalid, or conflicting; otherwise null |
+| `contract_metadata_source` | Authoritative public specification URL used by normalization |
+| `contract_metadata_observed_at` | UTC time at which the joined specification was observed |
+| `contract_metadata_normalization_version` | Versioned policy, currently `derivative-contract-metadata-v1` |
+
+For native venue OI quantity `oi` and a compatible mark price expressed as
+quote units per base unit, calculate quote/USD-equivalent notional as:
+
+```text
+LINEAR:  oi * contract_multiplier * mark_price
+INVERSE: oi * contract_multiplier
+```
+
+The formula is safe only when `contract_multiplier`, `contract_direction`,
+`quote_symbol`, `settle_symbol`, `contract_multiplier_unit`,
+`contract_value_currency`, and `open_interest_unit` are non-null and
+`contract_metadata_reason` is null. `CONTRACT` is a venue-published contract
+count. `BASE_ASSET` and `QUOTE_ASSET` mean the venue already publishes OI in
+that asset dimension; the multiplier remains explicit (normally `1`) so a
+consumer does not need a venue fallback.
+
+`contract_multiplier` is not an order-quantity increment, lot step, tick size,
+minimum order, or CCXT-derived `contractSize`. Raw discovery payloads and joined
+specification evidence remain independently auditable. Bitget's
+`sizeMultiplier`/`quantityMultiplier` is retained only as a quantity increment
+and is never copied into `contract_multiplier`.
+
+Current unit policies for the requested venues are:
+
+| Venue/product | Native OI unit | Contract value |
+| --- | --- | --- |
+| Bitfinex derivatives | `CONTRACT` | Instrument-specific underlying units from the named product specification |
+| Bitget USDT/USDC futures | `BASE_ASSET` | Base asset; linear price conversion required |
+| Bitget Coin-M futures | `QUOTE_ASSET` | USD quote notional; inverse price conversion is not applied |
+| WhiteBIT futures | `BASE_ASSET` | Base/stock asset; linear price conversion required |
+| Coinbase INTX perpetuals | `CONTRACT` | `base_asset_multiplier` base units, cross-checked against the brokerage catalog |
+
+If Coinbase authoritative fields disagree, or a WhiteBIT/Bitfinex joined
+instrument is absent or conflicts with discovery symbols, numeric/unit fields
+are null and `contract_metadata_reason` explains why. Migration marks older
+stored target-venue rows as requiring recollection; fresh complete collection
+backfills active and retained historical rows still present in venue catalogs.
+
 `perp_venues` and `dated_venues` split active derivative coverage by normalized
 duration. `margin_venues` and `loan_venues` split mapped borrow eligibility by
 `CROSS_MARGIN` and `CRYPTO_LOAN`; their counts are eligible borrowable records.
@@ -282,6 +334,14 @@ active markets. Pass `ACTIVE=false` only when inactive history is required.
       "base_symbol": "BTC",
       "quote_symbol": "USDT",
       "settle_symbol": "USDT",
+      "contract_multiplier": "1",
+      "contract_multiplier_unit": "BTC",
+      "contract_value_currency": "BTC",
+      "open_interest_unit": "BASE_ASSET",
+      "contract_metadata_reason": null,
+      "contract_metadata_source": "https://example.exchange/public/contracts",
+      "contract_metadata_observed_at": "2026-07-19T00:00:00+00:00",
+      "contract_metadata_normalization_version": "derivative-contract-metadata-v1",
       "status": "TRADING",
       "active": 1,
       "trading_schedule": null,
@@ -428,6 +488,12 @@ matching runs before pagination.
 
 Universe rows contain source, market type, venue product, timing, completion,
 record count, and error. Changes contain lifecycle or tag event details.
+An ingest universe is `PARTIAL` when one or more symbol records fail normalized
+record validation. Its `record_count` is the number of valid symbols applied and
+its `error` identifies the quarantined raw symbols and validation failures. Valid
+sibling symbols are updated transactionally, while failed and otherwise unseen
+symbols retain their previous state; only a complete snapshot can generate
+`MISSING` lifecycle events. Raw failed records remain in the ingest audit store.
 `MARKET_DISCOVERED` means no earlier same-venue market for that asset and market
 type was recorded. `MARKET_LISTED` means a new instrument was listed after such
 a market existed; both match `ACTION=LISTING`. A log entry is not evidence that

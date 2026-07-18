@@ -86,6 +86,19 @@ class ConcurrentFakeConnector(FakeConnector):
             self.state["active"] -= 1
 
 
+class PartialFakeConnector(FakeConnector):
+    async def fetch(self, client):
+        valid = await super().fetch(client)
+        malformed = replace(
+            valid.markets[0],
+            raw_symbol=f"{self.venue}BADUSDT",
+            base_symbol=f"{self.venue}BAD",
+            quote_symbol="",
+            raw={"symbol": f"{self.venue}BADUSDT"},
+        )
+        return replace(valid, markets=(valid.markets[0], malformed))
+
+
 def test_collection_service_saves_parent_run_and_supports_venue_scope(tmp_path):
     store = SQLiteStore(tmp_path / "mdv.sqlite3")
     service = CollectionService(
@@ -128,6 +141,25 @@ def test_collection_service_records_partial_all_run_and_rejects_unknown_venue(tm
     assert {venue["status"] for venue in saved["venues"]} == {"FAILED", "SUCCEEDED"}
     with pytest.raises(ValueError, match="VENUE must be one of"):
         asyncio.run(service.collect_venue("UNKNOWN"))
+
+
+def test_collection_service_reports_symbol_partial_after_applying_valid_rows(tmp_path):
+    store = SQLiteStore(tmp_path / "mdv.sqlite3")
+    service = CollectionService(
+        store,
+        connectors=[PartialFakeConnector(source="BINANCE_SPOT", venue="BINANCE")],
+    )
+
+    result = asyncio.run(service.collect_all())[0]
+
+    assert result.ok is False
+    assert result.records == 1
+    assert "BINANCEBADUSDT" in result.error
+    assert store.market_count() == 1
+    saved = store.list_collection_runs()["runs"][0]
+    assert saved["status"] == "PARTIAL"
+    assert saved["venues"][0]["status"] == "PARTIAL"
+    assert saved["venues"][0]["universes"][0]["record_count"] == 1
 
 
 @pytest.mark.parametrize(
@@ -246,13 +278,24 @@ def test_snapshot_validation_rejects_cross_universe_and_naive_timestamps():
     valid = asyncio.run(connector.fetch(None))
     with pytest.raises(ValueError, match="without a timezone"):
         replace(valid, observed_at="2026-07-03T00:00:00").validate()
-    with pytest.raises(ValueError, match="another venue"):
-        replace(valid, markets=(replace(valid.markets[0], venue="MEXC"),)).validate()
-    with pytest.raises(ValueError, match="settled spot market"):
-        replace(
-            valid,
-            markets=(replace(valid.markets[0], settle_symbol="USDT"),),
-        ).validate()
+    mixed = replace(
+        valid,
+        markets=(valid.markets[0], replace(valid.markets[0], raw_symbol="BAD", venue="MEXC")),
+    )
+    mixed.validate()
+    assert len(mixed.markets) == 1
+    assert len(mixed.issues) == 1
+    assert "another venue" in mixed.issues[0].error
+    settled = replace(
+        valid,
+        markets=(
+            valid.markets[0],
+            replace(valid.markets[0], raw_symbol="SETTLED", settle_symbol="USDT"),
+        ),
+    )
+    settled.validate()
+    assert len(settled.markets) == 1
+    assert "settled spot market" in settled.issues[0].error
 
 
 def test_connector_retry_is_bounded_and_skips_permanent_http_errors(monkeypatch):

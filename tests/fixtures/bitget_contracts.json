@@ -1,0 +1,16 @@
+{
+  "usdc": {
+    "code": "00000",
+    "msg": "success",
+    "data": [
+      {"symbol": "WIFUSDC", "baseCoin": "WIF", "quoteCoin": "USDC", "sizeMultiplier": "1", "symbolType": "perpetual", "symbolStatus": "normal", "maxMarketOrderQty": "500000", "isRwa": "NO"}
+    ]
+  },
+  "coin": {
+    "code": "00000",
+    "msg": "success",
+    "data": [
+      {"symbol": "BTCUSD", "baseCoin": "BTC", "quoteCoin": "USD", "sizeMultiplier": "0.0001", "symbolType": "perpetual", "symbolStatus": "normal", "maxMarketOrderQty": "30", "isRwa": "NO"}
+    ]
+  }
+}

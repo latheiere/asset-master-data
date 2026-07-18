@@ -1,0 +1,8 @@
+{
+  "success": true,
+  "message": null,
+  "result": [
+    {"ticker_id": "BTC_PERP", "stock_currency": "BTC", "money_currency": "USDT", "open_interest": "6000", "index_price": "24019.25", "product_type": "Perpetual"},
+    {"ticker_id": "TSLA_PERP", "stock_currency": "TSLA", "money_currency": "USDT", "open_interest": "100.5", "index_price": "300", "product_type": "Perpetual"}
+  ]
+}

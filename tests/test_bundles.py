@@ -94,6 +94,19 @@ class InvalidBundleConnector(BundleMarketConnector):
         return replace(snapshot, observed_at="not-a-timestamp")
 
 
+class PartialBundleConnector(BundleMarketConnector):
+    async def fetch(self, client):
+        snapshot = await super().fetch(client)
+        malformed = replace(
+            snapshot.markets[0],
+            raw_symbol="BAD_USDT",
+            base_symbol="BAD",
+            quote_symbol="",
+            raw={"symbol": "bad_usdt"},
+        )
+        return replace(snapshot, markets=(snapshot.markets[0], malformed))
+
+
 def test_collection_bundle_round_trip_applies_market_and_financing_snapshots(tmp_path):
     connectors = [BundleMarketConnector(), BundleFinancingConnector()]
     bundle = asyncio.run(
@@ -109,6 +122,24 @@ def test_collection_bundle_round_trip_applies_market_and_financing_snapshots(tmp
     assert store.list_markets({})[0]["trading_schedule"]["market_group"] == "TEST_SESSION"
     assert store.list_financing({})["financing"][0]["raw_asset_symbol"] == "BTC"
     assert store.list_collection_runs()["runs"][0]["scope"] == "TEST"
+
+
+def test_collection_bundle_preserves_symbol_issues_and_applies_valid_rows(tmp_path):
+    connector = PartialBundleConnector()
+    bundle = asyncio.run(
+        export_collection_bundle(venue="TEST", timeout_seconds=1, connectors=[connector])
+    )
+
+    store = SQLiteStore(tmp_path / "mdv.sqlite3")
+    result = apply_collection_bundle(store, bundle, connectors=[connector])[0]
+
+    assert bundle_succeeded(bundle) is False
+    assert bundle["entries"][0]["status"] == "SUCCEEDED"
+    assert bundle["entries"][0]["snapshot"]["issues"][0]["raw_symbol"] == "BAD_USDT"
+    assert result.ok is False
+    assert result.records == 1
+    assert store.market_count() == 1
+    assert store.list_collection_runs()["runs"][0]["status"] == "PARTIAL"
 
 
 def test_collection_bundle_checksum_rejects_tampering_before_database_write(tmp_path):

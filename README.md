@@ -4,7 +4,7 @@ Local-first, auditable canonical asset and exchange-market metadata from public 
 
 ## Status and scope
 
-The current release is `0.13.1`. The service discovers public spot, derivatives, margin, and loan catalogs; preserves raw observations and lifecycle history; builds evidence-backed canonical mappings; and serves authenticated HTML and JSON views. It is not a price feed, trading engine, or order router.
+The current release is `0.14.0`. The service discovers public spot, derivatives, margin, and loan catalogs; preserves raw observations and lifecycle history; builds evidence-backed canonical mappings; and serves authenticated HTML and JSON views. It is not a price feed, trading engine, or order router.
 
 ## Architecture
 
@@ -14,6 +14,8 @@ public venue catalogs -> transactional SQLite history -> versioned identity mapp
 ```
 
 - Venue failures are isolated and cannot invalidate a previous complete snapshot.
+  Invalid per-symbol records are quarantined with raw evidence while valid sibling
+  symbols are applied; partial snapshots never infer removals from unseen symbols.
 - One cross-process writer lease and snapshot-time ordering prevent overlapping or
   older collections from regressing the current catalog.
 - Raw symbols, lifecycle events, and mapping revisions remain auditable.
@@ -26,6 +28,10 @@ public venue catalogs -> transactional SQLite history -> versioned identity mapp
   session flips are not lifecycle changes; a terminal status or disappearance
   from a complete snapshot still is.
 - Consumers integrate only through the documented API or exports.
+- Derivative projections publish auditable contract-multiplier and native
+  open-interest units. Conflicting or incomplete venue specifications remain
+  null with an explicit reason; quantity/tick increments are never substituted
+  for contract value.
 - SQLite runs locally with WAL, migrations, and online backups.
 
 ## Quick start
