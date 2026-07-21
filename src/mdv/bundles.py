@@ -36,6 +36,16 @@ def _digest(payload: dict) -> str:
     return hashlib.sha256(canonical_json(content).encode()).hexdigest()
 
 
+def _snapshot_payload(snapshot: MarketSnapshot | FinancingSnapshot) -> dict:
+    payload = asdict(snapshot)
+    if isinstance(snapshot, MarketSnapshot):
+        for market in payload["markets"]:
+            encoded_raw = market.pop("raw_json", None)
+            if encoded_raw is not None:
+                market["raw"] = json.loads(encoded_raw)
+    return payload
+
+
 async def export_collection_bundle(
     *,
     venue: str,
@@ -103,7 +113,7 @@ async def export_collection_bundle(
                         if isinstance(value, FinancingSnapshot)
                         else "MARKET"
                     ),
-                    snapshot=json.loads(canonical_json(asdict(value))),
+                    snapshot=json.loads(canonical_json(_snapshot_payload(value))),
                 )
         entries.append(entry)
     bundle = {

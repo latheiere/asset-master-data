@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -77,6 +78,7 @@ class MarketRecord:
     contract_metadata_source: str | None = None
     contract_metadata_observed_at: str | None = None
     contract_metadata_normalization_version: str | None = None
+    raw_json: str | None = None
 
     @property
     def market_id(self) -> str:
@@ -146,6 +148,13 @@ def _validate_market_record(
         _required_text(getattr(market, field), source=source, field=field)
     if not isinstance(market.active, bool) or not isinstance(market.raw, dict):
         raise ValueError(f"{source} returned malformed active/raw fields")
+    if market.raw_json is not None:
+        try:
+            encoded_raw = json.loads(market.raw_json)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{source} returned malformed raw_json") from exc
+        if not isinstance(encoded_raw, dict):
+            raise ValueError(f"{source} returned malformed raw_json")
     if market.trading_schedule is not None:
         session_values = {"OPEN", "CLOSED", "UNKNOWN"}
         if market.trading_schedule.session_status not in session_values:

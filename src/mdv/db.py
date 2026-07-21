@@ -939,7 +939,7 @@ class SQLiteStore:
             )
 
             for market in snapshot.markets:
-                raw_json = canonical_json(market.raw)
+                raw_json = market.raw_json or canonical_json(market.raw)
                 content_hash = hashlib.sha256(raw_json.encode()).hexdigest()
                 previous = conn.execute(
                     """
@@ -964,6 +964,9 @@ class SQLiteStore:
                 venue_product = market.venue_product or market.product
                 venue_status = market.venue_status or market.status
                 normalized_status = normalize_status(market.status)
+                schedule_raw = market.raw
+                if market.raw_json is not None and not schedule_raw:
+                    schedule_raw = json.loads(raw_json)
                 schedule = market.trading_schedule or market_trading_schedule(
                     {
                         "source": market.source,
@@ -974,7 +977,7 @@ class SQLiteStore:
                         "venue_status": venue_status,
                         "observed_at": snapshot.observed_at,
                     },
-                    market.raw,
+                    schedule_raw,
                 )
                 availability = market_availability(
                     venue_status=venue_status,
@@ -1532,6 +1535,14 @@ class SQLiteStore:
         )
 
     def rebuild_symbol_matches(self) -> None:
+        self._rebuild_market_symbol_matches()
+        # Keep the full-market projection's temporary allocations out of the
+        # financing pass.  On production-sized databases those allocations
+        # otherwise remain live for the duration of this call and inflate the
+        # process RSS while the financing candidate index is constructed.
+        self.rebuild_financing_mappings()
+
+    def _rebuild_market_symbol_matches(self) -> None:
         self.migrate()
         now = utc_now()
         with self.transaction() as conn:
@@ -1552,36 +1563,51 @@ class SQLiteStore:
                 for action in manual_actions
                 if action["action_type"] == "RENAME_ASSET"
             }
-            markets = [dict(row) for row in conn.execute(
+            # Stream raw provider payloads and retain only the identity traits
+            # needed by this projection.  Materializing every raw_json string,
+            # its parsed object graph, and a second prepared market dictionary
+            # at once made this pass the collection process's RSS peak.
+            market_traits: dict[str, tuple[bool, tuple]] = {}
+            exact_symbols: set[str] = set()
+            active_symbols_by_venue: dict[str, set[str]] = defaultdict(set)
+            classified_symbols_by_venue: dict[str, set[str]] = defaultdict(set)
+            for row in conn.execute(
                 """
                 SELECT market_id, venue, market_type, base_symbol, active, raw_json
                 FROM markets
                 """
-            )]
-            metadata_by_market = {}
-            for market in markets:
+            ):
+                market = dict(row)
                 try:
-                    raw = json.loads(market["raw_json"] or "{}")
+                    raw = json.loads(market.pop("raw_json") or "{}")
                 except (TypeError, ValueError):
                     raw = {}
-                metadata_by_market[market["market_id"]] = market_metadata(market, raw)
-            exact_symbols = {
-                normalize_asset_symbol(market["base_symbol"], allow_unit_prefix=False).symbol
-                for market in markets
-            }
-            active_symbols_by_venue: dict[str, set[str]] = defaultdict(set)
-            classified_symbols_by_venue: dict[str, set[str]] = defaultdict(set)
-            for market in markets:
-                if market["market_type"] != "FUTURE" or not market["active"]:
-                    continue
+                metadata = market_metadata(market, raw)
                 symbol = normalize_asset_symbol(
                     market["base_symbol"], allow_unit_prefix=False
                 ).symbol
-                active_symbols_by_venue[market["venue"]].add(symbol)
-                if "EQUITY" in metadata_by_market[market["market_id"]].classifications:
-                    classified_symbols_by_venue[market["venue"]].add(symbol)
+                exact_symbols.add(symbol)
+                is_stock = "EQUITY" in metadata.classifications
+                if is_stock or metadata.alias_hints:
+                    market_traits[market["market_id"]] = (
+                        is_stock,
+                        metadata.alias_hints,
+                    )
+                if market["market_type"] == "FUTURE" and market["active"]:
+                    active_symbols_by_venue[market["venue"]].add(symbol)
+                    if is_stock:
+                        classified_symbols_by_venue[market["venue"]].add(symbol)
             prepared = []
-            for market in markets:
+            for row in conn.execute(
+                """
+                SELECT market_id, venue, market_type, base_symbol
+                FROM markets
+                """
+            ):
+                market = dict(row)
+                is_stock, alias_hints = market_traits.get(
+                    market["market_id"], (False, ())
+                )
                 raw_symbol = normalize_asset_symbol(market["base_symbol"], allow_unit_prefix=False)
                 unit_candidate = normalize_asset_symbol(market["base_symbol"], allow_unit_prefix=True)
                 canonical_symbol = raw_symbol.symbol
@@ -1617,7 +1643,7 @@ class SQLiteStore:
                         multiplier = unit_candidate.multiplier
                         mapping_evidence = unit_evidence
 
-                for hint in metadata_by_market[market["market_id"]].alias_hints:
+                for hint in alias_hints:
                     alias_candidate = evaluate_alias_hint(
                         hint=hint,
                         active_symbols_by_venue=active_symbols_by_venue,
@@ -1725,14 +1751,19 @@ class SQLiteStore:
                         "normalized_symbol": canonical_symbol,
                         "normalizer_method": identity_method,
                         "mapping_evidence_json": canonical_json(mapping_evidence),
-                        "is_stock": "EQUITY"
-                        in metadata_by_market[market["market_id"]].classifications,
+                        "is_stock": is_stock,
                         "evidence_score": max(
                             [candidate["score"] for candidate in candidates if candidate["decision"] == "ACCEPTED"],
                             default=0.0,
                         ),
                     }
                 )
+            del (
+                market_traits,
+                exact_symbols,
+                active_symbols_by_venue,
+                classified_symbols_by_venue,
+            )
             scores = score_symbol_groups(prepared)
             stock_by_symbol: dict[str, bool] = defaultdict(bool)
             for item in prepared:
@@ -1832,9 +1863,6 @@ class SQLiteStore:
                         row["mapping_evidence_json"],
                     ),
                 )
-
-        self.rebuild_financing_mappings()
-
     def rebuild_asset_tags(self, *, run_id: str, observed_at: str) -> None:
         """Project provider metadata onto canonical assets and version changes."""
         self.migrate()

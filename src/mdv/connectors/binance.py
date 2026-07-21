@@ -1,11 +1,17 @@
 from __future__ import annotations
 
-import asyncio
+import json
 from datetime import datetime, timezone
 
 import httpx
 
-from mdv.connectors.base import fetch_json, market_availability, session_status, utc_now
+from mdv.connectors.base import (
+    fetch_json,
+    fetch_json_array,
+    market_availability,
+    session_status,
+    utc_now,
+)
 from mdv.models import MarketRecord, MarketSnapshot, TradingSchedule
 from mdv.normalization import contract_direction, normalize_contract_type, normalize_product, normalize_status
 
@@ -40,99 +46,149 @@ class BinanceConnector:
         self.metadata_url = metadata_url
 
     async def fetch(self, client: httpx.AsyncClient) -> MarketSnapshot:
-        if self.metadata_url:
-            payload, metadata_payload = await asyncio.gather(
-                fetch_json(client, self.url),
-                fetch_json(client, self.metadata_url),
-            )
-        else:
-            payload = await fetch_json(client, self.url)
-            metadata_payload = None
-        return self.parse(payload, metadata_payload=metadata_payload, observed_at=utc_now())
+        metadata_payload = (
+            await fetch_json(client, self.metadata_url)
+            if self.metadata_url
+            else None
+        )
+        metadata_by_symbol = self._metadata_by_symbol(metadata_payload)
+        observed_at = utc_now()
+        markets = await fetch_json_array(
+            client,
+            self.url,
+            array_name="symbols",
+            transform=lambda row: self._market_record(
+                row,
+                metadata=metadata_by_symbol.get(str(row.get("symbol") or "").upper()),
+                compact_raw=True,
+            ),
+        )
+        return self._snapshot(markets, observed_at=observed_at)
 
     def parse(self, payload: dict, *, observed_at: str, metadata_payload: dict | None = None) -> MarketSnapshot:
         symbols = payload.get("symbols")
         if not isinstance(symbols, list):
             raise ValueError(f"{self.source}: response has no symbols array")
-        metadata_by_symbol = {}
-        if metadata_payload is not None:
-            metadata_rows = metadata_payload.get("data")
-            if not isinstance(metadata_rows, list):
-                raise ValueError(f"{self.source}: metadata response has no data array")
-            metadata_by_symbol = {
-                str(row.get("s") or "").upper(): row
-                for row in metadata_rows
-                if isinstance(row, dict) and row.get("s")
-            }
-        markets = []
-        for row in symbols:
-            venue_status = str(row.get("status") or row.get("contractStatus") or "UNKNOWN").upper()
-            is_spot = self.market_type == "SPOT"
-            raw_contract_type = str(row.get("contractType") or "FUTURE").upper()
-            contract_type = "SPOT" if is_spot else normalize_contract_type(raw_contract_type)
-            settle_symbol = (
-                None
-                if is_spot
-                else str(row.get("marginAsset") or row.get("quoteAsset") or "").upper() or None
+        metadata_by_symbol = self._metadata_by_symbol(metadata_payload)
+        markets = [
+            self._market_record(
+                row,
+                metadata=metadata_by_symbol.get(str(row.get("symbol") or "").upper()),
+                compact_raw=False,
             )
-            metadata = metadata_by_symbol.get(str(row["symbol"]).upper())
-            raw = dict(row)
-            if metadata is not None:
-                raw["_metadata"] = {"BINANCE_PRODUCT": metadata}
-            schedule = binance_market_schedule(
-                {"market_type": self.market_type, "status": venue_status}, raw
+            for row in symbols
+        ]
+        return self._snapshot(markets, observed_at=observed_at)
+
+    def _metadata_by_symbol(self, payload: dict | None) -> dict[str, dict]:
+        if payload is None:
+            return {}
+        metadata_rows = payload.get("data")
+        if not isinstance(metadata_rows, list):
+            raise ValueError(f"{self.source}: metadata response has no data array")
+        return {
+            str(row.get("s") or "").upper(): row
+            for row in metadata_rows
+            if isinstance(row, dict) and row.get("s")
+        }
+
+    def _market_record(
+        self,
+        row: dict,
+        *,
+        metadata: dict | None,
+        compact_raw: bool,
+    ) -> MarketRecord:
+        venue_status = str(
+            row.get("status") or row.get("contractStatus") or "UNKNOWN"
+        ).upper()
+        is_spot = self.market_type == "SPOT"
+        raw_contract_type = str(row.get("contractType") or "FUTURE").upper()
+        contract_type = (
+            "SPOT" if is_spot else normalize_contract_type(raw_contract_type)
+        )
+        settle_symbol = (
+            None
+            if is_spot
+            else str(row.get("marginAsset") or row.get("quoteAsset") or "").upper()
+            or None
+        )
+        raw = dict(row)
+        if metadata is not None:
+            raw["_metadata"] = {"BINANCE_PRODUCT": metadata}
+        schedule = binance_market_schedule(
+            {"market_type": self.market_type, "status": venue_status}, raw
+        )
+        availability = market_availability(
+            venue_status=venue_status,
+            default_active=venue_status == "TRADING",
+            trading_schedule=schedule,
+        )
+        market_lot_size = next(
+            (
+                item
+                for item in (row.get("filters") or [])
+                if isinstance(item, dict)
+                and item.get("filterType") == "MARKET_LOT_SIZE"
+            ),
+            None,
+        )
+        raw_json = (
+            json.dumps(
+                raw,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
             )
-            availability = market_availability(
-                venue_status=venue_status,
-                default_active=venue_status == "TRADING",
-                trading_schedule=schedule,
-            )
-            market_lot_size = next(
-                (
-                    item
-                    for item in (row.get("filters") or [])
-                    if isinstance(item, dict) and item.get("filterType") == "MARKET_LOT_SIZE"
-                ),
-                None,
-            )
-            markets.append(
-                MarketRecord(
-                    source=self.source,
-                    venue=self.venue,
-                    market_type=self.market_type,
-                    product=normalize_product(self.market_type, contract_type),
-                    raw_symbol=str(row["symbol"]).upper(),
-                    base_symbol=str(row["baseAsset"]).upper(),
-                    quote_symbol=str(row["quoteAsset"]).upper(),
-                    settle_symbol=settle_symbol,
-                    contract_type=contract_type,
-                    status=availability.status,
-                    active=availability.active,
-                    contract_multiplier=str(row.get("contractSize")) if row.get("contractSize") is not None else None,
-                    raw=raw,
-                    max_market_order_size=(
-                        str(market_lot_size["maxQty"])
-                        if market_lot_size is not None and market_lot_size.get("maxQty") is not None
-                        else None
-                    ),
-                    expires_at=self._expires_at(row.get("deliveryDate"), contract_type),
-                    venue_product=self.product,
-                    venue_status=venue_status,
-                    contract_direction=contract_direction(
-                        market_type=self.market_type,
-                        base_symbol=str(row["baseAsset"]),
-                        quote_symbol=str(row["quoteAsset"]),
-                        settle_symbol=settle_symbol,
-                    ),
-                    expiry_cycle={
-                        "CURRENT_MONTH": "M",
-                        "NEXT_MONTH": "BM",
-                        "CURRENT_QUARTER": "Q",
-                        "NEXT_QUARTER": "BQ",
-                    }.get(raw_contract_type),
-                    trading_schedule=availability.trading_schedule,
-                )
-            )
+            if compact_raw
+            else None
+        )
+        return MarketRecord(
+            source=self.source,
+            venue=self.venue,
+            market_type=self.market_type,
+            product=normalize_product(self.market_type, contract_type),
+            raw_symbol=str(row["symbol"]).upper(),
+            base_symbol=str(row["baseAsset"]).upper(),
+            quote_symbol=str(row["quoteAsset"]).upper(),
+            settle_symbol=settle_symbol,
+            contract_type=contract_type,
+            status=availability.status,
+            active=availability.active,
+            contract_multiplier=(
+                str(row.get("contractSize"))
+                if row.get("contractSize") is not None
+                else None
+            ),
+            raw={} if compact_raw else raw,
+            raw_json=raw_json,
+            max_market_order_size=(
+                str(market_lot_size["maxQty"])
+                if market_lot_size is not None
+                and market_lot_size.get("maxQty") is not None
+                else None
+            ),
+            expires_at=self._expires_at(row.get("deliveryDate"), contract_type),
+            venue_product=self.product,
+            venue_status=venue_status,
+            contract_direction=contract_direction(
+                market_type=self.market_type,
+                base_symbol=str(row["baseAsset"]),
+                quote_symbol=str(row["quoteAsset"]),
+                settle_symbol=settle_symbol,
+            ),
+            expiry_cycle={
+                "CURRENT_MONTH": "M",
+                "NEXT_MONTH": "BM",
+                "CURRENT_QUARTER": "Q",
+                "NEXT_QUARTER": "BQ",
+            }.get(raw_contract_type),
+            trading_schedule=availability.trading_schedule,
+        )
+
+    def _snapshot(
+        self, markets: list[MarketRecord], *, observed_at: str
+    ) -> MarketSnapshot:
         snapshot = MarketSnapshot(
             source=self.source,
             venue=self.venue,
