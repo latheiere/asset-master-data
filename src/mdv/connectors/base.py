@@ -1,15 +1,24 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import random
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol, TypeVar
 
 import httpx
 
 from mdv.models import FinancingSnapshot, MarketSnapshot, TradingSchedule
 from mdv.normalization import normalize_status
+
+
+T = TypeVar("T")
+
+
+class _StreamingJSONError(ValueError):
+    pass
 
 
 def utc_now() -> str:
@@ -94,6 +103,88 @@ async def fetch_json(client: httpx.AsyncClient, url: str, *, attempts: int = 3) 
             if attempt + 1 < attempts:
                 await asyncio.sleep(_retry_delay(exc, attempt))
     raise RuntimeError(f"GET {url} failed after {attempts} attempts: {last_error}")
+
+
+async def fetch_json_array(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    array_name: str,
+    transform: Callable[[dict[str, Any]], T],
+    attempts: int = 3,
+) -> list[T]:
+    """Stream and transform a top-level JSON array without loading its document."""
+    last_error: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            result = []
+            async with client.stream("GET", url) as response:
+                response.raise_for_status()
+                async for item in _iter_json_array(response, array_name=array_name):
+                    if not isinstance(item, dict):
+                        raise _StreamingJSONError(
+                            f"GET {url} returned a non-object array item"
+                        )
+                    result.append(transform(item))
+            return result
+        except (httpx.HTTPError, _StreamingJSONError) as exc:
+            last_error = exc
+            if isinstance(exc, httpx.HTTPStatusError) and not _transient_status(
+                exc.response.status_code
+            ):
+                raise
+            if attempt + 1 < attempts:
+                await asyncio.sleep(_retry_delay(exc, attempt))
+    raise RuntimeError(f"GET {url} failed after {attempts} attempts: {last_error}")
+
+
+async def _iter_json_array(
+    response: httpx.Response,
+    *,
+    array_name: str,
+):
+    decoder = json.JSONDecoder()
+    marker = re.compile(rf'"{re.escape(array_name)}"\s*:\s*\[')
+    buffer = ""
+    started = False
+    finished = False
+    async for chunk in response.aiter_text():
+        buffer += chunk
+        if not started:
+            match = marker.search(buffer)
+            if match is None:
+                if len(buffer) > 1_048_576:
+                    raise _StreamingJSONError(
+                        f"response prefix exceeded limit before {array_name!r} array"
+                    )
+                continue
+            buffer = buffer[match.end() :]
+            started = True
+        while True:
+            buffer = buffer.lstrip()
+            if buffer.startswith("]"):
+                finished = True
+                return
+            if buffer.startswith(","):
+                buffer = buffer[1:].lstrip()
+            if not buffer:
+                break
+            try:
+                item, end = decoder.raw_decode(buffer)
+            except json.JSONDecodeError:
+                if len(buffer) > 4_194_304:
+                    raise _StreamingJSONError(
+                        f"{array_name!r} array item exceeded streaming limit"
+                    )
+                break
+            yield item
+            buffer = buffer[end:]
+    if not started:
+        raise _StreamingJSONError(f"response has no {array_name!r} array")
+    if not finished:
+        raise _StreamingJSONError(
+            f"response ended before {array_name!r} array completed"
+        )
 
 
 async def post_json(

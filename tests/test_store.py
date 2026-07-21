@@ -94,6 +94,61 @@ def test_store_applies_snapshot_matches_asset_and_filters(tmp_path):
     assert rows[0]["active"] == 1
 
 
+def test_symbol_projection_does_not_retain_raw_market_payloads(
+    tmp_path, monkeypatch
+):
+    store = SQLiteStore(tmp_path / "mdv.sqlite3")
+    apply_market(
+        store,
+        market(
+            source="BINANCE_LARGE",
+            venue="BINANCE",
+            market_type="SPOT",
+            raw_symbol="LARGEUSDT",
+            base_symbol="LARGE",
+            raw={"symbol": "LARGEUSDT", "payload": "x" * 1_000_000},
+        ),
+    )
+    from mdv.matching import score_symbol_groups as original_score_symbol_groups
+
+    prepared_keys = []
+
+    def capture_prepared_rows(rows):
+        prepared_keys.extend(set(row) for row in rows)
+        return original_score_symbol_groups(rows)
+
+    monkeypatch.setattr("mdv.db.score_symbol_groups", capture_prepared_rows)
+
+    store.rebuild_symbol_matches()
+
+    assert prepared_keys
+    assert all("raw_json" not in keys for keys in prepared_keys)
+
+
+def test_store_persists_preencoded_raw_market_payload(tmp_path):
+    store = SQLiteStore(tmp_path / "mdv.sqlite3")
+    encoded = '{"baseAsset":"WIF","status":"TRADING","symbol":"WIFUSDT"}'
+    row = replace(
+        market(
+            source="BINANCE_SPOT",
+            venue="BINANCE",
+            market_type="SPOT",
+            raw_symbol="WIFUSDT",
+            base_symbol="WIF",
+        ),
+        raw={},
+        raw_json=encoded,
+    )
+
+    apply_market(store, row)
+
+    with store.readonly() as conn:
+        persisted = conn.execute(
+            "SELECT raw_json FROM markets WHERE market_id = ?", (row.market_id,)
+        ).fetchone()[0]
+    assert persisted == encoded
+
+
 def test_market_and_asset_projections_share_contract_metadata_semantics(tmp_path):
     store = SQLiteStore(tmp_path / "contract-metadata.sqlite3")
     row = MarketRecord(

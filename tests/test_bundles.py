@@ -94,6 +94,16 @@ class InvalidBundleConnector(BundleMarketConnector):
         return replace(snapshot, observed_at="not-a-timestamp")
 
 
+class EncodedRawBundleConnector(BundleMarketConnector):
+    async def fetch(self, client):
+        snapshot = await super().fetch(client)
+        encoded = canonical_json(snapshot.markets[0].raw)
+        return replace(
+            snapshot,
+            markets=(replace(snapshot.markets[0], raw={}, raw_json=encoded),),
+        )
+
+
 class PartialBundleConnector(BundleMarketConnector):
     async def fetch(self, client):
         snapshot = await super().fetch(client)
@@ -122,6 +132,23 @@ def test_collection_bundle_round_trip_applies_market_and_financing_snapshots(tmp
     assert store.list_markets({})[0]["trading_schedule"]["market_group"] == "TEST_SESSION"
     assert store.list_financing({})["financing"][0]["raw_asset_symbol"] == "BTC"
     assert store.list_collection_runs()["runs"][0]["scope"] == "TEST"
+
+
+def test_collection_bundle_expands_compact_raw_payload_without_format_change(tmp_path):
+    connector = EncodedRawBundleConnector()
+    bundle = asyncio.run(
+        export_collection_bundle(venue="TEST", timeout_seconds=1, connectors=[connector])
+    )
+    bundled_market = bundle["entries"][0]["snapshot"]["markets"][0]
+
+    assert bundled_market["raw"] == {"symbol": "btc_usdt"}
+    assert "raw_json" not in bundled_market
+
+    store = SQLiteStore(tmp_path / "mdv.sqlite3")
+    apply_collection_bundle(store, bundle, connectors=[connector])
+    with store.readonly() as conn:
+        persisted = conn.execute("SELECT raw_json FROM markets").fetchone()[0]
+    assert persisted == '{"symbol":"btc_usdt"}'
 
 
 def test_collection_bundle_preserves_symbol_issues_and_applies_valid_rows(tmp_path):

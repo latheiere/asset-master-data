@@ -119,6 +119,53 @@ def test_binance_spot_parser_preserves_product_metadata_tags():
     assert metadata["tags"] == ["Monitoring", "Seed", "Solana", "Meme"]
 
 
+def test_binance_live_fetch_streams_symbols_into_compact_auditable_records():
+    connector = BinanceConnector(
+        source="BINANCE_SPOT",
+        market_type="SPOT",
+        product="SPOT",
+        url="https://example.test/exchange-info",
+        metadata_url="https://example.test/products",
+    )
+
+    def handler(request):
+        if request.url.path == "/products":
+            return httpx.Response(
+                200,
+                request=request,
+                json={"data": [{"s": "WIFUSDT", "tags": ["Monitoring"]}]},
+            )
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "timezone": "UTC",
+                "symbols": [
+                    {
+                        "symbol": "WIFUSDT",
+                        "baseAsset": "WIF",
+                        "quoteAsset": "USDT",
+                        "status": "TRADING",
+                    }
+                ],
+            },
+        )
+
+    async def run():
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as client:
+            return await connector.fetch(client)
+
+    snapshot = asyncio.run(run())
+    market = snapshot.markets[0]
+    raw = json.loads(market.raw_json)
+
+    assert market.raw == {}
+    assert raw["symbol"] == "WIFUSDT"
+    assert raw["_metadata"]["BINANCE_PRODUCT"]["tags"] == ["Monitoring"]
+
+
 def test_binance_coinm_parser_uses_contract_status():
     connector = BinanceConnector(
         source="BINANCE_COINM_FUTURE",

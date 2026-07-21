@@ -1,4 +1,6 @@
 import asyncio
+import gc
+import weakref
 from dataclasses import replace
 
 import httpx
@@ -6,7 +8,7 @@ import pytest
 
 from mdv.cli import build_parser
 from mdv.collection import CollectionService
-from mdv.connectors.base import fetch_json
+from mdv.connectors.base import fetch_json, fetch_json_array
 from mdv.db import SQLiteStore
 from mdv.models import FinancingRecord, FinancingSnapshot, MarketRecord, MarketSnapshot
 
@@ -97,6 +99,17 @@ class PartialFakeConnector(FakeConnector):
             raw={"symbol": f"{self.venue}BADUSDT"},
         )
         return replace(valid, markets=(valid.markets[0], malformed))
+
+
+class SnapshotLifetimeConnector(FakeConnector):
+    def __init__(self, *, source: str, venue: str, state: dict):
+        super().__init__(source=source, venue=venue)
+        self.state = state
+
+    async def fetch(self, client):
+        snapshot = await super().fetch(client)
+        self.state["snapshot"] = weakref.ref(snapshot)
+        return snapshot
 
 
 def test_collection_service_saves_parent_run_and_supports_venue_scope(tmp_path):
@@ -273,6 +286,34 @@ def test_collection_bounds_fetches_and_rebuilds_projections_once(tmp_path, monke
     assert store.market_count() == 5
 
 
+def test_collection_releases_completed_snapshots_before_projection_rebuild(
+    tmp_path, monkeypatch
+):
+    state = {}
+    store = SQLiteStore(tmp_path / "mdv.sqlite3")
+    original_rebuild = store.rebuild_collection_projections
+
+    def rebuild(**kwargs):
+        gc.collect()
+        assert state["snapshot"]() is None
+        return original_rebuild(**kwargs)
+
+    monkeypatch.setattr(store, "rebuild_collection_projections", rebuild)
+
+    result = asyncio.run(
+        CollectionService(
+            store,
+            connectors=[
+                SnapshotLifetimeConnector(
+                    source="BINANCE_SPOT", venue="BINANCE", state=state
+                )
+            ],
+        ).collect_all()
+    )
+
+    assert result[0].ok is True
+
+
 def test_snapshot_validation_rejects_cross_universe_and_naive_timestamps():
     connector = FakeConnector(source="BINANCE_SPOT", venue="BINANCE")
     valid = asyncio.run(connector.fetch(None))
@@ -328,3 +369,84 @@ def test_connector_retry_is_bounded_and_skips_permanent_http_errors(monkeypatch)
 
     asyncio.run(run())
     assert calls == {"permanent": 1, "transient": 2}
+
+
+def test_streaming_json_array_handles_chunk_boundaries_and_retries(monkeypatch):
+    calls = 0
+
+    class Chunks(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for chunk in (b'{"serverTime":1,"sym', b'bols":[{"s":"A"},', b'{"s":"B"}]}'):
+                yield chunk
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(503, request=request)
+        return httpx.Response(200, request=request, stream=Chunks())
+
+    async def no_sleep(_delay):
+        return None
+
+    monkeypatch.setattr("mdv.connectors.base.asyncio.sleep", no_sleep)
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await fetch_json_array(
+                client,
+                "https://example.test/exchangeInfo",
+                array_name="symbols",
+                transform=lambda item: item["s"],
+                attempts=2,
+            )
+
+    assert asyncio.run(run()) == ["A", "B"]
+    assert calls == 2
+
+
+def test_streaming_json_array_rejects_incomplete_payload():
+    async def run():
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(
+                200, request=request, content=b'{"symbols":[{"s":"A"}'
+            )
+        )
+        async with httpx.AsyncClient(transport=transport) as client:
+            await fetch_json_array(
+                client,
+                "https://example.test/exchangeInfo",
+                array_name="symbols",
+                transform=lambda item: item,
+                attempts=1,
+            )
+
+    with pytest.raises(RuntimeError, match="array completed"):
+        asyncio.run(run())
+
+
+def test_streaming_json_array_does_not_retry_transform_validation_errors():
+    calls = 0
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, request=request, json={"symbols": [{"s": "A"}]})
+
+    def reject(_item):
+        raise ValueError("invalid symbol")
+
+    async def run():
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as client:
+            await fetch_json_array(
+                client,
+                "https://example.test/exchangeInfo",
+                array_name="symbols",
+                transform=reject,
+            )
+
+    with pytest.raises(ValueError, match="invalid symbol"):
+        asyncio.run(run())
+    assert calls == 1

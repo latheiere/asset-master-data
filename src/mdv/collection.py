@@ -233,6 +233,13 @@ class CollectionService:
                             collection_run_id,
                             symbol_error,
                         )
+                # asyncio.Task retains its return value.  Without clearing the
+                # final completed batch (and the loop locals), the last one or
+                # two full venue snapshots stay live during the all-market
+                # projection rebuild, exactly where collection RSS peaks.
+                completed.clear()
+                task = None
+                value = None
         except Exception as exc:
             for index, connector in enumerate(connectors):
                 if results[index] is not None:
