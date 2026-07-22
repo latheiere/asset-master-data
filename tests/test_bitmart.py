@@ -88,8 +88,8 @@ def test_bitmart_registry_exposes_sources_and_trade_links():
         if connector.venue == "BITMART"
     } == {"BITMART_SPOT", "BITMART_FUTURE"}
     assert market_trade_url(
-        {"venue": "BITMART", "market_type": "SPOT", "raw_symbol": "BTC_USDT"}
-    ) == "https://www.bitmart.com/en-US/spot/BTC_USDT"
+        {"venue": "BITMART", "market_type": "SPOT", "raw_symbol": "NFP_USDT"}
+    ) == "https://www.bitmart.com/en-US/trade/NFP_USDT?type=spot"
     assert market_trade_url(
         {"venue": "BITMART", "market_type": "FUTURE", "raw_symbol": "BTCUSDT"}
     ) == "https://www.bitmart.com/en-US/futures/BTCUSDT"

@@ -91,7 +91,7 @@ def _bitmart_trade_url(market: dict) -> str | None:
     if market.get("market_type") == "FUTURE":
         return f"https://www.bitmart.com/en-US/futures/{raw}" if raw else None
     if market.get("market_type") == "SPOT":
-        return f"https://www.bitmart.com/en-US/spot/{raw}" if raw else None
+        return f"https://www.bitmart.com/en-US/trade/{raw}?type=spot" if raw else None
     return None
 
 
