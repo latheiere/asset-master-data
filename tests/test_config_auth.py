@@ -23,6 +23,20 @@ def test_settings_load_every_runtime_value_from_yaml(tmp_path):
                     "stale_after_seconds": 120,
                     "readiness_max_age_seconds": 240,
                     "schedule": "Mon *-*-* 01:02:03 UTC",
+                    "source_lifecycles": {
+                        "TEST_FUTURE": [
+                            {
+                                "effective_at": "2026-01-02T03:04:05Z",
+                                "collect": True,
+                                "status": "CLOSE_ONLY",
+                            },
+                            {
+                                "effective_at": "2026-02-03T04:05:06Z",
+                                "collect": False,
+                                "status": "CLOSED",
+                            },
+                        ]
+                    },
                 },
                 "audit": {
                     "unchanged_observation_retention_days": 14,
@@ -57,6 +71,13 @@ def test_settings_load_every_runtime_value_from_yaml(tmp_path):
     assert settings.changed_payload_retention_days == 5
     assert settings.max_retained_observations_per_table == 1234
     assert settings.collection_schedule == "Mon *-*-* 01:02:03 UTC"
+    assert len(settings.source_lifecycles) == 1
+    assert settings.source_lifecycles[0].source == "TEST_FUTURE"
+    assert [phase.status for phase in settings.source_lifecycles[0].phases] == [
+        "CLOSE_ONLY",
+        "CLOSED",
+    ]
+    assert settings.source_lifecycles[0].phases[1].collect is False
     assert str(settings.entitlements_path) == "/tmp/entitlements.yaml"
     assert settings.session_cookie_name == "test_session"
     assert settings.session_ttl_seconds == 99
@@ -108,6 +129,57 @@ def test_settings_load_every_runtime_value_from_yaml(tmp_path):
 def test_settings_reject_nonfinite_or_host_unsafe_limits(tmp_path, payload, message):
     config = tmp_path / "config.yaml"
     config.write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        Settings.from_yaml(config)
+
+
+@pytest.mark.parametrize(
+    ("source_lifecycles", "message"),
+    [
+        ([], "collection.source_lifecycles must be a mapping"),
+        (
+            {"TEST_SPOT": [{"effective_at": "2026-01-02T03:04:05", "collect": True}]},
+            "effective_at must include a timezone",
+        ),
+        (
+            {
+                "TEST_SPOT": [
+                    {
+                        "effective_at": "2026-01-02T03:04:05Z",
+                        "collect": False,
+                        "status": "CLOSE_ONLY",
+                    }
+                ]
+            },
+            "status must be terminal when collect is false",
+        ),
+        (
+            {
+                "TEST_SPOT": [
+                    {
+                        "effective_at": "2026-02-03T04:05:06Z",
+                        "collect": True,
+                    },
+                    {
+                        "effective_at": "2026-01-02T03:04:05Z",
+                        "collect": False,
+                        "status": "CLOSED",
+                    },
+                ]
+            },
+            "phases must have increasing effective_at values",
+        ),
+    ],
+)
+def test_settings_reject_unsafe_source_lifecycle_rules(
+    tmp_path, source_lifecycles, message
+):
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        yaml.safe_dump({"collection": {"source_lifecycles": source_lifecycles}}),
+        encoding="utf-8",
+    )
 
     with pytest.raises(ValueError, match=message):
         Settings.from_yaml(config)

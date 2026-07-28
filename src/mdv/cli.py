@@ -124,6 +124,7 @@ def main(argv: list[str] | None = None) -> int:
                     venue=args.venue,
                     timeout_seconds=settings.http_timeout_seconds,
                     max_concurrent_fetches=settings.max_concurrent_fetches,
+                    source_lifecycles=settings.source_lifecycles,
                 )
             )
         except ValueError as exc:
@@ -232,6 +233,7 @@ def main(argv: list[str] | None = None) -> int:
                     max_retained_observations_per_table=(
                         settings.max_retained_observations_per_table
                     ),
+                    source_lifecycles=settings.source_lifecycles,
                 ).collect(
                     venue=args.venue,
                     exclude_venues=args.exclude_venue,
@@ -357,6 +359,7 @@ def _write_default_config(path: Path, *, force: bool) -> None:
             "stale_after_seconds": 7200,
             "readiness_max_age_seconds": 129600,
             "schedule": "*-*-* 00:40:00 UTC",
+            "source_lifecycles": {},
         },
         "audit": {
             "unchanged_observation_retention_days": 30,

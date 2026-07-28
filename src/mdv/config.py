@@ -3,10 +3,14 @@ from __future__ import annotations
 import math
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from mdv.lifecycle import SourceLifecycle, SourceLifecyclePhase
+from mdv.normalization import STATUS_VALUES, normalize_status
 
 
 def _xdg_path(environment_name: str, fallback: str) -> Path:
@@ -45,6 +49,7 @@ class Settings:
     auth_max_concurrent_hashes: int = 2
     auth_failed_attempt_limit: int = 10
     auth_failed_attempt_window_seconds: int = 60
+    source_lifecycles: tuple[SourceLifecycle, ...] = ()
 
     @classmethod
     def from_yaml(cls, path: str | Path = DEFAULT_CONFIG_PATH) -> "Settings":
@@ -91,6 +96,9 @@ class Settings:
             collection_readiness_max_age_seconds=_nonnegative_int(
                 collection.get("readiness_max_age_seconds", 0),
                 "collection.readiness_max_age_seconds",
+            ),
+            source_lifecycles=_source_lifecycles(
+                collection.get("source_lifecycles", {})
             ),
             unchanged_observation_retention_days=_nonnegative_int(
                 audit.get("unchanged_observation_retention_days", 30),
@@ -164,6 +172,68 @@ def _mapping(payload: dict[str, Any], key: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"{key} must be a mapping")
     return value
+
+
+def _source_lifecycles(value: Any) -> tuple[SourceLifecycle, ...]:
+    name = "collection.source_lifecycles"
+    if not isinstance(value, dict):
+        raise ValueError(f"{name} must be a mapping")
+    lifecycles = []
+    for raw_source, raw_phases in value.items():
+        source = str(raw_source or "").strip().upper()
+        source_name = f"{name}.{source or '<empty>'}"
+        if not source:
+            raise ValueError(f"{name} source names must not be empty")
+        if not isinstance(raw_phases, list) or not raw_phases:
+            raise ValueError(f"{source_name} must be a non-empty list")
+        phases = []
+        previous_at = None
+        for index, raw_phase in enumerate(raw_phases):
+            phase_name = f"{source_name}[{index}]"
+            if not isinstance(raw_phase, dict):
+                raise ValueError(f"{phase_name} must be a mapping")
+            if "effective_at" not in raw_phase:
+                raise ValueError(f"{phase_name}.effective_at is required")
+            effective_at = _timezone_datetime(
+                raw_phase["effective_at"],
+                f"{phase_name}.effective_at",
+            )
+            if previous_at is not None and effective_at <= previous_at:
+                raise ValueError(
+                    f"{source_name} phases must have increasing effective_at values"
+                )
+            if "collect" not in raw_phase:
+                raise ValueError(f"{phase_name}.collect is required")
+            collect = _boolean(raw_phase["collect"], f"{phase_name}.collect")
+            raw_status = raw_phase.get("status")
+            status = None
+            if raw_status not in (None, ""):
+                status = normalize_status(raw_status)
+                if status == "UNKNOWN" and str(raw_status).strip().upper() != "UNKNOWN":
+                    raise ValueError(
+                        f"{phase_name}.status must be one of: {', '.join(STATUS_VALUES)}"
+                    )
+            if not collect and status not in {"CLOSED", "MISSING"}:
+                raise ValueError(
+                    f"{phase_name}.status must be terminal when collect is false"
+                )
+            phases.append(SourceLifecyclePhase(effective_at, collect, status))
+            previous_at = effective_at
+        lifecycles.append(SourceLifecycle(source, tuple(phases)))
+    return tuple(lifecycles)
+
+
+def _timezone_datetime(value: Any, name: str) -> datetime:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(f"{name} must be an ISO-8601 timestamp") from exc
+    if parsed.tzinfo is None:
+        raise ValueError(f"{name} must include a timezone")
+    return parsed.astimezone(timezone.utc)
 
 
 def _positive_int(value: Any, name: str) -> int:

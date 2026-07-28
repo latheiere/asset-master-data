@@ -16,6 +16,7 @@ def test_init_config_entitlement_and_doctor_work_outside_checkout(tmp_path, caps
     assert main(["--config", str(config_path), "init-config"]) == 0
     initialized = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert initialized["collection"]["max_concurrent_fetches"] == 2
+    assert initialized["collection"]["source_lifecycles"] == {}
     assert initialized["audit"]["unchanged_observation_retention_days"] == 30
     assert initialized["audit"]["changed_payload_retention_days"] == 7
     assert initialized["audit"]["max_retained_observations_per_table"] == 100000

@@ -4,7 +4,7 @@ Local-first, auditable canonical asset and exchange-market metadata from public 
 
 ## Status and scope
 
-The current release is `0.14.4`. The service discovers public spot, derivatives, margin, and loan catalogs; preserves raw observations and lifecycle history; builds evidence-backed canonical mappings; and serves authenticated HTML and JSON views. It is not a price feed, trading engine, or order router.
+The current release is `0.14.5`. The service discovers public spot, derivatives, margin, and loan catalogs; preserves raw observations and lifecycle history; builds evidence-backed canonical mappings; and serves authenticated HTML and JSON views. It is not a price feed, trading engine, or order router.
 
 ## Architecture
 
@@ -31,10 +31,12 @@ public venue catalogs -> transactional SQLite history -> versioned identity mapp
   cohort remains unchanged while ordinary omitted markets are evaluated as
   removals; a later partial cohort snapshot evaluates its unseen siblings
   normally.
-- Announced source lifecycles can normalize restricted markets as close-only
+- Configured source lifecycles can normalize restricted markets as close-only
   while a catalog remains published, then retire active records at a terminal
-  cutoff without querying endpoints that no longer represent markets. Prior
-  source payloads, last-seen timestamps, and lifecycle events remain auditable.
+  cutoff without querying endpoints that no longer represent markets. A
+  source without an active configured phase retains its provider-published
+  status. Prior source payloads, last-seen timestamps, and lifecycle events
+  remain auditable.
 - Consumers integrate only through the documented API or exports.
 - Derivative projections publish auditable contract-multiplier and native
   open-interest units. Conflicting or incomplete venue specifications remain
@@ -115,6 +117,11 @@ configuration as non-restorable evidence, and records its release/revision in
 the manifest. Collection is quiesced before migration and remains off through
 readiness; the timer's prior enabled and active state is restored after either
 a successful cutover or rollback, preserving an operator pause.
+Time-ordered source availability phases are configured under
+`collection.source_lifecycles`. A collecting phase may override normalized
+market status while the source remains queryable. A non-collecting phase must
+use a terminal `CLOSED` or `MISSING` status; at and after its timezone-aware
+cutoff, collection retires retained records without contacting that source.
 The first immutable deploy builds the pre-pull revision as its real rollback
 target. After success
 it retains at most current + rollback + one extra release and the newest

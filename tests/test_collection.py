@@ -10,6 +10,7 @@ from mdv.cli import build_parser
 from mdv.collection import CollectionService
 from mdv.connectors.base import fetch_json, fetch_json_array
 from mdv.db import SQLiteStore
+from mdv.lifecycle import SourceLifecycle
 from mdv.models import FinancingRecord, FinancingSnapshot, MarketRecord, MarketSnapshot
 
 
@@ -207,6 +208,15 @@ def test_collection_rejects_unsafe_operational_limits(
                 connectors=[FakeConnector(source="BINANCE_SPOT", venue="BINANCE")],
                 **{setting: value},
             )
+
+
+def test_collection_rejects_lifecycle_for_unregistered_source(tmp_path):
+    with pytest.raises(ValueError, match="source lifecycle uses unknown source"):
+        CollectionService(
+            SQLiteStore(tmp_path / "mdv.sqlite3"),
+            connectors=[FakeConnector(source="TEST_SPOT", venue="TEST")],
+            source_lifecycles=(SourceLifecycle("UNKNOWN_SPOT", ()),),
+        )
 
 
 def test_collect_cli_accepts_venue_scope():
