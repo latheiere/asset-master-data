@@ -273,6 +273,119 @@ def test_partial_snapshot_updates_valid_symbol_and_preserves_failed_sibling(tmp_
     assert json.loads(issue["raw_json"])["symbol"] == "ETHUSDT"
 
 
+def test_whitebit_wholesale_tradfi_omission_preserves_only_that_cohort(tmp_path):
+    store = SQLiteStore(tmp_path / "whitebit-tradfi.sqlite3")
+
+    def whitebit_market(symbol: str, *, tradfi: bool) -> MarketRecord:
+        raw = {
+            "name": f"{symbol}_PERP",
+            "stock": symbol,
+            "money": "USDT",
+            "tradesEnabled": True,
+            "type": "tradfiFutures" if tradfi else "futures",
+            "isTradFiFutures": tradfi,
+            "delistedAt": None,
+        }
+        if tradfi:
+            raw["_metadata"] = {
+                "ASSET_TAGS": [{
+                    "provider": "WHITEBIT",
+                    "tag": "TRADFI",
+                    "raw_tag": "isTradFiFutures",
+                    "source": "WHITEBIT_MARKET",
+                }]
+            }
+        return market(
+            source="WHITEBIT_FUTURE",
+            venue="WHITEBIT",
+            market_type="FUTURE",
+            raw_symbol=f"{symbol}_PERP",
+            base_symbol=symbol,
+            raw=raw,
+        )
+
+    btc = whitebit_market("BTC", tradfi=False)
+    eth = whitebit_market("ETH", tradfi=False)
+    amzn = whitebit_market("AMZN", tradfi=True)
+    aapl = whitebit_market("AAPL", tradfi=True)
+    store.apply_snapshot(MarketSnapshot(
+        source="WHITEBIT_FUTURE", venue="WHITEBIT", market_type="FUTURE",
+        product="PERP", observed_at="2026-07-21T13:05:33+00:00",
+        markets=(btc, eth, amzn, aapl),
+    ))
+
+    omitted_run = store.apply_snapshot(MarketSnapshot(
+        source="WHITEBIT_FUTURE", venue="WHITEBIT", market_type="FUTURE",
+        product="PERP", observed_at="2026-07-21T20:32:38+00:00",
+        markets=(btc,),
+    ))
+
+    with store.readonly() as conn:
+        saved = {
+            row["raw_symbol"]: dict(row)
+            for row in conn.execute(
+                "SELECT raw_symbol, status, active, last_seen_at FROM markets"
+            )
+        }
+        run = dict(conn.execute(
+            "SELECT status, complete, record_count, error FROM ingest_runs WHERE run_id = ?",
+            (omitted_run,),
+        ).fetchone())
+        lifecycle = [tuple(row) for row in conn.execute(
+            """
+            SELECT m.raw_symbol, e.event_type
+            FROM market_lifecycle_events e
+            JOIN markets m ON m.market_id = e.market_id
+            WHERE e.run_id = ? ORDER BY m.raw_symbol
+            """,
+            (omitted_run,),
+        )]
+        tag_events = conn.execute(
+            "SELECT COUNT(*) FROM asset_tag_events WHERE run_id = ?",
+            (omitted_run,),
+        ).fetchone()[0]
+        active_tradfi_tags = conn.execute(
+            """
+            SELECT COUNT(*) FROM asset_tags
+            WHERE provider = 'WHITEBIT' AND tag = 'TRADFI' AND active = 1
+            """
+        ).fetchone()[0]
+
+    assert run == {
+        "status": "SUCCEEDED", "complete": 1, "record_count": 1, "error": None,
+    }
+    assert saved["ETH_PERP"]["status"] == "MISSING"
+    assert saved["ETH_PERP"]["active"] == 0
+    assert lifecycle == [("ETH_PERP", "MISSING")]
+    for symbol in ("AMZN_PERP", "AAPL_PERP"):
+        assert saved[symbol]["status"] == "TRADING"
+        assert saved[symbol]["active"] == 1
+        assert saved[symbol]["last_seen_at"] == "2026-07-21T13:05:33+00:00"
+    assert tag_events == 0
+    assert active_tradfi_tags == 2
+
+    partial_cohort_run = store.apply_snapshot(MarketSnapshot(
+        source="WHITEBIT_FUTURE", venue="WHITEBIT", market_type="FUTURE",
+        product="PERP", observed_at="2026-07-22T07:12:05+00:00",
+        markets=(btc, amzn),
+    ))
+    with store.readonly() as conn:
+        aapl_state = conn.execute(
+            "SELECT status, active FROM markets WHERE raw_symbol = 'AAPL_PERP'"
+        ).fetchone()
+        aapl_events = [tuple(row) for row in conn.execute(
+            """
+            SELECT m.raw_symbol, e.event_type
+            FROM market_lifecycle_events e
+            JOIN markets m ON m.market_id = e.market_id
+            WHERE e.run_id = ?
+            """,
+            (partial_cohort_run,),
+        )]
+    assert tuple(aapl_state) == ("MISSING", 0)
+    assert aapl_events == [("AAPL_PERP", "MISSING")]
+
+
 def test_filter_metadata_describes_filters_and_current_values(tmp_path):
     store = SQLiteStore(tmp_path / "mdv.sqlite3")
     store.apply_snapshot(snapshot())

@@ -14,7 +14,12 @@ from importlib import resources
 from pathlib import Path
 from typing import Iterator
 
-from mdv.connectors import market_metadata, market_trade_url, market_trading_schedule
+from mdv.connectors import (
+    market_absence_scope,
+    market_metadata,
+    market_trade_url,
+    market_trading_schedule,
+)
 from mdv.connectors.base import market_availability
 
 from mdv.matching import (
@@ -763,6 +768,15 @@ class SQLiteStore:
                 f"{source} snapshot {observed_at} is older than applied snapshot {latest['started_at']}"
             )
 
+    def source_has_unretired_markets(self, source: str, *, status: str) -> bool:
+        """Return whether a source has records not yet transitioned to a terminal status."""
+        self.migrate()
+        with self.readonly() as conn:
+            return conn.execute(
+                "SELECT 1 FROM markets WHERE source = ? AND status != ? LIMIT 1",
+                (source, normalize_status(status)),
+            ).fetchone() is not None
+
     def start_collection_run(self, *, scope: str, venues: list[str]) -> str:
         self.migrate()
         collection_run_id = str(uuid.uuid4())
@@ -900,6 +914,86 @@ class SQLiteStore:
             self.finish_collection_run(collection_run_id)
         return run_id
 
+    def apply_source_lifecycle(
+        self,
+        *,
+        source: str,
+        venue: str,
+        market_type: str,
+        product: str,
+        status: str,
+        observed_at: str,
+        collection_run_id: str | None = None,
+        rebuild: bool = True,
+    ) -> tuple[str, int] | None:
+        """Retire retained source records after an announced terminal lifecycle transition."""
+        normalized_status = normalize_status(status)
+        if normalized_status not in {"CLOSED", "MISSING"}:
+            raise ValueError("source lifecycle retirement requires a terminal status")
+        self.migrate()
+        with self.readonly() as conn:
+            lifecycle_rows = conn.execute(
+                "SELECT market_id, status, active FROM markets WHERE source = ? AND status != ?",
+                (source, normalized_status),
+            ).fetchall()
+        if not lifecycle_rows:
+            return None
+        self._assert_snapshot_order(source=source, observed_at=observed_at)
+        own_collection_run = collection_run_id is None
+        if collection_run_id is None:
+            collection_run_id = self.start_collection_run(scope=venue, venues=[venue])
+        run_id = str(uuid.uuid4())
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO ingest_runs(
+                    run_id, source, venue, market_type, product, started_at,
+                    completed_at, status, complete, record_count, collection_run_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'SUCCEEDED', 1, ?, ?)
+                """,
+                (
+                    run_id,
+                    source,
+                    venue,
+                    market_type,
+                    product,
+                    observed_at,
+                    utc_now(),
+                    len(lifecycle_rows),
+                    collection_run_id,
+                ),
+            )
+            for row in lifecycle_rows:
+                conn.execute(
+                    "UPDATE markets SET active = 0, status = ? WHERE market_id = ?",
+                    (normalized_status, row["market_id"]),
+                )
+                if bool(row["active"]):
+                    self._insert_event(
+                        conn,
+                        run_id,
+                        row["market_id"],
+                        "DEACTIVATED",
+                        "True",
+                        "False",
+                        observed_at,
+                    )
+                if row["status"] != normalized_status:
+                    self._insert_event(
+                        conn,
+                        run_id,
+                        row["market_id"],
+                        "STATUS_CHANGED",
+                        row["status"],
+                        normalized_status,
+                        observed_at,
+                    )
+        if rebuild:
+            self.rebuild_collection_projections()
+        if own_collection_run:
+            self.finish_collection_run(collection_run_id)
+        return run_id, len(lifecycle_rows)
+
     def apply_snapshot(
         self,
         snapshot: MarketSnapshot,
@@ -915,6 +1009,22 @@ class SQLiteStore:
             collection_run_id = self.start_collection_run(scope=snapshot.venue, venues=[snapshot.venue])
         run_id = str(uuid.uuid4())
         seen_ids = {market.market_id for market in snapshot.markets}
+        seen_absence_scopes = set()
+        for market in snapshot.markets:
+            raw = market.raw
+            if market.raw_json is not None and not raw:
+                raw = json.loads(market.raw_json)
+            scope = market_absence_scope(
+                {
+                    "source": market.source,
+                    "venue": market.venue,
+                    "market_type": market.market_type,
+                    "product": market.product,
+                },
+                raw,
+            )
+            if scope is not None:
+                seen_absence_scopes.add(scope)
         with self.transaction() as conn:
             conn.execute(
                 "INSERT OR IGNORE INTO venues(venue, display_name) VALUES (?, ?)",
@@ -1147,11 +1257,35 @@ class SQLiteStore:
 
             if not snapshot.issues:
                 existing = conn.execute(
-                    "SELECT market_id, status FROM markets WHERE source = ? AND active = 1",
+                    """
+                    SELECT market_id, source, venue, market_type, product,
+                           status, raw_json
+                    FROM markets WHERE source = ? AND active = 1
+                    """,
                     (snapshot.source,),
                 ).fetchall()
+                existing_scopes = {}
+                for row in existing:
+                    try:
+                        raw = json.loads(row["raw_json"] or "{}")
+                    except (TypeError, ValueError):
+                        raw = {}
+                    scope = market_absence_scope(dict(row), raw)
+                    if scope is not None:
+                        existing_scopes[scope] = existing_scopes.get(scope, 0) + 1
                 for row in existing:
                     if row["market_id"] in seen_ids:
+                        continue
+                    try:
+                        raw = json.loads(row["raw_json"] or "{}")
+                    except (TypeError, ValueError):
+                        raw = {}
+                    scope = market_absence_scope(dict(row), raw)
+                    if (
+                        scope is not None
+                        and existing_scopes[scope] > 1
+                        and scope not in seen_absence_scopes
+                    ):
                         continue
                     conn.execute(
                         "UPDATE markets SET active = 0, status = 'MISSING' WHERE market_id = ?",

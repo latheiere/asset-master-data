@@ -10,7 +10,7 @@ import httpx
 
 from mdv import __version__, build_revision
 from mdv.collection import CollectionResult
-from mdv.connectors import default_collection_connectors
+from mdv.connectors import default_collection_connectors, lifecycle_snapshot, source_is_collectable
 from mdv.connectors.base import Connector, utc_now
 from mdv.db import SQLiteStore
 from mdv.models import (
@@ -57,7 +57,11 @@ async def export_collection_bundle(
         raise ValueError("max_concurrent_fetches must be positive")
     requested = str(venue or "").strip().upper()
     available = connectors or default_collection_connectors()
-    selected = [connector for connector in available if connector.venue == requested]
+    selected = [
+        connector
+        for connector in available
+        if connector.venue == requested and source_is_collectable(connector.source)
+    ]
     if not selected:
         choices = ", ".join(sorted({connector.venue for connector in available}))
         raise ValueError(f"VENUE must be one of: {choices}")
@@ -100,6 +104,8 @@ async def export_collection_bundle(
             )
         else:
             try:
+                if not isinstance(value, FinancingSnapshot):
+                    value = lifecycle_snapshot(value)
                 value.validate()
             except Exception as exc:
                 entry.update(

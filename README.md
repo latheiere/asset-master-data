@@ -4,7 +4,7 @@ Local-first, auditable canonical asset and exchange-market metadata from public 
 
 ## Status and scope
 
-The current release is `0.14.3`. The service discovers public spot, derivatives, margin, and loan catalogs; preserves raw observations and lifecycle history; builds evidence-backed canonical mappings; and serves authenticated HTML and JSON views. It is not a price feed, trading engine, or order router.
+The current release is `0.14.4`. The service discovers public spot, derivatives, margin, and loan catalogs; preserves raw observations and lifecycle history; builds evidence-backed canonical mappings; and serves authenticated HTML and JSON views. It is not a price feed, trading engine, or order router.
 
 ## Architecture
 
@@ -26,7 +26,15 @@ public venue catalogs -> transactional SQLite history -> versioned identity mapp
   closed. Market details expose normalized trading-session metadata and the next
   provider-published transition when available. Routine `TRADING`/`PAUSED`
   session flips are not lifecycle changes; a terminal status or disappearance
-  from a complete snapshot still is.
+  from a complete snapshot still is. When a provider-defined session-market
+  cohort is wholly absent from an otherwise complete snapshot, the retained
+  cohort remains unchanged while ordinary omitted markets are evaluated as
+  removals; a later partial cohort snapshot evaluates its unseen siblings
+  normally.
+- Announced source lifecycles can normalize restricted markets as close-only
+  while a catalog remains published, then retire active records at a terminal
+  cutoff without querying endpoints that no longer represent markets. Prior
+  source payloads, last-seen timestamps, and lifecycle events remain auditable.
 - Consumers integrate only through the documented API or exports.
 - Derivative projections publish auditable contract-multiplier and native
   open-interest units. Conflicting or incomplete venue specifications remain

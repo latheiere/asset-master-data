@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 
 import httpx
 
 from mdv import __version__
-from mdv.connectors import default_collection_connectors
+from mdv.connectors import collection_lifecycle, default_collection_connectors, lifecycle_snapshot
 from mdv.connectors.base import Connector
 from mdv.db import SQLiteStore
 from mdv.models import FinancingSnapshot
@@ -34,6 +35,7 @@ class CollectionService:
         unchanged_observation_retention_days: int = 30,
         changed_payload_retention_days: int = 7,
         max_retained_observations_per_table: int = 100_000,
+        lifecycle_at: datetime | None = None,
     ):
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
@@ -51,6 +53,8 @@ class CollectionService:
             raise ValueError(
                 "max_retained_observations_per_table must not be negative"
             )
+        if lifecycle_at is not None and lifecycle_at.tzinfo is None:
+            raise ValueError("lifecycle_at must include a timezone")
         self.store = store
         self.timeout_seconds = timeout_seconds
         self.connectors = connectors or default_collection_connectors()
@@ -61,6 +65,7 @@ class CollectionService:
         self.max_retained_observations_per_table = (
             max_retained_observations_per_table
         )
+        self.lifecycle_at = lifecycle_at
 
     async def collect_all(self) -> list[CollectionResult]:
         return await self.collect()
@@ -110,13 +115,33 @@ class CollectionService:
             raise ValueError(f"VENUE must be one of: {', '.join(available_venues)}")
         if requested_venue and excluded:
             raise ValueError("--venue and --exclude-venue cannot be used together")
-        connectors = [
+        selected = [
             connector for connector in self.connectors
             if (not requested_venue or connector.venue == requested_venue)
             and connector.venue not in excluded
         ]
-        if not connectors:
+        if not selected:
             raise ValueError("collection selection contains no venues")
+        lifecycle_at = self.lifecycle_at or datetime.now(timezone.utc)
+        retiring = [
+            (index, connector, lifecycle)
+            for index, connector in enumerate(selected)
+            if (lifecycle := collection_lifecycle(connector.source, at=lifecycle_at)) is not None
+            and not lifecycle[1].collect
+        ]
+        connectors = [
+            (index, connector)
+            for index, connector in enumerate(selected)
+            if collection_lifecycle(connector.source, at=lifecycle_at) is None
+            or collection_lifecycle(connector.source, at=lifecycle_at)[1].collect
+        ]
+        if not connectors and not any(
+            self.store.source_has_unretired_markets(
+                connector.source, status=lifecycle[1].status or "CLOSED"
+            )
+            for _, connector, lifecycle in retiring
+        ):
+            raise ValueError("collection selection has no collectable market sources")
         scope = requested_venue or (
             "ALL_EXCEPT_" + "_".join(sorted(excluded)) if excluded else "ALL"
         )
@@ -133,7 +158,7 @@ class CollectionService:
                 f"Mozilla/5.0 (compatible; AssetMasterData/{__version__})"
             )
         }
-        results: list[CollectionResult | None] = [None] * len(connectors)
+        results: list[CollectionResult | None] = [None] * len(selected)
         tag_run_id: str | None = None
         tag_observed_at: str | None = None
         tag_result_index: int | None = None
@@ -147,6 +172,26 @@ class CollectionService:
 
         semaphore = asyncio.Semaphore(self.max_concurrent_fetches)
         try:
+            for index, connector, lifecycle in retiring:
+                retired = self.store.apply_source_lifecycle(
+                    source=connector.source,
+                    venue=connector.venue,
+                    market_type=connector.market_type,
+                    product=connector.product,
+                    status=lifecycle[1].status or "CLOSED",
+                    observed_at=lifecycle_at.isoformat(),
+                    collection_run_id=collection_run_id,
+                    rebuild=False,
+                )
+                if retired is not None:
+                    run_id, record_count = retired
+                    results[index] = CollectionResult(
+                        connector.source,
+                        True,
+                        record_count,
+                        run_id,
+                        collection_run_id,
+                    )
             limits = httpx.Limits(
                 max_connections=max(4, self.max_concurrent_fetches * 3),
                 max_keepalive_connections=max(2, self.max_concurrent_fetches * 2),
@@ -159,7 +204,7 @@ class CollectionService:
             ) as client:
                 pending = {
                     asyncio.create_task(fetch(index, connector, client))
-                    for index, connector in enumerate(connectors)
+                    for index, connector in connectors
                 }
                 while pending:
                     completed, pending = await asyncio.wait(
@@ -181,6 +226,8 @@ class CollectionService:
                                 connector.source, False, 0, run_id, collection_run_id, error
                             )
                             continue
+                        if not isinstance(value, FinancingSnapshot):
+                            value = lifecycle_snapshot(value)
                         try:
                             run_id = (
                                 self.store.apply_financing_snapshot(
@@ -241,7 +288,7 @@ class CollectionService:
                 task = None
                 value = None
         except Exception as exc:
-            for index, connector in enumerate(connectors):
+            for index, connector in connectors:
                 if results[index] is not None:
                     continue
                 error = f"{type(exc).__name__}: {exc}"
