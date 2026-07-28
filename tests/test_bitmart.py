@@ -1,12 +1,21 @@
 import asyncio
 import json
+from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from mdv.collection import CollectionService
 from mdv.connectors.bitmart import BitmartFutureConnector, BitmartSpotConnector
-from mdv.connectors.registry import default_collection_connectors, market_trade_url, supported_venues
+from mdv.connectors.registry import (
+    collection_lifecycle,
+    default_collection_connectors,
+    lifecycle_snapshot,
+    market_trade_url,
+    source_is_collectable,
+    supported_venues,
+)
 from mdv.db import SQLiteStore
 
 
@@ -40,6 +49,28 @@ def test_bitmart_recorded_spot_and_futures_fixtures_normalize_dimensions():
     assert futures.markets[2].trading_schedule.market_group == "US_MARKET"
 
 
+def test_bitmart_announced_lifecycle_restricts_then_stops_collection(tmp_path):
+    payload = fixture("bitmart_success.json")
+    futures = BitmartFutureConnector().parse(payload["future"], observed_at=OBSERVED_AT)
+    restricted_at = datetime(2026, 7, 29, tzinfo=timezone.utc)
+    closed_at = datetime(2026, 8, 26, 1, tzinfo=timezone.utc)
+
+    lifecycle = collection_lifecycle("BITMART_FUTURE", at=restricted_at)
+    assert lifecycle is not None
+    assert lifecycle[1].collect is True
+    assert lifecycle[1].status == "CLOSE_ONLY"
+    restricted = lifecycle_snapshot(
+        replace(futures, observed_at=restricted_at.isoformat())
+    )
+    assert {market.status for market in restricted.markets} == {"CLOSE_ONLY"}
+    assert not any(market.active for market in restricted.markets)
+    store = SQLiteStore(tmp_path / "restricted.sqlite3")
+    store.apply_snapshot(restricted)
+    assert not any(row["active"] for row in store.list_markets({}))
+    assert source_is_collectable("BITMART_SPOT", at=closed_at) is False
+    assert source_is_collectable("BITMART_FUTURE", at=closed_at) is False
+
+
 @pytest.mark.parametrize(
     ("connector", "payload"),
     [
@@ -65,6 +96,16 @@ class FailingConnector:
         raise ValueError("partial upstream response")
 
 
+class UnreachableConnector:
+    source = "BITMART_SPOT"
+    venue = "BITMART"
+    market_type = "SPOT"
+    product = "SPOT"
+
+    async def fetch(self, _client):
+        raise AssertionError("a closed source must not be queried")
+
+
 def test_bitmart_failed_snapshot_preserves_last_active_market(tmp_path):
     snapshot = BitmartSpotConnector().parse(
         fixture("bitmart_success.json")["spot"], observed_at=OBSERVED_AT
@@ -78,6 +119,42 @@ def test_bitmart_failed_snapshot_preserves_last_active_market(tmp_path):
 
     assert result[0].ok is False
     assert bool(store.list_markets({"VENUE": ["BITMART"]})[0]["active"]) is True
+
+
+def test_bitmart_terminal_lifecycle_retires_history_without_fetching(tmp_path):
+    snapshot = BitmartSpotConnector().parse(
+        fixture("bitmart_success.json")["spot"], observed_at=OBSERVED_AT
+    )
+    store = SQLiteStore(tmp_path / "bitmart.sqlite3")
+    store.apply_snapshot(snapshot)
+
+    result = asyncio.run(
+        CollectionService(
+            store,
+            connectors=[UnreachableConnector()],
+            lifecycle_at=datetime(2026, 8, 26, 1, tzinfo=timezone.utc),
+        ).collect_all()
+    )
+
+    assert result[0].ok is True
+    assert result[0].records == len(snapshot.markets)
+    with store.readonly() as conn:
+        saved = conn.execute(
+            "SELECT active, status, last_seen_at FROM markets ORDER BY raw_symbol"
+        ).fetchall()
+        events = [tuple(row) for row in conn.execute(
+            "SELECT event_type, new_value FROM market_lifecycle_events "
+            "WHERE run_id = ? ORDER BY event_type",
+            (result[0].run_id,),
+        )]
+    assert all(row["active"] == 0 for row in saved)
+    assert all(row["status"] == "CLOSED" for row in saved)
+    assert {row["last_seen_at"] for row in saved} == {OBSERVED_AT}
+    assert events == [
+        ("DEACTIVATED", "False"),
+        ("STATUS_CHANGED", "CLOSED"),
+        ("STATUS_CHANGED", "CLOSED"),
+    ]
 
 
 def test_bitmart_registry_exposes_sources_and_trade_links():

@@ -56,7 +56,14 @@ def market_availability(
     status = normalize_status(normalized_status or venue_status)
     if trading_schedule is not None and trading_schedule.session_status == "CLOSED" and status == "CLOSED":
         status = "PAUSED"
-    terminal = {"DELISTING", "DELIVERING", "SETTLING", "CLOSED", "MISSING"}
+    terminal = {
+        "CLOSE_ONLY",
+        "DELISTING",
+        "DELIVERING",
+        "SETTLING",
+        "CLOSED",
+        "MISSING",
+    }
     active = False if status in terminal else (default_active or trading_schedule is not None)
     return MarketAvailability(status, active, trading_schedule)
 

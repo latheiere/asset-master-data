@@ -9,8 +9,14 @@ from mdv.contract_metadata import NORMALIZATION_VERSION, with_contract_evidence
 from mdv.models import MarketRecord, MarketSnapshot, TradingSchedule
 
 
-def whitebit_market_schedule(market: dict, raw: dict) -> TradingSchedule | None:
+def whitebit_market_absence_scope(market: dict, raw: dict) -> str | None:
     if market.get("market_type") != "FUTURE" or raw.get("isTradFiFutures") is not True:
+        return None
+    return "TRADFI"
+
+
+def whitebit_market_schedule(market: dict, raw: dict) -> TradingSchedule | None:
+    if whitebit_market_absence_scope(market, raw) is None:
         return None
     current = (
         "UNKNOWN" if raw.get("delistedAt") not in (None, "")
