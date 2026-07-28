@@ -10,9 +10,14 @@ import httpx
 
 from mdv import __version__, build_revision
 from mdv.collection import CollectionResult
-from mdv.connectors import default_collection_connectors, lifecycle_snapshot, source_is_collectable
+from mdv.connectors import (
+    default_collection_connectors,
+    lifecycle_snapshot,
+    source_is_collectable,
+)
 from mdv.connectors.base import Connector, utc_now
 from mdv.db import SQLiteStore
+from mdv.lifecycle import SourceLifecycle
 from mdv.models import (
     FinancingRecord,
     FinancingSnapshot,
@@ -52,6 +57,7 @@ async def export_collection_bundle(
     timeout_seconds: float,
     connectors: list[Connector] | None = None,
     max_concurrent_fetches: int = 2,
+    source_lifecycles: tuple[SourceLifecycle, ...] = (),
 ) -> dict:
     if max_concurrent_fetches <= 0:
         raise ValueError("max_concurrent_fetches must be positive")
@@ -60,7 +66,11 @@ async def export_collection_bundle(
     selected = [
         connector
         for connector in available
-        if connector.venue == requested and source_is_collectable(connector.source)
+        if connector.venue == requested
+        and source_is_collectable(
+            connector.source,
+            lifecycles=source_lifecycles,
+        )
     ]
     if not selected:
         choices = ", ".join(sorted({connector.venue for connector in available}))
@@ -105,7 +115,10 @@ async def export_collection_bundle(
         else:
             try:
                 if not isinstance(value, FinancingSnapshot):
-                    value = lifecycle_snapshot(value)
+                    value = lifecycle_snapshot(
+                        value,
+                        lifecycles=source_lifecycles,
+                    )
                 value.validate()
             except Exception as exc:
                 entry.update(

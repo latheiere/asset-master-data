@@ -7,20 +7,30 @@ from pathlib import Path
 import pytest
 
 from mdv.collection import CollectionService
+from mdv.config import Settings
 from mdv.connectors.bitmart import BitmartFutureConnector, BitmartSpotConnector
 from mdv.connectors.registry import (
-    collection_lifecycle,
     default_collection_connectors,
-    lifecycle_snapshot,
     market_trade_url,
-    source_is_collectable,
     supported_venues,
 )
 from mdv.db import SQLiteStore
+from mdv.lifecycle import (
+    collection_lifecycle,
+    lifecycle_snapshot,
+    source_is_collectable,
+)
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
+ROOT = Path(__file__).resolve().parents[1]
 OBSERVED_AT = "2026-07-11T00:00:00+00:00"
+SOURCE_LIFECYCLES = Settings.from_yaml(ROOT / "config" / "config.yaml").source_lifecycles
+SPOT_LIFECYCLES = tuple(
+    lifecycle
+    for lifecycle in SOURCE_LIFECYCLES
+    if lifecycle.source == "BITMART_SPOT"
+)
 
 
 def fixture(name: str):
@@ -49,26 +59,43 @@ def test_bitmart_recorded_spot_and_futures_fixtures_normalize_dimensions():
     assert futures.markets[2].trading_schedule.market_group == "US_MARKET"
 
 
-def test_bitmart_announced_lifecycle_restricts_then_stops_collection(tmp_path):
+def test_configured_market_source_phases_preserve_unrestricted_status_then_stop(
+    tmp_path,
+):
     payload = fixture("bitmart_success.json")
+    spot = BitmartSpotConnector().parse(payload["spot"], observed_at=OBSERVED_AT)
     futures = BitmartFutureConnector().parse(payload["future"], observed_at=OBSERVED_AT)
     restricted_at = datetime(2026, 7, 29, tzinfo=timezone.utc)
     closed_at = datetime(2026, 8, 26, 1, tzinfo=timezone.utc)
 
-    lifecycle = collection_lifecycle("BITMART_FUTURE", at=restricted_at)
+    lifecycle = collection_lifecycle(
+        "BITMART_FUTURE",
+        lifecycles=SOURCE_LIFECYCLES,
+        at=restricted_at,
+    )
     assert lifecycle is not None
     assert lifecycle[1].collect is True
     assert lifecycle[1].status == "CLOSE_ONLY"
     restricted = lifecycle_snapshot(
-        replace(futures, observed_at=restricted_at.isoformat())
+        replace(futures, observed_at=restricted_at.isoformat()),
+        lifecycles=SOURCE_LIFECYCLES,
     )
     assert {market.status for market in restricted.markets} == {"CLOSE_ONLY"}
     assert not any(market.active for market in restricted.markets)
     store = SQLiteStore(tmp_path / "restricted.sqlite3")
     store.apply_snapshot(restricted)
     assert not any(row["active"] for row in store.list_markets({}))
-    assert source_is_collectable("BITMART_SPOT", at=closed_at) is False
-    assert source_is_collectable("BITMART_FUTURE", at=closed_at) is False
+    unrestricted_spot = lifecycle_snapshot(
+        replace(spot, observed_at=restricted_at.isoformat()),
+        lifecycles=SOURCE_LIFECYCLES,
+    )
+    assert [market.active for market in unrestricted_spot.markets] == [True, False]
+    assert source_is_collectable(
+        "BITMART_SPOT", lifecycles=SOURCE_LIFECYCLES, at=closed_at
+    ) is False
+    assert source_is_collectable(
+        "BITMART_FUTURE", lifecycles=SOURCE_LIFECYCLES, at=closed_at
+    ) is False
 
 
 @pytest.mark.parametrize(
@@ -121,7 +148,7 @@ def test_bitmart_failed_snapshot_preserves_last_active_market(tmp_path):
     assert bool(store.list_markets({"VENUE": ["BITMART"]})[0]["active"]) is True
 
 
-def test_bitmart_terminal_lifecycle_retires_history_without_fetching(tmp_path):
+def test_terminal_market_source_phase_retires_history_without_fetching(tmp_path):
     snapshot = BitmartSpotConnector().parse(
         fixture("bitmart_success.json")["spot"], observed_at=OBSERVED_AT
     )
@@ -133,6 +160,7 @@ def test_bitmart_terminal_lifecycle_retires_history_without_fetching(tmp_path):
             store,
             connectors=[UnreachableConnector()],
             lifecycle_at=datetime(2026, 8, 26, 1, tzinfo=timezone.utc),
+            source_lifecycles=SPOT_LIFECYCLES,
         ).collect_all()
     )
 

@@ -14,16 +14,18 @@ from mdv.connectors.mexc import mexc_connectors
 from mdv.connectors.okx import okx_connectors
 from mdv.connectors.whitebit import whitebit_connectors
 from mdv.connectors.xt import xt_connectors, xt_financing_connectors
-from mdv.connectors.registry import (
+from mdv.lifecycle import (
     collection_lifecycle,
+    lifecycle_snapshot,
+    source_is_collectable,
+)
+from mdv.connectors.registry import (
     default_collection_connectors,
     default_connectors,
-    lifecycle_snapshot,
     market_absence_scope,
     market_metadata,
     market_trading_schedule,
     market_trade_url,
-    source_is_collectable,
     supported_venues,
 )
 

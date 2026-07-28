@@ -2,6 +2,7 @@ import asyncio
 import copy
 import hashlib
 from dataclasses import replace
+from datetime import datetime, timezone
 
 import pytest
 
@@ -12,7 +13,14 @@ from mdv.bundles import (
     export_collection_bundle,
 )
 from mdv.db import SQLiteStore
-from mdv.models import FinancingRecord, FinancingSnapshot, MarketRecord, MarketSnapshot, TradingSchedule
+from mdv.lifecycle import SourceLifecycle, SourceLifecyclePhase
+from mdv.models import (
+    FinancingRecord,
+    FinancingSnapshot,
+    MarketRecord,
+    MarketSnapshot,
+    TradingSchedule,
+)
 
 
 class BundleMarketConnector:
@@ -236,3 +244,30 @@ def test_bundle_export_records_invalid_snapshot_as_failed_entry():
     assert bundle_succeeded(bundle) is False
     assert bundle["entries"][0]["status"] == "FAILED"
     assert "invalid observed_at" in bundle["entries"][0]["error"]
+
+
+def test_bundle_export_applies_configured_collecting_restriction():
+    connector = BundleMarketConnector()
+    lifecycle = SourceLifecycle(
+        source=connector.source,
+        phases=(
+            SourceLifecyclePhase(
+                effective_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+                collect=True,
+                status="CLOSE_ONLY",
+            ),
+        ),
+    )
+
+    bundle = asyncio.run(
+        export_collection_bundle(
+            venue=connector.venue,
+            timeout_seconds=1,
+            connectors=[connector],
+            source_lifecycles=(lifecycle,),
+        )
+    )
+
+    market = bundle["entries"][0]["snapshot"]["markets"][0]
+    assert market["status"] == "CLOSE_ONLY"
+    assert market["active"] is False

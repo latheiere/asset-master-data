@@ -7,9 +7,14 @@ from datetime import datetime, timezone
 import httpx
 
 from mdv import __version__
-from mdv.connectors import collection_lifecycle, default_collection_connectors, lifecycle_snapshot
+from mdv.connectors import (
+    collection_lifecycle,
+    default_collection_connectors,
+    lifecycle_snapshot,
+)
 from mdv.connectors.base import Connector
 from mdv.db import SQLiteStore
+from mdv.lifecycle import SourceLifecycle
 from mdv.models import FinancingSnapshot
 
 
@@ -36,6 +41,7 @@ class CollectionService:
         changed_payload_retention_days: int = 7,
         max_retained_observations_per_table: int = 100_000,
         lifecycle_at: datetime | None = None,
+        source_lifecycles: tuple[SourceLifecycle, ...] = (),
     ):
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
@@ -58,6 +64,14 @@ class CollectionService:
         self.store = store
         self.timeout_seconds = timeout_seconds
         self.connectors = connectors or default_collection_connectors()
+        unknown_lifecycle_sources = {
+            lifecycle.source for lifecycle in source_lifecycles
+        }.difference(connector.source for connector in self.connectors)
+        if unknown_lifecycle_sources:
+            raise ValueError(
+                "source lifecycle uses unknown source(s): "
+                + ", ".join(sorted(unknown_lifecycle_sources))
+            )
         self.max_concurrent_fetches = max_concurrent_fetches
         self.stale_after_seconds = stale_after_seconds
         self.unchanged_observation_retention_days = unchanged_observation_retention_days
@@ -66,6 +80,7 @@ class CollectionService:
             max_retained_observations_per_table
         )
         self.lifecycle_at = lifecycle_at
+        self.source_lifecycles = source_lifecycles
 
     async def collect_all(self) -> list[CollectionResult]:
         return await self.collect()
@@ -123,17 +138,27 @@ class CollectionService:
         if not selected:
             raise ValueError("collection selection contains no venues")
         lifecycle_at = self.lifecycle_at or datetime.now(timezone.utc)
+        selected_lifecycles = [
+            (
+                index,
+                connector,
+                collection_lifecycle(
+                    connector.source,
+                    lifecycles=self.source_lifecycles,
+                    at=lifecycle_at,
+                ),
+            )
+            for index, connector in enumerate(selected)
+        ]
         retiring = [
             (index, connector, lifecycle)
-            for index, connector in enumerate(selected)
-            if (lifecycle := collection_lifecycle(connector.source, at=lifecycle_at)) is not None
-            and not lifecycle[1].collect
+            for index, connector, lifecycle in selected_lifecycles
+            if lifecycle is not None and not lifecycle[1].collect
         ]
         connectors = [
             (index, connector)
-            for index, connector in enumerate(selected)
-            if collection_lifecycle(connector.source, at=lifecycle_at) is None
-            or collection_lifecycle(connector.source, at=lifecycle_at)[1].collect
+            for index, connector, lifecycle in selected_lifecycles
+            if lifecycle is None or lifecycle[1].collect
         ]
         if not connectors and not any(
             self.store.source_has_unretired_markets(
@@ -227,7 +252,10 @@ class CollectionService:
                             )
                             continue
                         if not isinstance(value, FinancingSnapshot):
-                            value = lifecycle_snapshot(value)
+                            value = lifecycle_snapshot(
+                                value,
+                                lifecycles=self.source_lifecycles,
+                            )
                         try:
                             run_id = (
                                 self.store.apply_financing_snapshot(

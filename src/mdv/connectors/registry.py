@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from dataclasses import dataclass
 from typing import Callable
 from urllib.parse import quote
 
@@ -34,44 +33,19 @@ from mdv.connectors.whitebit import (
     whitebit_market_schedule,
 )
 from mdv.connectors.xt import xt_connectors, xt_financing_connectors, xt_market_schedule
+from mdv.lifecycle import (
+    collection_lifecycle,
+    lifecycle_snapshot,
+    source_is_collectable,
+)
 from mdv.matching import AliasHint, normalize_asset_symbol
-from mdv.models import MarketSnapshot, TradingSchedule
+from mdv.models import TradingSchedule
 
 
 ConnectorFactory = Callable[[], list[Connector]]
 TradeUrlBuilder = Callable[[dict], str | None]
 MarketScheduleBuilder = Callable[[dict, dict], TradingSchedule | None]
 MarketAbsenceScopeBuilder = Callable[[dict, dict], str | None]
-
-
-@dataclass(frozen=True)
-class SourceLifecyclePhase:
-    """A scheduled availability transition for one collected market source."""
-
-    effective_at: datetime
-    collect: bool
-    status: str | None = None
-
-
-@dataclass(frozen=True)
-class SourceLifecycle:
-    """Provider-announced source lifecycle that remains auditable after collection ends."""
-
-    source: str
-    venue: str
-    market_type: str
-    product: str
-    phases: tuple[SourceLifecyclePhase, ...]
-
-    def phase_at(self, at: datetime) -> SourceLifecyclePhase | None:
-        normalized = at.astimezone(timezone.utc)
-        current = None
-        for phase in self.phases:
-            if normalized >= phase.effective_at:
-                current = phase
-            else:
-                break
-        return current
 
 
 @dataclass(frozen=True)
@@ -302,86 +276,6 @@ INTEGRATIONS = {
         ),
     )
 }
-
-
-SOURCE_LIFECYCLES = (
-    SourceLifecycle(
-        source="BITMART_SPOT",
-        venue="BITMART",
-        market_type="SPOT",
-        product="SPOT",
-        phases=(
-            SourceLifecyclePhase(
-                datetime(2026, 7, 26, 1, 30, tzinfo=timezone.utc),
-                collect=True,
-                status="CLOSE_ONLY",
-            ),
-            SourceLifecyclePhase(
-                datetime(2026, 8, 26, 1, 0, tzinfo=timezone.utc),
-                collect=False,
-                status="CLOSED",
-            ),
-        ),
-    ),
-    SourceLifecycle(
-        source="BITMART_FUTURE",
-        venue="BITMART",
-        market_type="FUTURE",
-        product="FUTURES",
-        phases=(
-            SourceLifecyclePhase(
-                datetime(2026, 7, 26, 1, 30, tzinfo=timezone.utc),
-                collect=True,
-                status="CLOSE_ONLY",
-            ),
-            SourceLifecyclePhase(
-                datetime(2026, 8, 26, 1, 0, tzinfo=timezone.utc),
-                collect=False,
-                status="CLOSED",
-            ),
-        ),
-    ),
-)
-
-_SOURCE_LIFECYCLES_BY_SOURCE = {
-    lifecycle.source: lifecycle for lifecycle in SOURCE_LIFECYCLES
-}
-
-
-def collection_lifecycle(
-    source: str, *, at: datetime | None = None
-) -> tuple[SourceLifecycle, SourceLifecyclePhase] | None:
-    """Return the active announced lifecycle phase for a source, if any."""
-    lifecycle = _SOURCE_LIFECYCLES_BY_SOURCE.get(str(source).upper())
-    if lifecycle is None:
-        return None
-    phase = lifecycle.phase_at(at or datetime.now(timezone.utc))
-    return (lifecycle, phase) if phase is not None else None
-
-
-def source_is_collectable(source: str, *, at: datetime | None = None) -> bool:
-    """Whether a source may be queried at the supplied UTC instant."""
-    active = collection_lifecycle(source, at=at)
-    return active is None or active[1].collect
-
-
-def lifecycle_snapshot(snapshot: MarketSnapshot) -> MarketSnapshot:
-    """Apply an announced non-terminal availability restriction to a snapshot."""
-    try:
-        observed_at = datetime.fromisoformat(snapshot.observed_at.replace("Z", "+00:00"))
-    except ValueError:
-        # Snapshot validation retains responsibility for reporting malformed provider times.
-        return snapshot
-    active = collection_lifecycle(snapshot.source, at=observed_at)
-    if active is None or active[1].status is None or not active[1].collect:
-        return snapshot
-    return replace(
-        snapshot,
-        markets=tuple(
-            replace(market, status=active[1].status, active=False)
-            for market in snapshot.markets
-        ),
-    )
 
 
 def default_connectors() -> list[Connector]:

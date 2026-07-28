@@ -13,6 +13,20 @@ collection:
   readiness_max_age_seconds: 129600
   # systemd OnCalendar syntax. The installer renders this into the timer unit.
   schedule: "*-*-* 00:40:00 UTC"
+  # Source-specific availability phases are ordered by effective UTC timestamp.
+  # A terminal phase retires retained records without querying the source.
+  source_lifecycles:
+    BITMART_SPOT:
+      - effective_at: "2026-08-26T01:00:00Z"
+        collect: false
+        status: CLOSED
+    BITMART_FUTURE:
+      - effective_at: "2026-07-26T01:30:00Z"
+        collect: true
+        status: CLOSE_ONLY
+      - effective_at: "2026-08-26T01:00:00Z"
+        collect: false
+        status: CLOSED
 
 audit:
   # Unchanged observations older than this are compacted after collection.
