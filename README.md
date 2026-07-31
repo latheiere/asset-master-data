@@ -97,10 +97,13 @@ make prod-status
 make deploy-prod
 ```
 
-`make backup` requires the configured database and configuration, uses SQLite's
-online backup API, rejects symlinked inputs, and self-verifies a mode-`0600`
-archive before atomic promotion. `make restore` verifies all
-hashes and SQLite integrity before atomically replacing the configured files;
+`make backup` requires the configured database and configuration, uses
+StateCrate's SQLite snapshot support, rejects symlinked inputs, signs the
+manifest, and self-verifies a mode-`0600` archive before atomic promotion. The
+first backup creates a key pair beside the archive; preserve the verification
+key separately because verification and restoration require it. Backups are
+signed, not encrypted. `make restore` verifies the signature, all hashes, and
+SQLite integrity before atomically replacing the configured files;
 the API, collector, and collection timer must all be stopped first. Archive
 member count, expanded size (1 GiB), and available extraction/staging space are
 bounded. Entitlements are intentionally excluded because the archive is
