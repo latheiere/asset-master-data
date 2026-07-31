@@ -71,7 +71,9 @@ class Settings:
         integration = _mapping(payload, "integration")
 
         settings = cls(
-            db_path=Path(str(database.get("path", ".data/mdv.sqlite3"))).expanduser(),
+            db_path=Path(
+                str(database.get("path", ".local/state/mdv.sqlite3"))
+            ).expanduser(),
             host=str(server.get("host", "127.0.0.1")),
             port=_bounded_positive_int(
                 server.get("port", 8090), "server.port", maximum=65_535

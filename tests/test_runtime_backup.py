@@ -1,99 +1,204 @@
-import importlib.util
 import json
+import os
 import sqlite3
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+import statecrate.api as statecrate_api
 from statecrate import SignatureError, SigningKey
+from mdv import runtime_backup as RUNTIME_BACKUP
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "runtime_backup.py"
-SPEC = importlib.util.spec_from_file_location("runtime_backup", SCRIPT)
-assert SPEC is not None and SPEC.loader is not None
-RUNTIME_BACKUP = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(RUNTIME_BACKUP)
+MODULE = Path(__file__).resolve().parents[1] / "src" / "mdv" / "runtime_backup.py"
 
 
-def test_runtime_backup_round_trip(tmp_path: Path) -> None:
-    database = tmp_path / "live.sqlite3"
-    with sqlite3.connect(database) as connection:
+def _database(path: Path, value: str) -> None:
+    with sqlite3.connect(path) as connection:
         connection.execute("CREATE TABLE sample (value TEXT NOT NULL)")
-        connection.execute("INSERT INTO sample VALUES ('durable')")
-    database.chmod(0o666)
-    state = tmp_path / "settings.json"
-    state.write_text('{"enabled": true}\n', encoding="utf-8")
-    archive = tmp_path / "backup.tar.gz"
+        connection.execute("INSERT INTO sample VALUES (?)", (value,))
+
+
+def _configuration(path: Path, port: int = 8090) -> None:
+    path.write_text(f"server:\n  port: {port}\n", encoding="utf-8")
+
+
+def _identity(configuration: Path) -> dict[str, str]:
+    return RUNTIME_BACKUP.runtime_identity(
+        release="v1.2.3-aaaaaaaaaaaa",
+        revision="a" * 40,
+        version="1.2.3",
+        configuration=configuration,
+    )
+
+
+def test_runtime_backup_replaces_the_complete_state_directory(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    database = state / "mdv.sqlite3"
+    _database(database, "archived")
+    configuration = tmp_path / "config.yaml"
+    _configuration(configuration)
+    archive = tmp_path / "backups" / "asset-master-data-runtime.tar.gz"
+    archive.parent.mkdir()
     key = SigningKey.generate()
+    identity = _identity(configuration)
 
     created = RUNTIME_BACKUP.create_archive(
         archive,
-        [database],
-        [state],
+        state,
+        database.name,
         signing_key=key,
+        identity=identity,
+    )
+    database.unlink()
+    _database(database, "candidate")
+    (state / "mdv.sqlite3-wal").write_text("stale", encoding="utf-8")
+    (state / "unrelated").write_text("remove", encoding="utf-8")
+
+    restored = RUNTIME_BACKUP.restore_archive(
+        archive,
+        state,
+        trusted_key=key.verification_key,
+        expected_identity=identity,
+        replace=True,
+    )
+
+    assert created["entries"] == 1
+    assert restored["entries_restored"] == 1
+    assert sorted(path.name for path in state.iterdir()) == ["mdv.sqlite3"]
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT value FROM sample").fetchone()[0] == "archived"
+    assert database.stat().st_mode & 0o777 == 0o600
+
+
+def test_statecrate_rolls_back_a_failed_directory_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_state = tmp_path / "source-state"
+    source_state.mkdir()
+    _database(source_state / "mdv.sqlite3", "archived")
+    configuration = tmp_path / "config.yaml"
+    _configuration(configuration)
+    archive = tmp_path / "backup.tar.gz"
+    key = SigningKey.generate()
+    identity = _identity(configuration)
+    RUNTIME_BACKUP.create_archive(
+        archive,
+        source_state,
+        "mdv.sqlite3",
+        signing_key=key,
+        identity=identity,
+    )
+    target = tmp_path / "state"
+    target.mkdir()
+    current = target / "current"
+    current.write_text("preserved", encoding="utf-8")
+    real_replace = os.replace
+
+    def fail_payload_install(source: os.PathLike[str], destination: os.PathLike[str]) -> None:
+        if Path(source).name == "payload" and Path(destination) == target:
+            raise OSError("simulated StateCrate promotion failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(statecrate_api.os, "replace", fail_payload_install)
+    with pytest.raises(OSError, match="simulated StateCrate promotion failure"):
+        RUNTIME_BACKUP.restore_archive(
+            archive,
+            target,
+            trusted_key=key.verification_key,
+            expected_identity=identity,
+            replace=True,
+        )
+
+    assert current.read_text(encoding="utf-8") == "preserved"
+
+
+def test_configuration_is_identity_metadata_not_archive_payload(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    _database(state / "mdv.sqlite3", "durable")
+    configuration = tmp_path / "config.yaml"
+    _configuration(configuration)
+    archive = tmp_path / "backup.tar.gz"
+    key = SigningKey.generate()
+    identity = _identity(configuration)
+
+    RUNTIME_BACKUP.create_archive(
+        archive,
+        state,
+        "mdv.sqlite3",
+        signing_key=key,
+        identity=identity,
     )
     verified = RUNTIME_BACKUP.verify_archive(
         archive, trusted_key=key.verification_key
     )
-    target_root = tmp_path / "restore-root"
-    restored = RUNTIME_BACKUP.restore_archive(
+    restored = tmp_path / "restored"
+    RUNTIME_BACKUP.restore_archive(
         archive,
-        target_root=target_root,
+        restored,
         trusted_key=key.verification_key,
+        expected_identity=identity,
     )
 
-    assert created["entries"]
-    assert verified["entries_checked"] == 2
-    assert restored["ok"] is True
-    restored_database = target_root / Path(*database.parts[1:])
-    with sqlite3.connect(restored_database) as connection:
-        assert connection.execute("SELECT value FROM sample").fetchone()[0] == "durable"
-    assert restored_database.stat().st_mode & 0o777 == 0o600
-    restored_state = target_root / Path(*state.parts[1:])
-    assert restored_state.read_text(encoding="utf-8") == '{"enabled": true}\n'
+    assert verified["identity"] == identity
+    assert verified["entries_checked"] == 1
+    assert sorted(path.name for path in restored.iterdir()) == ["mdv.sqlite3"]
+    assert not (restored / configuration.name).exists()
 
 
-def test_cli_creates_persistent_keys_and_uses_them_for_verification(
+def test_restore_rejects_a_different_release_before_replacing_state(
     tmp_path: Path,
 ) -> None:
-    state = tmp_path / "settings.json"
-    state.write_text("{}\n", encoding="utf-8")
+    source_state = tmp_path / "source-state"
+    source_state.mkdir()
+    _database(source_state / "mdv.sqlite3", "archived")
+    configuration = tmp_path / "config.yaml"
+    _configuration(configuration)
     archive = tmp_path / "backup.tar.gz"
-
-    subprocess.run(
-        [
-            sys.executable,
-            str(SCRIPT),
-            "create",
-            "--output",
-            str(archive),
-            "--path",
-            str(state),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
+    key = SigningKey.generate()
+    identity = _identity(configuration)
+    RUNTIME_BACKUP.create_archive(
+        archive,
+        source_state,
+        "mdv.sqlite3",
+        signing_key=key,
+        identity=identity,
     )
-    result = subprocess.run(
-        [sys.executable, str(SCRIPT), "verify", str(archive)],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    target = tmp_path / "state"
+    target.mkdir()
+    current = target / "current"
+    current.write_text("preserved", encoding="utf-8")
+    incompatible = dict(identity, revision="b" * 40)
 
-    assert json.loads(result.stdout)["ok"] is True
-    assert (tmp_path / "statecrate-signing-key.pem").stat().st_mode & 0o777 == 0o600
-    assert (tmp_path / "statecrate-verification-key.pem").is_file()
+    with pytest.raises(ValueError, match="selected immutable release"):
+        RUNTIME_BACKUP.restore_archive(
+            archive,
+            target,
+            trusted_key=key.verification_key,
+            expected_identity=incompatible,
+            replace=True,
+        )
+
+    assert current.read_text(encoding="utf-8") == "preserved"
 
 
 def test_runtime_backup_rejects_an_untrusted_signer(tmp_path: Path) -> None:
-    state = tmp_path / "settings.json"
-    state.write_text("{}\n", encoding="utf-8")
+    state = tmp_path / "state"
+    state.mkdir()
+    _database(state / "mdv.sqlite3", "durable")
+    configuration = tmp_path / "config.yaml"
+    _configuration(configuration)
     archive = tmp_path / "backup.tar.gz"
-    untrusted = SigningKey.generate()
     RUNTIME_BACKUP.create_archive(
-        archive, [], [state], signing_key=untrusted
+        archive,
+        state,
+        "mdv.sqlite3",
+        signing_key=SigningKey.generate(),
+        identity=_identity(configuration),
     )
 
     with pytest.raises(SignatureError):
@@ -102,224 +207,100 @@ def test_runtime_backup_rejects_an_untrusted_signer(tmp_path: Path) -> None:
         )
 
 
-def test_runtime_backup_rejects_output_overlap_and_nested_symlinks(
+def test_cli_uses_persistent_keys_and_stable_identity_arguments(
     tmp_path: Path,
 ) -> None:
-    source = tmp_path / "source"
-    source.mkdir()
-    (source / "settings.json").write_text("{}\n", encoding="utf-8")
-    external = tmp_path / "external"
-    external.mkdir()
-    (source / "linked").symlink_to(external, target_is_directory=True)
-    key = SigningKey.generate()
+    state = tmp_path / "state"
+    state.mkdir()
+    _database(state / "mdv.sqlite3", "durable")
+    configuration = tmp_path / "config.yaml"
+    _configuration(configuration)
+    archive = tmp_path / "backups" / "asset-master-data-runtime.tar.gz"
+    archive.parent.mkdir()
+    identity_arguments = [
+        "--release",
+        "v1.2.3-aaaaaaaaaaaa",
+        "--revision",
+        "a" * 40,
+        "--version",
+        "1.2.3",
+        "--configuration",
+        str(configuration),
+    ]
 
-    with pytest.raises(ValueError, match="contains a symlink"):
+    subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "create",
+            "--output",
+            str(archive),
+            "--state-dir",
+            str(state),
+            "--database-name",
+            "mdv.sqlite3",
+            *identity_arguments,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    verified = subprocess.run(
+        [sys.executable, str(SCRIPT), "verify", str(archive)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    restored = tmp_path / "restored"
+    subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "restore",
+            str(archive),
+            "--target",
+            str(restored),
+            *identity_arguments,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json.loads(verified.stdout)["identity"]["revision"] == "a" * 40
+    assert (archive.parent / "statecrate-signing-key.pem").stat().st_mode & 0o777 == 0o600
+    assert (archive.parent / "statecrate-verification-key.pem").is_file()
+    assert (restored / "mdv.sqlite3").is_file()
+
+
+def test_archive_must_remain_outside_the_replaceable_state_tree(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    _database(state / "mdv.sqlite3", "durable")
+    configuration = tmp_path / "config.yaml"
+    _configuration(configuration)
+
+    with pytest.raises(ValueError, match="outside the replaceable state"):
         RUNTIME_BACKUP.create_archive(
-            tmp_path / "backup.tar.gz", [], [source], signing_key=key
-        )
-    (source / "linked").unlink()
-    with pytest.raises(ValueError, match="overlaps input"):
-        RUNTIME_BACKUP.create_archive(
-            source / "backup.tar.gz", [], [source], signing_key=key
-        )
-
-
-def test_evidence_and_metadata_are_verified_but_not_restored(tmp_path: Path) -> None:
-    state = tmp_path / "state.json"
-    state.write_text("archived\n", encoding="utf-8")
-    evidence = tmp_path / "active-config.yaml"
-    evidence.write_text("release: prior\n", encoding="utf-8")
-    archive = tmp_path / "backup.tar.gz"
-    key = SigningKey.generate()
-    RUNTIME_BACKUP.create_archive(
-        archive,
-        [],
-        [state],
-        signing_key=key,
-        evidence_paths=[evidence],
-        metadata={"runtime_revision": "a" * 40},
-    )
-
-    verified = RUNTIME_BACKUP.verify_archive(
-        archive, trusted_key=key.verification_key
-    )
-    target = tmp_path / "restore-root"
-    restored = RUNTIME_BACKUP.restore_archive(
-        archive,
-        target_root=target,
-        trusted_key=key.verification_key,
-    )
-
-    assert verified["metadata"] == {"runtime_revision": "a" * 40}
-    assert restored["metadata"] == verified["metadata"]
-    assert restored["restored"] == [Path(*state.parts[1:]).as_posix()]
-    assert (target / Path(*state.parts[1:])).read_text() == "archived\n"
-    assert not (target / Path(*evidence.parts[1:])).exists()
-
-
-def test_runtime_restore_rejects_destination_symlink(tmp_path: Path) -> None:
-    source = tmp_path / "settings.json"
-    source.write_text("archived\n", encoding="utf-8")
-    archive = tmp_path / "backup.tar.gz"
-    key = SigningKey.generate()
-    RUNTIME_BACKUP.create_archive(archive, [], [source], signing_key=key)
-    target_root = tmp_path / "restore-root"
-    destination = target_root / Path(*source.parts[1:])
-    destination.parent.mkdir(parents=True)
-    victim = tmp_path / "victim.json"
-    victim.write_text("keep\n", encoding="utf-8")
-    destination.symlink_to(victim)
-
-    with pytest.raises(ValueError, match="must not be a symlink"):
-        RUNTIME_BACKUP.restore_archive(
-            archive,
-            target_root=target_root,
-            trusted_key=key.verification_key,
-            replace=True,
-        )
-
-    assert victim.read_text(encoding="utf-8") == "keep\n"
-
-
-def test_runtime_restore_handles_sqlite_sidecars(tmp_path: Path) -> None:
-    database = tmp_path / "live.sqlite3"
-    with sqlite3.connect(database) as connection:
-        connection.execute("CREATE TABLE sample (value TEXT NOT NULL)")
-        connection.execute("INSERT INTO sample VALUES ('archived')")
-    archive = tmp_path / "backup.tar.gz"
-    key = SigningKey.generate()
-    RUNTIME_BACKUP.create_archive(archive, [database], [], signing_key=key)
-    target_root = tmp_path / "restore-root"
-    destination = target_root / Path(*database.parts[1:])
-    destination.parent.mkdir(parents=True)
-    stale_wal = Path(f"{destination}-wal")
-    stale_wal.write_bytes(b"stale")
-
-    with pytest.raises(ValueError, match="SQLite sidecars"):
-        RUNTIME_BACKUP.restore_archive(
-            archive,
-            target_root=target_root,
-            trusted_key=key.verification_key,
-        )
-    RUNTIME_BACKUP.restore_archive(
-        archive,
-        target_root=target_root,
-        trusted_key=key.verification_key,
-        replace=True,
-    )
-
-    assert not stale_wal.exists()
-    with sqlite3.connect(destination) as connection:
-        assert connection.execute("SELECT value FROM sample").fetchone()[0] == "archived"
-
-
-def test_restore_rolls_back_all_targets_on_mid_promotion_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    database = tmp_path / "live.sqlite3"
-    with sqlite3.connect(database) as connection:
-        connection.execute("CREATE TABLE sample (value TEXT NOT NULL)")
-        connection.execute("INSERT INTO sample VALUES ('archived')")
-    config = tmp_path / "settings.json"
-    config.write_text('{"state": "archived"}\n', encoding="utf-8")
-    archive = tmp_path / "backup.tar.gz"
-    key = SigningKey.generate()
-    RUNTIME_BACKUP.create_archive(
-        archive, [database], [config], signing_key=key
-    )
-    with sqlite3.connect(database) as connection:
-        connection.execute("UPDATE sample SET value = 'current'")
-    config.write_text('{"state": "current"}\n', encoding="utf-8")
-    wal = Path(f"{database}-wal")
-    wal.write_bytes(b"preserve-sidecar")
-    original_replace = Path.replace
-    promotions = 0
-
-    def fail_second_promotion(path: Path, target: Path) -> Path:
-        nonlocal promotions
-        if ".restore-" in path.name and ".pre-restore-" not in path.name:
-            promotions += 1
-            if promotions == 2:
-                raise OSError("injected promotion failure")
-        return original_replace(path, target)
-
-    monkeypatch.setattr(Path, "replace", fail_second_promotion)
-    with pytest.raises(OSError, match="injected promotion failure"):
-        RUNTIME_BACKUP.restore_archive(
-            archive,
-            target_root=Path("/"),
-            trusted_key=key.verification_key,
-            replace=True,
-        )
-
-    assert config.read_text(encoding="utf-8") == '{"state": "current"}\n'
-    assert wal.read_bytes() == b"preserve-sidecar"
-    wal.unlink()
-    with sqlite3.connect(database) as connection:
-        assert connection.execute("SELECT value FROM sample").fetchone()[0] == "current"
-    assert not list(tmp_path.glob(".*.pre-restore-*"))
-
-
-def test_restore_verifies_and_extracts_the_archive_once(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    state = tmp_path / "state.json"
-    state.write_text("archived\n", encoding="utf-8")
-    archive = tmp_path / "backup.tar.gz"
-    key = SigningKey.generate()
-    RUNTIME_BACKUP.create_archive(archive, [], [state], signing_key=key)
-    original_restore = RUNTIME_BACKUP.restore
-    calls = 0
-
-    def count_restore(*args, **kwargs):
-        nonlocal calls
-        calls += 1
-        return original_restore(*args, **kwargs)
-
-    monkeypatch.setattr(RUNTIME_BACKUP, "restore", count_restore)
-    RUNTIME_BACKUP.restore_archive(
-        archive,
-        target_root=tmp_path / "restore-root",
-        trusted_key=key.verification_key,
-    )
-
-    assert calls == 1
-
-
-def test_restore_cleans_staged_file_when_copy_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    state = tmp_path / "settings.json"
-    state.write_text("archived\n", encoding="utf-8")
-    archive = tmp_path / "backup.tar.gz"
-    key = SigningKey.generate()
-    RUNTIME_BACKUP.create_archive(archive, [], [state], signing_key=key)
-    original_copy = RUNTIME_BACKUP.shutil.copy2
-
-    def fail_restore_copy(source, destination, *args, **kwargs):
-        if ".restore-" in Path(destination).name:
-            Path(destination).write_bytes(b"partial")
-            raise OSError("injected copy failure")
-        return original_copy(source, destination, *args, **kwargs)
-
-    monkeypatch.setattr(RUNTIME_BACKUP.shutil, "copy2", fail_restore_copy)
-    with pytest.raises(OSError, match="injected copy failure"):
-        RUNTIME_BACKUP.restore_archive(
-            archive,
-            target_root=Path("/"),
-            trusted_key=key.verification_key,
-            replace=True,
-        )
-
-    assert state.read_text(encoding="utf-8") == "archived\n"
-    assert not list(tmp_path.glob(".*.restore-*"))
-
-
-def test_runtime_backup_rejects_empty_input_set(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="no backup inputs"):
-        RUNTIME_BACKUP.create_archive(
-            tmp_path / "empty.tar.gz",
-            [],
-            [],
+            state / "backup.tar.gz",
+            state,
+            "mdv.sqlite3",
             signing_key=SigningKey.generate(),
+            identity=_identity(configuration),
         )
+
+
+def test_wrapper_has_no_multi_destination_restore_layer() -> None:
+    source = MODULE.read_text(encoding="utf-8")
+
+    for removed_mechanism in (
+        "restore-plan",
+        "target_root",
+        "safety_link",
+        "pre-restore",
+        "sqlite_sidecar",
+        "disk_usage",
+        "shutil.copy2",
+        "evidence_paths",
+    ):
+        assert removed_mechanism not in source

@@ -128,9 +128,9 @@ def test_deploy_requires_clean_annotated_release_tag():
     assert script.count(
         "sudo systemctl is-active --quiet asset-master-refresh.timer"
     ) >= 2
-    assert "status != 0 && SWITCHED == 1 && DEPLOY_SUCCEEDED == 0" in script
+    assert "status != 0 && CUTOVER_STARTED == 1 && DEPLOY_SUCCEEDED == 0" in script
     assert 'prune_old_releases "$RELEASE_DIR" "$PREVIOUS_RELEASE" ||' in script
-    assert "prune_old_backups" in script
+    assert "prune_old_backups" not in script
     assert "MDV_PRE_PULL_SHA" in script
     assert "ORIG_HEAD" in script
     assert "bootstrap_legacy_release" in script
@@ -140,7 +140,7 @@ def test_deploy_requires_clean_annotated_release_tag():
     assert "quiesce_collection" in script
     assert "resume_collection_schedule" in script
     assert script.index("\nquiesce_collection\n") < script.index(
-        'runtime_backup.py" create'
+        "mdv.runtime_backup create"
     )
     assert script.index("\nwait_for_readiness\n") < script.index(
         "\nresume_collection_schedule\n"
@@ -152,17 +152,27 @@ def test_deploy_requires_clean_annotated_release_tag():
     )
     assert 'MDV_CONFIG_PATH="$CURRENT_LINK/config/config.yaml"' in script
     assert '--config "$release/config/config.yaml" doctor --require-ready' in script
-    assert script.index('runtime_backup.py" create') < script.index(
+    assert script.index("mdv.runtime_backup create") < script.index(
         '--config "$NEW_CONFIG" init'
     ) < script.index('switch_current "$RELEASE_DIR"')
-    assert script.index("\nprune_old_backups\n") < script.index(
-        '--config "$NEW_CONFIG" init'
-    )
     assert '--path "$ENTITLEMENTS_PATH"' not in script
-    assert '--evidence "$ACTIVE_CONFIG"' in script
-    assert '--metadata "runtime_revision=$PREVIOUS_REVISION"' in script
-    assert 'runtime_backup.py" verify "$BACKUP_FILE"' not in script
+    assert "--evidence" not in script
+    assert "--metadata" not in script
+    assert '--configuration "$ACTIVE_CONFIG"' in script
+    assert '--release "$(basename "$PREVIOUS_RELEASE")"' in script
+    assert '--revision "$PREVIOUS_REVISION"' in script
+    assert '--version "$PREVIOUS_VERSION"' in script
     assert 'if [[ "$DB_PATH" != "$NEW_DB_PATH" ]]' in script
+    assert 'STATE_DIR="$(dirname "$NEW_DB_PATH")"' in script
+    assert '"$LOCAL_DIR/state"' in script
+    assert '"$PROJECT_DIR/.data/mdv.sqlite3"' in script
+    assert 'sudo systemctl stop asset-master-data.service' in script
+    assert script.index('sudo systemctl stop asset-master-data.service') < script.index(
+        "mdv.runtime_backup create"
+    )
+    assert "mdv.runtime_backup restore" in script
+    assert '--target "$previous_state"' in script
+    assert '--replace' in script
     assert 'template_path="$installer_root/deploy/systemd/$template"' in script
     assert "TIMER_WAS_ENABLED" in script and "TIMER_WAS_ACTIVE" in script
     assert "collection timer did not quiesce" in script
@@ -176,8 +186,9 @@ def test_deploy_requires_clean_annotated_release_tag():
     assert 'mktemp -d "$LOCAL_DIR/.current-switch-XXXXXX"' in script
     assert 'if ! ln -s "$target" "$temporary_link"' in script
     assert 'if ! mv -Tf "$temporary_link" "$CURRENT_LINK"' in script
-    assert "2 * database_bytes + reserve" in script
-    assert "predeploy-[0-9]*.[0-9]*.[0-9]*-*.tar.gz" in script
+    assert "require_backup_headroom" not in script
+    assert 'BACKUP_FILE="$BACKUP_DIR/asset-master-data-runtime.tar.gz"' in script
+    assert "predeploy-from-" not in script
     assert 'build_dir="$RELEASE_DIR"' in script
     assert 'python3 -m venv "$build_dir/venv"' in script
     assert 'python3 -m venv "$legacy_dir/venv"' in script
@@ -222,6 +233,14 @@ def test_make_exposes_production_collection_separately_from_deployment():
     assert ".local/current/venv/bin/python -m mdv.cli --config .local/current/config/config.yaml collect" in makefile
     assert "--path config/entitlements.yaml" not in makefile
     assert "systemctl is-active --quiet asset-master-refresh.timer" in makefile
+    assert "migrate-state:" in makefile
+    assert 'lsof "$(LEGACY_DB_PATH)"' in makefile
+    assert 'test ! -e "$$(dirname "$$DB_PATH_VALUE")"' in makefile
+    assert "--state-dir" in makefile
+    assert "--target" in makefile
+    assert "--path" not in makefile
+    assert "--evidence" not in makefile
+    assert "-m mdv.runtime_backup --help" in makefile
 
 
 def test_cli_reports_distribution_version(capsys):

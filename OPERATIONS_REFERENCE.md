@@ -298,7 +298,7 @@ Runtime configuration is `config/config.yaml`:
 
 ```yaml
 database:
-  path: .data/mdv.sqlite3
+  path: .local/state/mdv.sqlite3
 
 server:
   host: 127.0.0.1
