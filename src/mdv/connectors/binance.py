@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 
 import httpx
 
@@ -10,6 +9,7 @@ from mdv.connectors.base import (
     fetch_json_array,
     market_availability,
     session_status,
+    strict_epoch_timestamp,
     utc_now,
 )
 from mdv.models import MarketRecord, MarketSnapshot, TradingSchedule
@@ -201,12 +201,15 @@ class BinanceConnector:
         return snapshot
 
     def _expires_at(self, value: object, contract_type: str) -> str | None:
-        if contract_type != "DATED" or value in (None, "", 0, "0"):
+        if contract_type != "DATED":
             return None
-        try:
-            return datetime.fromtimestamp(int(str(value)) / 1000, timezone.utc).isoformat()
-        except (OverflowError, TypeError, ValueError) as exc:
-            raise ValueError(f"{self.source}: invalid deliveryDate {value!r}") from exc
+        return strict_epoch_timestamp(
+            value,
+            milliseconds=True,
+            source=self.source,
+            field="deliveryDate",
+            allow_missing=True,
+        )
 
 
 def binance_connectors() -> list[BinanceConnector]:

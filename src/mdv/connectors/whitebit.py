@@ -4,7 +4,7 @@ import asyncio
 
 import httpx
 
-from mdv.connectors.base import fetch_json, market_availability, utc_now
+from mdv.connectors.base import fetch_json, market_availability, required_text, utc_now
 from mdv.contract_metadata import NORMALIZATION_VERSION, with_contract_evidence
 from mdv.models import MarketRecord, MarketSnapshot, TradingSchedule
 
@@ -26,13 +26,6 @@ def whitebit_market_schedule(market: dict, raw: dict) -> TradingSchedule | None:
         session_status=current,
         market_group="TRADFI",
     )
-
-
-def _required(row: dict, name: str, *, source: str) -> str:
-    value = str(row.get(name) or "").strip()
-    if not value:
-        raise ValueError(f"{source}: market has no {name}")
-    return value
 
 
 class WhitebitConnector:
@@ -81,8 +74,12 @@ class WhitebitConnector:
             venue_status = "ENABLED" if active else (
                 "DELISTED" if row.get("delistedAt") not in (None, "") else "DISABLED"
             )
-            base_symbol = _required(row, "stock", source=self.source).upper()
-            quote_symbol = _required(row, "money", source=self.source).upper()
+            base_symbol = required_text(
+                row, "stock", source=self.source, record_kind="market"
+            ).upper()
+            quote_symbol = required_text(
+                row, "money", source=self.source, record_kind="market"
+            ).upper()
             raw = dict(row)
             if row.get("isTradFiFutures") is True:
                 raw["_metadata"] = {
@@ -101,7 +98,9 @@ class WhitebitConnector:
             open_interest_unit = None
             contract_metadata_reason = None
             if self.market_type == "FUTURE":
-                raw_symbol = _required(row, "name", source=self.source)
+                raw_symbol = required_text(
+                    row, "name", source=self.source, record_kind="market"
+                )
                 future_spec = futures_by_symbol.get(raw_symbol)
                 if future_spec is None:
                     contract_metadata_reason = "WHITEBIT_FUTURES_SPEC_MISSING"
@@ -138,7 +137,9 @@ class WhitebitConnector:
                     self.venue,
                     self.market_type,
                     self.product,
-                    _required(row, "name", source=self.source),
+                    required_text(
+                        row, "name", source=self.source, record_kind="market"
+                    ),
                     base_symbol,
                     quote_symbol,
                     None if self.market_type == "SPOT" else quote_symbol,
@@ -185,7 +186,9 @@ class WhitebitConnector:
         for row in rows:
             if not isinstance(row, dict):
                 raise ValueError(f"{self.source}: futures instrument is not an object")
-            symbol = _required(row, "ticker_id", source=self.source)
+            symbol = required_text(
+                row, "ticker_id", source=self.source, record_kind="market"
+            )
             if symbol in result:
                 raise ValueError(f"{self.source}: duplicate futures instrument {symbol}")
             result[symbol] = row

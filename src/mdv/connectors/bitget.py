@@ -1,21 +1,21 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from urllib.parse import urlencode
 
 import httpx
 
-from mdv.connectors.base import fetch_json, market_availability, session_status, utc_now
+from mdv.connectors.base import (
+    SingleEndpointConnector,
+    fetch_json,
+    market_availability,
+    required_text,
+    session_status,
+    strict_epoch_timestamp,
+    utc_now,
+)
 from mdv.contract_metadata import NORMALIZATION_VERSION, positive_decimal, with_contract_evidence
 from mdv.models import MarketRecord, MarketSnapshot, TradingSchedule
 from mdv.normalization import contract_direction, normalize_product
-
-
-def _required(row: dict, name: str, *, source: str) -> str:
-    value = str(row.get(name) or "").strip().upper()
-    if not value:
-        raise ValueError(f"{source}: instrument has no {name}")
-    return value
 
 
 def _asset_tags(row: dict, tags: list[dict]) -> dict:
@@ -54,15 +54,12 @@ def bitget_market_schedule(market: dict, raw: dict) -> TradingSchedule | None:
     )
 
 
-class BitgetSpotConnector:
+class BitgetSpotConnector(SingleEndpointConnector[MarketSnapshot]):
     source = "BITGET_SPOT"
     venue = "BITGET"
     market_type = "SPOT"
     product = "SPOT"
     url = "https://api.bitget.com/api/v2/spot/public/symbols"
-
-    async def fetch(self, client: httpx.AsyncClient) -> MarketSnapshot:
-        return self.parse(await fetch_json(client, self.url), observed_at=utc_now())
 
     def parse(self, payload: object, *, observed_at: str) -> MarketSnapshot:
         markets = []
@@ -95,9 +92,15 @@ class BitgetSpotConnector:
                     venue=self.venue,
                     market_type=self.market_type,
                     product=self.product,
-                    raw_symbol=_required(row, "symbol", source=self.source),
-                    base_symbol=_required(row, "baseCoin", source=self.source),
-                    quote_symbol=_required(row, "quoteCoin", source=self.source),
+                    raw_symbol=required_text(
+                        row, "symbol", source=self.source, record_kind="instrument"
+                    ).upper(),
+                    base_symbol=required_text(
+                        row, "baseCoin", source=self.source, record_kind="instrument"
+                    ).upper(),
+                    quote_symbol=required_text(
+                        row, "quoteCoin", source=self.source, record_kind="instrument"
+                    ).upper(),
                     settle_symbol=None,
                     contract_type="SPOT",
                     status=availability.status,
@@ -152,8 +155,12 @@ class BitgetFutureConnector:
                         "source": "BITGET_FUTURE_CONTRACT",
                     }
                 )
-            base_symbol = _required(row, "baseCoin", source=self.source)
-            quote_symbol = _required(row, "quoteCoin", source=self.source)
+            base_symbol = required_text(
+                row, "baseCoin", source=self.source, record_kind="instrument"
+            ).upper()
+            quote_symbol = required_text(
+                row, "quoteCoin", source=self.source, record_kind="instrument"
+            ).upper()
             settle_symbol = base_symbol if self.product_type == "COIN-FUTURES" else quote_symbol
             contract_type = self._contract_type(row)
             direction = contract_direction(
@@ -188,7 +195,9 @@ class BitgetFutureConnector:
                     venue=self.venue,
                     market_type=self.market_type,
                     product=normalize_product(self.market_type, contract_type),
-                    raw_symbol=_required(row, "symbol", source=self.source),
+                    raw_symbol=required_text(
+                        row, "symbol", source=self.source, record_kind="instrument"
+                    ).upper(),
                     base_symbol=base_symbol,
                     quote_symbol=quote_symbol,
                     settle_symbol=settle_symbol,
@@ -248,11 +257,13 @@ class BitgetFutureConnector:
     def _expires_at(self, row: dict) -> str | None:
         if str(row.get("symbolType") or "").strip().lower() != "delivery":
             return None
-        value = row.get("deliveryTime")
-        try:
-            return datetime.fromtimestamp(int(str(value)) / 1000, timezone.utc).isoformat()
-        except (OverflowError, TypeError, ValueError) as exc:
-            raise ValueError(f"{self.source}: invalid deliveryTime {value!r}") from exc
+        return strict_epoch_timestamp(
+            row.get("deliveryTime"),
+            milliseconds=True,
+            source=self.source,
+            field="deliveryTime",
+            allow_missing=False,
+        )
 
 
 def bitget_connectors() -> list[BitgetSpotConnector | BitgetFutureConnector]:

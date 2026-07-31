@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
-import httpx
-
-from mdv.connectors.base import fetch_json, utc_now
+from mdv.connectors.base import (
+    SingleEndpointConnector,
+    required_text,
+    strict_epoch_timestamp,
+)
 from mdv.contract_metadata import NORMALIZATION_VERSION, positive_decimal
 from mdv.models import MarketRecord, MarketSnapshot
 from mdv.normalization import contract_direction, normalize_status
@@ -20,22 +21,12 @@ def _data(payload: object, *, source: str) -> list:
     return rows
 
 
-def _required(row: dict, name: str, *, source: str) -> str:
-    value = str(row.get(name) or "").strip()
-    if not value:
-        raise ValueError(f"{source}: instrument has no {name}")
-    return value
-
-
-class KucoinSpotConnector:
+class KucoinSpotConnector(SingleEndpointConnector[MarketSnapshot]):
     source = "KUCOIN_SPOT"
     venue = "KUCOIN"
     market_type = "SPOT"
     product = "SPOT"
     url = "https://api.kucoin.com/api/v2/symbols"
-
-    async def fetch(self, client: httpx.AsyncClient) -> MarketSnapshot:
-        return self.parse(await fetch_json(client, self.url), observed_at=utc_now())
 
     def parse(self, payload: object, *, observed_at: str) -> MarketSnapshot:
         markets = []
@@ -62,9 +53,15 @@ class KucoinSpotConnector:
                     self.venue,
                     self.market_type,
                     self.product,
-                    _required(row, "symbol", source=self.source),
-                    _required(row, "baseCurrency", source=self.source).upper(),
-                    _required(row, "quoteCurrency", source=self.source).upper(),
+                    required_text(
+                        row, "symbol", source=self.source, record_kind="instrument"
+                    ),
+                    required_text(
+                        row, "baseCurrency", source=self.source, record_kind="instrument"
+                    ).upper(),
+                    required_text(
+                        row, "quoteCurrency", source=self.source, record_kind="instrument"
+                    ).upper(),
                     None,
                     "SPOT",
                     normalize_status(venue_status),
@@ -85,29 +82,34 @@ class KucoinSpotConnector:
         return snapshot
 
 
-class KucoinFutureConnector:
+class KucoinFutureConnector(SingleEndpointConnector[MarketSnapshot]):
     source = "KUCOIN_FUTURE"
     venue = "KUCOIN"
     market_type = "FUTURE"
     product = "FUTURES"
     url = "https://api-futures.kucoin.com/api/v1/contracts/active"
 
-    async def fetch(self, client: httpx.AsyncClient) -> MarketSnapshot:
-        return self.parse(await fetch_json(client, self.url), observed_at=utc_now())
-
     def parse(self, payload: object, *, observed_at: str) -> MarketSnapshot:
         markets = []
         for row in _data(payload, source=self.source):
             if not isinstance(row, dict):
                 raise ValueError(f"{self.source}: contract is not an object")
-            venue_status = _required(row, "status", source=self.source).upper()
+            venue_status = required_text(
+                row, "status", source=self.source, record_kind="instrument"
+            ).upper()
             # KuCoin can populate expireDate when it schedules a perpetual
             # delisting. The contract type, not that operational timestamp,
             # determines whether this is a delivery future.
             contract_type = self._contract_type(row)
-            base_symbol = _required(row, "baseCurrency", source=self.source).upper()
-            quote_symbol = _required(row, "quoteCurrency", source=self.source).upper()
-            settle_symbol = _required(row, "settleCurrency", source=self.source).upper()
+            base_symbol = required_text(
+                row, "baseCurrency", source=self.source, record_kind="instrument"
+            ).upper()
+            quote_symbol = required_text(
+                row, "quoteCurrency", source=self.source, record_kind="instrument"
+            ).upper()
+            settle_symbol = required_text(
+                row, "settleCurrency", source=self.source, record_kind="instrument"
+            ).upper()
             direction = contract_direction(
                 market_type=self.market_type,
                 base_symbol=base_symbol,
@@ -125,7 +127,9 @@ class KucoinFutureConnector:
                     self.venue,
                     self.market_type,
                     contract_type,
-                    _required(row, "symbol", source=self.source),
+                    required_text(
+                        row, "symbol", source=self.source, record_kind="instrument"
+                    ),
                     base_symbol,
                     quote_symbol,
                     settle_symbol,
@@ -192,12 +196,13 @@ class KucoinFutureConnector:
         raise ValueError(f"{self.source}: contract has no type")
 
     def _expires_at(self, value: object) -> str | None:
-        if value in (None, "", 0, "0"):
-            return None
-        try:
-            return datetime.fromtimestamp(int(str(value)) / 1000, timezone.utc).isoformat()
-        except (OverflowError, TypeError, ValueError) as exc:
-            raise ValueError(f"{self.source}: invalid expireDate {value!r}") from exc
+        return strict_epoch_timestamp(
+            value,
+            milliseconds=True,
+            source=self.source,
+            field="expireDate",
+            allow_missing=True,
+        )
 
 
 def kucoin_connectors() -> list[KucoinSpotConnector | KucoinFutureConnector]:

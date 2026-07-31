@@ -4,7 +4,7 @@ import asyncio
 
 import httpx
 
-from mdv.connectors.base import fetch_json, utc_now
+from mdv.connectors.base import SingleEndpointConnector, fetch_json, utc_now
 from mdv.contract_metadata import NORMALIZATION_VERSION, positive_decimal, with_contract_evidence
 from mdv.models import FinancingRecord, FinancingSnapshot, MarketRecord, MarketSnapshot
 
@@ -223,15 +223,12 @@ class BitfinexConnector:
         return result
 
 
-class BitfinexCrossMarginConnector:
+class BitfinexCrossMarginConnector(SingleEndpointConnector[FinancingSnapshot]):
     source = "BITFINEX_CROSS_MARGIN"
     venue = "BITFINEX"
     market_type = "FINANCING"
     product = "CROSS_MARGIN"
     url = MARGIN_CONFIG_URL
-
-    async def fetch(self, client: httpx.AsyncClient) -> FinancingSnapshot:
-        return self.parse(await fetch_json(client, self.url), observed_at=utc_now())
 
     def parse(self, payload: object, *, observed_at: str) -> FinancingSnapshot:
         if not isinstance(payload, list) or len(payload) != 2:

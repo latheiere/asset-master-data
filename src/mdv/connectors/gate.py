@@ -1,20 +1,15 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
-import httpx
-
-from mdv.connectors.base import fetch_json, market_availability, session_status, utc_now
+from mdv.connectors.base import (
+    SingleEndpointConnector,
+    market_availability,
+    required_text,
+    session_status,
+    strict_epoch_timestamp,
+)
 from mdv.contract_metadata import NORMALIZATION_VERSION, positive_decimal
 from mdv.models import MarketRecord, MarketSnapshot, TradingSchedule
 from mdv.normalization import contract_direction, normalize_product, normalize_status
-
-
-def _required(row: dict, name: str, *, source: str) -> str:
-    value = str(row.get(name) or "").strip().upper()
-    if not value:
-        raise ValueError(f"{source}: instrument has no {name}")
-    return value
 
 
 def _asset_tags(row: dict, tags: list[dict]) -> dict:
@@ -36,15 +31,12 @@ def gate_market_schedule(market: dict, raw: dict) -> TradingSchedule | None:
     )
 
 
-class GateSpotConnector:
+class GateSpotConnector(SingleEndpointConnector[MarketSnapshot]):
     source = "GATE_SPOT"
     venue = "GATE"
     market_type = "SPOT"
     product = "SPOT"
     url = "https://api.gateio.ws/api/v4/spot/currency_pairs"
-
-    async def fetch(self, client: httpx.AsyncClient) -> MarketSnapshot:
-        return self.parse(await fetch_json(client, self.url), observed_at=utc_now())
 
     def parse(self, payload: object, *, observed_at: str) -> MarketSnapshot:
         if not isinstance(payload, list):
@@ -70,9 +62,15 @@ class GateSpotConnector:
                     venue=self.venue,
                     market_type=self.market_type,
                     product=self.product,
-                    raw_symbol=_required(row, "id", source=self.source),
-                    base_symbol=_required(row, "base", source=self.source),
-                    quote_symbol=_required(row, "quote", source=self.source),
+                    raw_symbol=required_text(
+                        row, "id", source=self.source, record_kind="instrument"
+                    ).upper(),
+                    base_symbol=required_text(
+                        row, "base", source=self.source, record_kind="instrument"
+                    ).upper(),
+                    quote_symbol=required_text(
+                        row, "quote", source=self.source, record_kind="instrument"
+                    ).upper(),
                     settle_symbol=None,
                     contract_type="SPOT",
                     status=normalize_status(venue_status),
@@ -95,7 +93,7 @@ class GateSpotConnector:
         return snapshot
 
 
-class GateFutureConnector:
+class GateFutureConnector(SingleEndpointConnector[MarketSnapshot]):
     venue = "GATE"
     market_type = "FUTURE"
 
@@ -108,9 +106,6 @@ class GateFutureConnector:
         endpoint = "delivery" if delivery else "futures"
         self.url = f"https://api.gateio.ws/api/v4/{endpoint}/{self.settle.lower()}/contracts"
 
-    async def fetch(self, client: httpx.AsyncClient) -> MarketSnapshot:
-        return self.parse(await fetch_json(client, self.url), observed_at=utc_now())
-
     def parse(self, payload: object, *, observed_at: str) -> MarketSnapshot:
         if not isinstance(payload, list):
             raise ValueError(f"{self.source}: response is not an array")
@@ -118,8 +113,16 @@ class GateFutureConnector:
         for row in payload:
             if not isinstance(row, dict):
                 raise ValueError(f"{self.source}: contract is not an object")
-            raw_symbol = _required(row, "name", source=self.source)
-            underlying = _required(row, "underlying", source=self.source) if self.delivery else raw_symbol
+            raw_symbol = required_text(
+                row, "name", source=self.source, record_kind="instrument"
+            ).upper()
+            underlying = (
+                required_text(
+                    row, "underlying", source=self.source, record_kind="instrument"
+                ).upper()
+                if self.delivery
+                else raw_symbol
+            )
             try:
                 base_symbol, quote_symbol = underlying.rsplit("_", 1)
             except ValueError as exc:
@@ -217,10 +220,13 @@ class GateFutureConnector:
     def _expires_at(self, value: object) -> str | None:
         if not self.delivery:
             return None
-        try:
-            return datetime.fromtimestamp(int(str(value)), timezone.utc).isoformat()
-        except (OverflowError, TypeError, ValueError) as exc:
-            raise ValueError(f"{self.source}: invalid expire_time {value!r}") from exc
+        return strict_epoch_timestamp(
+            value,
+            milliseconds=False,
+            source=self.source,
+            field="expire_time",
+            allow_missing=False,
+        )
 
 
 def gate_connectors() -> list[GateSpotConnector | GateFutureConnector]:

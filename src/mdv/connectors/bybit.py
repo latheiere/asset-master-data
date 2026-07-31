@@ -1,11 +1,17 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from urllib.parse import urlencode
 
 import httpx
 
-from mdv.connectors.base import fetch_json, market_availability, session_status, utc_now
+from mdv.connectors.base import (
+    fetch_json,
+    market_availability,
+    required_text,
+    session_status,
+    strict_epoch_timestamp,
+    utc_now,
+)
 from mdv.models import MarketRecord, MarketSnapshot, TradingSchedule
 from mdv.normalization import contract_direction, normalize_contract_type, normalize_product
 
@@ -84,8 +90,12 @@ class BybitConnector:
                             f"{self.source}: unknown contractType {raw_contract_type!r}"
                         )
                 venue_status = str(row.get("status") or "UNKNOWN").upper()
-                base_symbol = self._required(row, "baseCoin")
-                quote_symbol = self._required(row, "quoteCoin")
+                base_symbol = required_text(
+                    row, "baseCoin", source=self.source, record_kind="instrument"
+                ).upper()
+                quote_symbol = required_text(
+                    row, "quoteCoin", source=self.source, record_kind="instrument"
+                ).upper()
                 settle_symbol = None
                 if self.market_type == "FUTURE":
                     fallback_settle = base_symbol if self.category == "inverse" else quote_symbol
@@ -111,7 +121,9 @@ class BybitConnector:
                         venue=self.venue,
                         market_type=self.market_type,
                         product=normalize_product(self.market_type, contract_type),
-                        raw_symbol=self._required(row, "symbol"),
+                        raw_symbol=required_text(
+                            row, "symbol", source=self.source, record_kind="instrument"
+                        ).upper(),
                         base_symbol=base_symbol,
                         quote_symbol=quote_symbol,
                         settle_symbol=settle_symbol,
@@ -155,25 +167,19 @@ class BybitConnector:
             raise ValueError(f"{self.source}: response category does not match {self.category}")
         return result
 
-    def _required(self, row: dict, name: str) -> str:
-        value = str(row.get(name) or "").strip().upper()
-        if not value:
-            raise ValueError(f"{self.source}: instrument has no {name}")
-        return value
-
     def _contract_type(self, raw_contract_type: str) -> str:
         if self.market_type == "SPOT":
             return "SPOT"
         return normalize_contract_type(raw_contract_type, market_type=self.market_type)
 
     def _expires_at(self, raw_value: object) -> str | None:
-        if raw_value in (None, "", "0", 0):
-            return None
-        try:
-            milliseconds = int(str(raw_value))
-            return datetime.fromtimestamp(milliseconds / 1000, timezone.utc).isoformat()
-        except (OverflowError, TypeError, ValueError) as exc:
-            raise ValueError(f"{self.source}: invalid deliveryTime {raw_value!r}") from exc
+        return strict_epoch_timestamp(
+            raw_value,
+            milliseconds=True,
+            source=self.source,
+            field="deliveryTime",
+            allow_missing=True,
+        )
 
 
 def bybit_connectors() -> list[BybitConnector]:

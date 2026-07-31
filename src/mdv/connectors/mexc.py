@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import httpx
-
-from mdv.connectors.base import fetch_json, market_availability, session_status, utc_now
+from mdv.connectors.base import SingleEndpointConnector, market_availability, session_status
 from mdv.models import MarketRecord, MarketSnapshot, TradingSchedule
 from mdv.normalization import contract_direction, normalize_status
 
@@ -23,15 +21,12 @@ def mexc_market_schedule(market: dict, raw: dict) -> TradingSchedule | None:
     )
 
 
-class MexcSpotConnector:
+class MexcSpotConnector(SingleEndpointConnector[MarketSnapshot]):
     source = "MEXC_SPOT"
     venue = "MEXC"
     market_type = "SPOT"
     product = "SPOT"
     url = "https://api.mexc.com/api/v3/exchangeInfo"
-
-    async def fetch(self, client: httpx.AsyncClient) -> MarketSnapshot:
-        return self.parse(await fetch_json(client, self.url), observed_at=utc_now())
 
     def parse(self, payload: dict, *, observed_at: str) -> MarketSnapshot:
         symbols = payload.get("symbols")
@@ -67,15 +62,12 @@ class MexcSpotConnector:
         return snapshot
 
 
-class MexcFutureConnector:
+class MexcFutureConnector(SingleEndpointConnector[MarketSnapshot]):
     source = "MEXC_FUTURE"
     venue = "MEXC"
     market_type = "FUTURE"
     product = "PERP"
     url = "https://contract.mexc.com/api/v1/contract/detail"
-
-    async def fetch(self, client: httpx.AsyncClient) -> MarketSnapshot:
-        return self.parse(await fetch_json(client, self.url), observed_at=utc_now())
 
     def parse(self, payload: dict, *, observed_at: str) -> MarketSnapshot:
         if payload.get("success") is not True or not isinstance(payload.get("data"), list):
