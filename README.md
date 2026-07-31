@@ -4,7 +4,7 @@ Local-first, auditable canonical asset and exchange-market metadata from public 
 
 ## Status and scope
 
-The current release is `0.14.5`. The service discovers public spot, derivatives, margin, and loan catalogs; preserves raw observations and lifecycle history; builds evidence-backed canonical mappings; and serves authenticated HTML and JSON views. It is not a price feed, trading engine, or order router.
+The current release is `0.14.6`. The service discovers public spot, derivatives, margin, and loan catalogs; preserves raw observations and lifecycle history; builds evidence-backed canonical mappings; and serves authenticated HTML and JSON views. It is not a price feed, trading engine, or order router.
 
 ## Architecture
 
@@ -56,7 +56,8 @@ make collect
 make run
 ```
 
-Open <http://127.0.0.1:8090/mdv> and sign in. Runtime data is stored in `.data/`.
+Open <http://127.0.0.1:8090/mdv> and sign in. Replaceable runtime state is
+stored in `.local/state/`.
 Non-secret `config/config.yaml` is version-controlled and snapshotted per
 release; generated entitlements and runtime data remain ignored by Git.
 
@@ -92,32 +93,43 @@ dependencies directly when environment-specific resolution would omit them.
 make backup restore-check
 sudo systemctl disable --now asset-master-refresh.timer
 sudo systemctl stop asset-master-data.service asset-master-refresh.service
+make migrate-state     # one time only when .data/mdv.sqlite3 is still active
 make restore
 make prod-status
 make deploy-prod
 ```
 
-`make backup` requires the configured database and configuration, uses
-StateCrate's SQLite snapshot support, rejects symlinked inputs, signs the
-manifest, and self-verifies a mode-`0600` archive before atomic promotion. The
-first backup creates a key pair beside the archive; preserve the verification
-key separately because verification and restoration require it. Backups are
-signed, not encrypted. `make restore` verifies the signature, all hashes, and
-SQLite integrity before atomically replacing the configured files;
-the API, collector, and collection timer must all be stopped first. Archive
-member count, expanded size (1 GiB), and available extraction/staging space are
-bounded. Entitlements are intentionally excluded because the archive is
-unencrypted—back them up separately with encryption.
+`make backup` snapshots the SQLite database to the stable
+`.local/backups/asset-master-data-runtime.tar.gz` path. StateCrate signs and
+self-verifies the archive, and its manifest records the immutable release,
+revision, version, and configuration SHA-256. The configuration is not archive
+payload: recovery must select the matching immutable release and use its
+configuration. `make restore` asks StateCrate to replace the complete
+`.local/state/` directory, including StateCrate's failed-replacement rollback;
+the API, collector, and timer must all be stopped first. Preserve the generated
+verification key separately. Archives are signed, not encrypted. Entitlements
+remain excluded and follow their existing separate encrypted recovery policy.
+`make restore-check` prints the signed identity. For manual recovery, select
+that release under `.local/releases/` and pass its configuration plus the
+printed `RUNTIME_RELEASE`, `RUNTIME_REVISION`, and `RUNTIME_VERSION` values to
+`make restore`; identity mismatch is rejected before state replacement.
+The one-time `make migrate-state` command refuses an active or existing target,
+leaves the legacy database untouched, and installs the verified snapshot as the
+new state directory. Do not run it while any non-systemd process has the legacy
+database open.
 
 Every production deployment is an immutable SemVer release tagged on `main`.
-Deployment validates the tag/version/revision contract, creates and verifies a
-required live backup before migration, atomically switches a versioned runtime,
-and automatically restores the prior runtime on failed readiness. Each release
+Deployment validates the tag/version/revision contract, stops all database
+users, creates the stable predeploy archive, atomically switches a versioned
+runtime, and restores the state directory and prior release on failed
+readiness. Each release
 contains its wheel environment, non-secret configuration snapshot, installer,
 and systemd templates, so rollback does not depend on the newly pulled checkout.
-The predeploy archive backs up the active database, retains the exact active
-configuration as non-restorable evidence, and records its release/revision in
-the manifest. Collection is quiesced before migration and remains off through
+The predeploy archive contains only the consistent database snapshot; signed
+metadata identifies the matching immutable configuration. On the first deploy
+from the legacy `.data/mdv.sqlite3` layout, the stopped database is restored
+through StateCrate into `.local/state/`; the legacy database remains untouched
+as the rollback source. Collection is quiesced before migration and remains off through
 readiness; the timer's prior enabled and active state is restored after either
 a successful cutover or rollback, preserving an operator pause.
 Time-ordered source availability phases are configured under
@@ -127,8 +139,8 @@ use a terminal `CLOSED` or `MISSING` status; at and after its timezone-aware
 cutoff, collection retires retained records without contacting that source.
 The first immutable deploy builds the pre-pull revision as its real rollback
 target. After success
-it retains at most current + rollback + one extra release and the newest
-predeploy archive for each of two distinct source revisions. Systemd bounds
+it retains at most current + rollback + one extra release. The stable archive
+is replaced on each deployment. Systemd bounds
 memory, tasks, collection duration, retry
 concurrency, and restart behavior for limited hosts.
 

@@ -74,7 +74,7 @@ introduced.
 
 Readiness exposes collection freshness, running work, active markets, and
 database bytes; systemd uses host-survival memory/task limits and deployment
-keeps bounded release and backup sets. Remaining work:
+keeps bounded release state with one stable recovery archive. Remaining work:
 
 - Export structured metrics for collection duration, endpoint latency, retry
   counts, database/WAL growth, compaction deletions, and auth throttling.
@@ -83,10 +83,6 @@ keeps bounded release and backup sets. Remaining work:
 - Automate encrypted off-host database and entitlement backups. Default local
   archives intentionally exclude entitlements and are not encrypted.
 - Schedule recovery drills and record recovery-point/recovery-time evidence.
-- If recovery must become one indivisible namespace switch across directories,
-  add a staged-root/symlink protocol; current restore validates and stages all
-  entries, preserves every original, atomically replaces each configured file,
-  and rolls the full promotion set back on error.
 
 ## Required regression coverage for these items
 

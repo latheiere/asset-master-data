@@ -75,7 +75,7 @@ fi
 GIT_SHA="$(git rev-parse HEAD)"
 RELEASE_ID="$RELEASE_TAG-${GIT_SHA:0:12}"
 RELEASE_DIR="$RELEASES_DIR/$RELEASE_ID"
-BACKUP_FILE=""
+BACKUP_FILE="$BACKUP_DIR/asset-master-data-runtime.tar.gz"
 mkdir -p "$RELEASES_DIR"
 BUILT_NEW_RELEASE=0
 SWITCHED=0
@@ -83,6 +83,8 @@ DEPLOY_SUCCEEDED=0
 ACTIVE_BUILD_DIR=""
 ACTIVE_SOURCE_DIR=""
 COLLECTION_QUIESCED=0
+CUTOVER_STARTED=0
+STATE_MUTATED=0
 TIMER_STATE_CAPTURED=0
 TIMER_WAS_ENABLED=0
 TIMER_WAS_ACTIVE=0
@@ -97,7 +99,7 @@ cleanup_failed_release() {
   if [[ -n "$ACTIVE_SOURCE_DIR" && -d "$ACTIVE_SOURCE_DIR" ]]; then
     rm -rf -- "$ACTIVE_SOURCE_DIR"
   fi
-  if (( status != 0 && SWITCHED == 1 && DEPLOY_SUCCEEDED == 0 )); then
+  if (( status != 0 && CUTOVER_STARTED == 1 && DEPLOY_SUCCEEDED == 0 )); then
     if ! rollback_release "$PREVIOUS_RELEASE"; then
       echo "automatic rollback failed; operator intervention is required" >&2
     fi
@@ -272,33 +274,6 @@ absolute_path() {
   fi
 }
 
-require_backup_headroom() {
-  local database="$1"
-  python3 - "$database" "$BACKUP_DIR" <<'PY'
-import os
-import pathlib
-import shutil
-import sys
-import tempfile
-
-database = pathlib.Path(sys.argv[1])
-backup_dir = pathlib.Path(sys.argv[2])
-reserve = 512 * 1024 * 1024
-database_bytes = database.stat().st_size
-# SQLite staging and the gzip archive coexist while the archive is built. Use
-# the uncompressed DB size as a conservative upper bound for each copy.
-required = 2 * database_bytes + reserve
-locations = {backup_dir.resolve(), pathlib.Path(tempfile.gettempdir()).resolve()}
-for location in locations:
-    available = shutil.disk_usage(location).free
-    if available < required:
-        raise SystemExit(
-            f"insufficient deploy headroom at {location}: "
-            f"{available} available, {required} required"
-        )
-PY
-}
-
 switch_current() {
   local target="$1"
   local temporary_dir temporary_link
@@ -446,20 +421,42 @@ rollback_release() {
   local previous="$1"
   sudo systemctl stop asset-master-refresh.timer || return 1
   sudo systemctl stop asset-master-refresh.service || return 1
+  sudo systemctl stop asset-master-data.service || return 1
   COLLECTION_QUIESCED=1
   if [[ -z "$previous" || ! -x "$previous/venv/bin/python" ]]; then
     echo "No previous immutable release is available; stopping the failed service" >&2
-    sudo systemctl stop asset-master-data.service || return 1
     return 1
   fi
-  local previous_revision
+  local previous_revision previous_version previous_config previous_database
+  local previous_state previous_database_name
   previous_revision="$(<"$previous/REVISION")" || return 1
+  previous_version="$(<"$previous/VERSION")" || return 1
+  previous_config="$previous/config/config.yaml"
+  previous_database="$(absolute_path "$("$previous/venv/bin/python" -m mdv.cli --config "$previous_config" config-value database.path)")" || return 1
+  previous_state="$(dirname "$previous_database")"
+  previous_database_name="$(basename "$previous_database")"
   echo "Deployment failed; rolling back to $(basename "$previous")" >&2
+  if (( STATE_MUTATED == 1 )) && [[ "$previous_database" == "$NEW_DB_PATH" ]]; then
+    "$NEW_PYTHON" -m mdv.runtime_backup restore \
+      "$BACKUP_FILE" \
+      --target "$previous_state" \
+      --replace \
+      --release "$(basename "$previous")" \
+      --revision "$previous_revision" \
+      --version "$previous_version" \
+      --configuration "$previous_config" || return 1
+    if [[ ! -f "$previous_state/$previous_database_name" ]]; then
+      echo "StateCrate restore did not recover the selected release database" >&2
+      return 1
+    fi
+  fi
   switch_current "$previous" || return 1
   install_release "$previous" "$previous_revision" || return 1
   wait_for_release_health "$previous" "$previous_revision" || return 1
   resume_collection_schedule || return 1
   SWITCHED=0
+  CUTOVER_STARTED=0
+  STATE_MUTATED=0
   return 0
 }
 
@@ -491,49 +488,6 @@ prune_old_releases() {
   done
 }
 
-prune_old_backups() {
-  local backup basename source_key retained_source source_seen
-  local source_count=0
-  local -a backups retained_sources
-  retained_sources=()
-  mapfile -t backups < <(
-    find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type f \
-      \( -name 'predeploy-from-*.tar.gz' -o \
-         -name 'predeploy-v*.tar.gz' -o \
-         -name 'predeploy-[0-9]*.[0-9]*.[0-9]*-*.tar.gz' \) \
-      -printf '%T@ %p\n' | sort -nr | cut -d' ' -f2-
-  )
-  for backup in "${backups[@]}"; do
-    basename="$(basename "$backup")"
-    if [[ "$basename" =~ ^predeploy-from-([0-9a-f]{12})- ]]; then
-      source_key="${BASH_REMATCH[1]}"
-    else
-      # Historical archives did not identify their source revision. Treat each
-      # as a distinct recovery point until the bounded policy ages it out.
-      source_key="legacy:$basename"
-    fi
-    source_seen=0
-    for retained_source in "${retained_sources[@]}"; do
-      if [[ "$retained_source" == "$source_key" ]]; then
-        source_seen=1
-        break
-      fi
-    done
-    if (( source_seen == 1 )); then
-      rm -f -- "$backup" || return 1
-      echo "Pruned duplicate predeploy backup $basename"
-      continue
-    fi
-    if (( source_count < 2 )); then
-      retained_sources+=("$source_key")
-      source_count=$((source_count + 1))
-      continue
-    fi
-    rm -f -- "$backup" || return 1
-    echo "Pruned old predeploy backup $basename"
-  done
-}
-
 echo "Preparing $RELEASE_TAG ($GIT_SHA)"
 if [[ -L "$CURRENT_LINK" ]]; then
   PREVIOUS_RELEASE="$(readlink -f "$CURRENT_LINK")"
@@ -561,7 +515,6 @@ else
 fi
 PREVIOUS_REVISION="$(<"$PREVIOUS_RELEASE/REVISION")"
 PREVIOUS_VERSION="$(<"$PREVIOUS_RELEASE/VERSION")"
-BACKUP_FILE="$BACKUP_DIR/predeploy-from-${PREVIOUS_REVISION:0:12}-to-$RELEASE_ID-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
 if [[ "$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)" == "$RELEASE_DIR" ]]; then
   if ! release_complete "$RELEASE_DIR" "$GIT_SHA" "$VERSION"; then
     echo "active release is incomplete: $RELEASE_DIR" >&2
@@ -579,32 +532,69 @@ ACTIVE_PYTHON="$PREVIOUS_RELEASE/venv/bin/python"
 ACTIVE_CONFIG="$PREVIOUS_RELEASE/config/config.yaml"
 DB_PATH="$(absolute_path "$("$ACTIVE_PYTHON" -m mdv.cli --config "$ACTIVE_CONFIG" config-value database.path)")"
 NEW_DB_PATH="$(absolute_path "$("$NEW_PYTHON" -m mdv.cli --config "$NEW_CONFIG" config-value database.path)")"
-if [[ "$DB_PATH" != "$NEW_DB_PATH" ]]; then
-  echo "database path changes require an explicit offline migration: $DB_PATH -> $NEW_DB_PATH" >&2
+STATE_DIR="$(dirname "$NEW_DB_PATH")"
+DATABASE_NAME="$(basename "$NEW_DB_PATH")"
+if [[ "$STATE_DIR" != "$LOCAL_DIR/state" || "$DATABASE_NAME" != "mdv.sqlite3" ]]; then
+  echo "release configuration must use the dedicated runtime state path: $LOCAL_DIR/state/mdv.sqlite3" >&2
   exit 1
 fi
-require_backup_headroom "$DB_PATH"
+if [[ "$DB_PATH" != "$NEW_DB_PATH" && "$DB_PATH" != "$PROJECT_DIR/.data/mdv.sqlite3" ]]; then
+  echo "unsupported legacy database path for offline migration: $DB_PATH" >&2
+  exit 1
+fi
+if [[ ! -f "$DB_PATH" ]]; then
+  echo "active runtime database does not exist: $DB_PATH" >&2
+  exit 1
+fi
 
 # Prevent a pre-release collector from committing old projection logic after
 # the migration or after the new API has declared itself ready.
 quiesce_collection
 
-# Every deploy gets a verified, complete backup of the active runtime database
-# and its exact non-secret configuration as evidence before migration. Evidence
-# is intentionally not auto-restored: recovery selects the matching immutable
-# release recorded in manifest metadata, then restores the database.
+# State migration and schema migration are offline. From this point every
+# failure restarts the selected previous immutable release; when both releases
+# share the state path, rollback first asks StateCrate to replace the complete
+# directory from the stable predeploy archive.
+CUTOVER_STARTED=1
+sudo systemctl stop asset-master-data.service
+if sudo systemctl is-active --quiet asset-master-data.service; then
+  echo "asset master API did not quiesce" >&2
+  exit 1
+fi
+
+# Every deploy replaces one stable signed archive with a consistent snapshot of
+# the active database. The signed manifest identifies the immutable release and
+# configuration; configuration is recovered from that release, not the archive.
 # Entitlements contain a session secret and must be backed up separately with
 # encryption rather than placed in this unencrypted runtime archive.
-"$NEW_PYTHON" "$PROJECT_DIR/scripts/runtime_backup.py" create \
+"$NEW_PYTHON" -m mdv.runtime_backup create \
   --output "$BACKUP_FILE" \
-  --sqlite "$DB_PATH" \
-  --evidence "$ACTIVE_CONFIG" \
-  --metadata "runtime_release=$(basename "$PREVIOUS_RELEASE")" \
-  --metadata "runtime_revision=$PREVIOUS_REVISION" \
-  --metadata "runtime_version=$PREVIOUS_VERSION"
-# Bound disk use as soon as the new archive has self-verified. This also keeps
-# repeated failed deployment attempts from accumulating full database copies.
-prune_old_backups
+  --state-dir "$(dirname "$DB_PATH")" \
+  --database-name "$(basename "$DB_PATH")" \
+  --release "$(basename "$PREVIOUS_RELEASE")" \
+  --revision "$PREVIOUS_REVISION" \
+  --version "$PREVIOUS_VERSION" \
+  --configuration "$ACTIVE_CONFIG"
+
+if [[ "$DB_PATH" != "$NEW_DB_PATH" ]]; then
+  echo "Migrating the legacy database into the dedicated runtime state directory"
+  restore_arguments=(
+    "$BACKUP_FILE"
+    --target "$STATE_DIR"
+    --release "$(basename "$PREVIOUS_RELEASE")"
+    --revision "$PREVIOUS_REVISION"
+    --version "$PREVIOUS_VERSION"
+    --configuration "$ACTIVE_CONFIG"
+  )
+  if [[ -e "$STATE_DIR" ]]; then
+    restore_arguments+=(--replace)
+  fi
+  STATE_MUTATED=1
+  "$NEW_PYTHON" -m mdv.runtime_backup restore \
+    "${restore_arguments[@]}"
+fi
+
+STATE_MUTATED=1
 "$NEW_PYTHON" -m mdv.cli --config "$NEW_CONFIG" init
 
 switch_current "$RELEASE_DIR"
