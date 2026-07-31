@@ -1,20 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from urllib.parse import urlencode
 
 import httpx
 
-from mdv.connectors.base import fetch_json, utc_now
+from mdv.connectors.base import fetch_json, required_text, strict_epoch_timestamp, utc_now
 from mdv.models import MarketRecord, MarketSnapshot
 from mdv.normalization import contract_direction, normalize_status
-
-
-def _required(row: dict, name: str, *, source: str) -> str:
-    value = str(row.get(name) or "").strip()
-    if not value:
-        raise ValueError(f"{source}: instrument has no {name}")
-    return value.upper()
 
 
 class DeribitConnector:
@@ -40,9 +32,15 @@ class DeribitConnector:
                 raise ValueError(f"{self.source}: instrument is not an object")
             if str(row.get("kind") or "").lower() != self.kind:
                 raise ValueError(f"{self.source}: unexpected instrument kind")
-            base_symbol = _required(row, "base_currency", source=self.source)
-            quote_symbol = _required(row, "quote_currency", source=self.source)
-            venue_status = _required(row, "state", source=self.source)
+            base_symbol = required_text(
+                row, "base_currency", source=self.source, record_kind="instrument"
+            ).upper()
+            quote_symbol = required_text(
+                row, "quote_currency", source=self.source, record_kind="instrument"
+            ).upper()
+            venue_status = required_text(
+                row, "state", source=self.source, record_kind="instrument"
+            ).upper()
             if self.market_type == "SPOT":
                 contract_type = "SPOT"
                 settle_symbol = None
@@ -55,7 +53,12 @@ class DeribitConnector:
                     if str(row.get("settlement_period") or "").lower() == "perpetual"
                     else "DATED"
                 )
-                settle_symbol = _required(row, "settlement_currency", source=self.source)
+                settle_symbol = required_text(
+                    row,
+                    "settlement_currency",
+                    source=self.source,
+                    record_kind="instrument",
+                ).upper()
                 expires_at = self._expires_at(row.get("expiration_timestamp"), contract_type)
                 instrument_type = str(row.get("instrument_type") or "").upper()
                 direction = {"LINEAR": "LINEAR", "REVERSED": "INVERSE"}.get(
@@ -73,7 +76,12 @@ class DeribitConnector:
                     self.venue,
                     self.market_type,
                     contract_type,
-                    _required(row, "instrument_name", source=self.source),
+                    required_text(
+                        row,
+                        "instrument_name",
+                        source=self.source,
+                        record_kind="instrument",
+                    ).upper(),
                     base_symbol,
                     quote_symbol,
                     settle_symbol,
@@ -95,12 +103,15 @@ class DeribitConnector:
         return snapshot
 
     def _expires_at(self, value: object, contract_type: str) -> str | None:
-        if contract_type != "DATED" or value in (None, "", 0, "0"):
+        if contract_type != "DATED":
             return None
-        try:
-            return datetime.fromtimestamp(int(str(value)) / 1000, timezone.utc).isoformat()
-        except (OverflowError, TypeError, ValueError) as exc:
-            raise ValueError(f"{self.source}: invalid expiration_timestamp {value!r}") from exc
+        return strict_epoch_timestamp(
+            value,
+            milliseconds=True,
+            source=self.source,
+            field="expiration_timestamp",
+            allow_missing=True,
+        )
 
 
 def deribit_connectors() -> list[DeribitConnector]:

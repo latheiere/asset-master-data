@@ -1,20 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from urllib.parse import urlencode
 
 import httpx
 
-from mdv.connectors.base import fetch_json, utc_now
+from mdv.connectors.base import fetch_json, required_text, strict_epoch_timestamp, utc_now
 from mdv.models import MarketRecord, MarketSnapshot
 from mdv.normalization import contract_direction, normalize_status
-
-
-def _required(row: dict, name: str, *, source: str) -> str:
-    value = str(row.get(name) or "").strip()
-    if not value:
-        raise ValueError(f"{source}: instrument has no {name}")
-    return value
 
 
 class OkxConnector:
@@ -59,7 +51,9 @@ class OkxConnector:
     def _market(self, row: object) -> MarketRecord | None:
         if not isinstance(row, dict):
             raise ValueError(f"{self.source}: instrument is not an object")
-        raw_symbol = _required(row, "instId", source=self.source)
+        raw_symbol = required_text(
+            row, "instId", source=self.source, record_kind="instrument"
+        )
         venue_status = str(row.get("state") or "UNKNOWN").strip().upper()
         if self.market_type == "SPOT":
             raw_base = str(row.get("baseCcy") or "").strip()
@@ -70,9 +64,17 @@ class OkxConnector:
                     raw_base, raw_quote = symbol_parts
                 elif raw_symbol.startswith("LISTING-SPOT-"):
                     return None
-            base_symbol = (raw_base or _required(row, "baseCcy", source=self.source)).upper()
+            base_symbol = (
+                raw_base
+                or required_text(
+                    row, "baseCcy", source=self.source, record_kind="instrument"
+                )
+            ).upper()
             quote_symbol = (
-                raw_quote or _required(row, "quoteCcy", source=self.source)
+                raw_quote
+                or required_text(
+                    row, "quoteCcy", source=self.source, record_kind="instrument"
+                )
             ).upper()
             settle_symbol = None
             contract_type = "SPOT"
@@ -84,7 +86,9 @@ class OkxConnector:
             if len(parts) < 2 or not parts[0] or not parts[1]:
                 raise ValueError(f"{self.source}: instrument has no usable uly/instFamily")
             base_symbol, quote_symbol = parts[0].upper(), parts[1].upper()
-            settle_symbol = _required(row, "settleCcy", source=self.source).upper()
+            settle_symbol = required_text(
+                row, "settleCcy", source=self.source, record_kind="instrument"
+            ).upper()
             contract_type = "PERP" if self.inst_type == "SWAP" else "DATED"
             expires_at = self._expires_at(row.get("expTime"))
             expiry_cycle = self._expiry_cycle(row.get("alias"))
@@ -118,12 +122,15 @@ class OkxConnector:
         )
 
     def _expires_at(self, value: object) -> str | None:
-        if self.inst_type != "FUTURES" or value in (None, "", 0, "0"):
+        if self.inst_type != "FUTURES":
             return None
-        try:
-            return datetime.fromtimestamp(int(str(value)) / 1000, timezone.utc).isoformat()
-        except (OverflowError, TypeError, ValueError) as exc:
-            raise ValueError(f"{self.source}: invalid expTime {value!r}") from exc
+        return strict_epoch_timestamp(
+            value,
+            milliseconds=True,
+            source=self.source,
+            field="expTime",
+            allow_missing=True,
+        )
 
     def _expiry_cycle(self, value: object) -> str | None:
         if self.inst_type != "FUTURES":

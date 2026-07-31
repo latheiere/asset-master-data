@@ -6,7 +6,7 @@ import random
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable, Protocol, TypeVar
+from typing import Any, Callable, Generic, Mapping, Protocol, TypeVar
 
 import httpx
 
@@ -15,6 +15,7 @@ from mdv.normalization import normalize_status
 
 
 T = TypeVar("T")
+SnapshotT = TypeVar("SnapshotT", MarketSnapshot, FinancingSnapshot)
 
 
 class _StreamingJSONError(ValueError):
@@ -23,6 +24,30 @@ class _StreamingJSONError(ValueError):
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def required_text(
+    row: Mapping[str, object],
+    field: str,
+    *,
+    source: str,
+    record_kind: str = "record",
+) -> str:
+    value = str(row.get(field) or "").strip()
+    if not value:
+        raise ValueError(f"{source}: {record_kind} has no {field}")
+    return value
+
+
+class SingleEndpointConnector(Generic[SnapshotT]):
+    url: str
+
+    async def fetch(self, client: httpx.AsyncClient) -> SnapshotT:
+        payload = await fetch_json(client, self.url)
+        return self.parse(payload, observed_at=utc_now())
+
+    def parse(self, payload: object, *, observed_at: str) -> SnapshotT:
+        raise NotImplementedError
 
 
 class Connector(Protocol):
@@ -92,6 +117,28 @@ def epoch_timestamp(value: object, *, milliseconds: bool) -> str | None:
         return datetime.fromtimestamp(int(text) / divisor, timezone.utc).isoformat()
     except (OverflowError, TypeError, ValueError):
         return None
+
+
+def strict_epoch_timestamp(
+    value: object,
+    *,
+    milliseconds: bool,
+    source: str,
+    field: str,
+    allow_missing: bool,
+) -> str | None:
+    if value in (None, "", 0, "0"):
+        if allow_missing:
+            return None
+        raise ValueError(f"{source}: missing {field}")
+    try:
+        divisor = 1000 if milliseconds else 1
+        return datetime.fromtimestamp(
+            int(str(value)) / divisor,
+            timezone.utc,
+        ).isoformat()
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise ValueError(f"{source}: invalid {field} {value!r}") from exc
 
 
 async def fetch_json(client: httpx.AsyncClient, url: str, *, attempts: int = 3) -> Any:

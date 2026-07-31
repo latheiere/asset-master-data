@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
-from datetime import datetime, timezone
 from urllib.parse import urlencode
 
 import httpx
 
-from mdv.connectors.base import epoch_timestamp, fetch_json, market_availability, session_status, utc_now
+from mdv.connectors.base import (
+    SingleEndpointConnector,
+    epoch_timestamp,
+    fetch_json,
+    market_availability,
+    required_text,
+    session_status,
+    strict_epoch_timestamp,
+    utc_now,
+)
 from mdv.models import FinancingRecord, FinancingSnapshot, MarketRecord, MarketSnapshot, TradingSchedule
 from mdv.normalization import contract_direction, normalize_contract_type, normalize_product
 
@@ -35,13 +43,6 @@ def xt_market_schedule(market: dict, raw: dict) -> TradingSchedule | None:
         next_transition_at=next_at,
         next_transition_status=next_status,
     )
-
-
-def _required(row: dict, name: str, *, source: str) -> str:
-    value = str(row.get(name) or "").strip().upper()
-    if not value:
-        raise ValueError(f"{source}: record has no {name}")
-    return value
 
 
 def _xt_result(payload: object, *, source: str) -> object:
@@ -74,15 +75,12 @@ def _asset_tags(row: dict, field: str, *, source: str) -> dict:
     return raw
 
 
-class XtSpotConnector:
+class XtSpotConnector(SingleEndpointConnector[MarketSnapshot]):
     source = "XT_SPOT"
     venue = "XT"
     market_type = "SPOT"
     product = "SPOT"
     url = "https://sapi.xt.com/v4/public/symbol"
-
-    async def fetch(self, client: httpx.AsyncClient) -> MarketSnapshot:
-        return self.parse(await fetch_json(client, self.url), observed_at=utc_now())
 
     def parse(self, payload: object, *, observed_at: str) -> MarketSnapshot:
         result = _xt_result(payload, source=self.source)
@@ -115,9 +113,15 @@ class XtSpotConnector:
                     venue=self.venue,
                     market_type=self.market_type,
                     product=self.product,
-                    raw_symbol=_required(row, "symbol", source=self.source),
-                    base_symbol=_required(row, "baseCurrency", source=self.source),
-                    quote_symbol=_required(row, "quoteCurrency", source=self.source),
+                    raw_symbol=required_text(
+                        row, "symbol", source=self.source
+                    ).upper(),
+                    base_symbol=required_text(
+                        row, "baseCurrency", source=self.source
+                    ).upper(),
+                    quote_symbol=required_text(
+                        row, "quoteCurrency", source=self.source
+                    ).upper(),
                     settle_symbol=None,
                     contract_type="SPOT",
                     status=availability.status,
@@ -136,15 +140,12 @@ class XtSpotConnector:
         return snapshot
 
 
-class XtFutureConnector:
+class XtFutureConnector(SingleEndpointConnector[MarketSnapshot]):
     source = "XT_FUTURE"
     venue = "XT"
     market_type = "FUTURE"
     product = "U_BASED"
     url = "https://fapi.xt.com/future/market/v3/public/symbol/list"
-
-    async def fetch(self, client: httpx.AsyncClient) -> MarketSnapshot:
-        return self.parse(await fetch_json(client, self.url), observed_at=utc_now())
 
     def parse(self, payload: object, *, observed_at: str) -> MarketSnapshot:
         result = _xt_result(payload, source=self.source)
@@ -157,8 +158,12 @@ class XtFutureConnector:
                 raise ValueError(f"{self.source}: contract is not an object")
             raw_contract_type = str(row.get("contractType") or "").strip().upper()
             contract_type = normalize_contract_type(raw_contract_type, market_type="FUTURE")
-            base_symbol = _required(row, "baseCoin", source=self.source)
-            quote_symbol = _required(row, "quoteCoin", source=self.source)
+            base_symbol = required_text(
+                row, "baseCoin", source=self.source
+            ).upper()
+            quote_symbol = required_text(
+                row, "quoteCoin", source=self.source
+            ).upper()
             completed = row.get("deliveryCompletion") is True
             trade_enabled = row.get("tradeSwitch") is True
             open_enabled = row.get("openSwitch") is True
@@ -192,7 +197,9 @@ class XtFutureConnector:
                     venue=self.venue,
                     market_type=self.market_type,
                     product=normalize_product(self.market_type, contract_type),
-                    raw_symbol=_required(row, "symbol", source=self.source),
+                    raw_symbol=required_text(
+                        row, "symbol", source=self.source
+                    ).upper(),
                     base_symbol=base_symbol,
                     quote_symbol=quote_symbol,
                     settle_symbol=quote_symbol,
@@ -234,23 +241,23 @@ class XtFutureConnector:
         return snapshot
 
     def _expires_at(self, value: object, contract_type: str) -> str | None:
-        if contract_type != "DATED" or value in (None, "", 0, "0"):
+        if contract_type != "DATED":
             return None
-        try:
-            return datetime.fromtimestamp(int(str(value)) / 1000, timezone.utc).isoformat()
-        except (OverflowError, TypeError, ValueError) as exc:
-            raise ValueError(f"{self.source}: invalid deliveryDate {value!r}") from exc
+        return strict_epoch_timestamp(
+            value,
+            milliseconds=True,
+            source=self.source,
+            field="deliveryDate",
+            allow_missing=True,
+        )
 
 
-class XtCrossMarginConnector:
+class XtCrossMarginConnector(SingleEndpointConnector[FinancingSnapshot]):
     source = "XT_CROSS_MARGIN"
     venue = "XT"
     market_type = "FINANCING"
     product = "CROSS_MARGIN"
     url = "https://sapi.xt.com/v4/public/lever/symbol"
-
-    async def fetch(self, client: httpx.AsyncClient) -> FinancingSnapshot:
-        return self.parse(await fetch_json(client, self.url), observed_at=utc_now())
 
     def parse(self, payload: object, *, observed_at: str) -> FinancingSnapshot:
         rows = _xt_result(payload, source=self.source)
@@ -260,12 +267,12 @@ class XtCrossMarginConnector:
         for row in rows:
             if not isinstance(row, dict):
                 raise ValueError(f"{self.source}: margin pair is not an object")
-            pair = _required(row, "symbol", source=self.source)
+            pair = required_text(row, "symbol", source=self.source).upper()
             for role, asset_field, limit_field in (
                 ("BUY", "buyCurrency", "maxLoanAmountBuy"),
                 ("SELL", "sellCurrency", "maxLoanAmountSell"),
             ):
-                asset = _required(row, asset_field, source=self.source)
+                asset = required_text(row, asset_field, source=self.source).upper()
                 evidence[asset].append(
                     {
                         "pair": pair,
@@ -362,7 +369,7 @@ class XtCryptoLoanConnector:
         collateral = self._items(collateral_pages)
         records = []
         for row in loans:
-            asset = _required(row, "currency", source=self.source)
+            asset = required_text(row, "currency", source=self.source).upper()
             rates = []
             terms = []
             for label, days, available_field, rate_field in (
@@ -414,7 +421,7 @@ class XtCryptoLoanConnector:
                     self.venue,
                     self.product,
                     "COLLATERAL",
-                    _required(row, "currency", source=self.source),
+                    required_text(row, "currency", source=self.source).upper(),
                     eligible,
                     "ENABLED" if eligible else "DISABLED",
                     "REGULAR",

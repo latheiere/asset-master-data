@@ -1,11 +1,16 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from urllib.parse import urlencode
 
 import httpx
 
-from mdv.connectors.base import fetch_json, utc_now
+from mdv.connectors.base import (
+    SingleEndpointConnector,
+    fetch_json,
+    required_text,
+    strict_epoch_timestamp,
+    utc_now,
+)
 from mdv.models import MarketRecord, MarketSnapshot
 from mdv.normalization import contract_direction, normalize_status
 
@@ -24,13 +29,6 @@ CONTRACT_STATUSES = {
 }
 
 
-def _required(row: dict, name: str, *, source: str) -> str:
-    value = str(row.get(name) or "").strip()
-    if not value:
-        raise ValueError(f"{source}: instrument has no {name}")
-    return value
-
-
 def _data(payload: object, *, source: str) -> list:
     if not isinstance(payload, dict):
         raise ValueError(f"{source}: malformed payload")
@@ -42,22 +40,21 @@ def _data(payload: object, *, source: str) -> list:
     return rows
 
 
-class HtxSpotConnector:
+class HtxSpotConnector(SingleEndpointConnector[MarketSnapshot]):
     source = "HTX_SPOT"
     venue = "HTX"
     market_type = "SPOT"
     product = "SPOT"
     url = "https://api.huobi.pro/v2/settings/common/symbols"
 
-    async def fetch(self, client: httpx.AsyncClient) -> MarketSnapshot:
-        return self.parse(await fetch_json(client, self.url), observed_at=utc_now())
-
     def parse(self, payload: object, *, observed_at: str) -> MarketSnapshot:
         markets = []
         for row in _data(payload, source=self.source):
             if not isinstance(row, dict):
                 raise ValueError(f"{self.source}: symbol is not an object")
-            venue_status = _required(row, "state", source=self.source).upper()
+            venue_status = required_text(
+                row, "state", source=self.source, record_kind="instrument"
+            ).upper()
             active = venue_status == "ONLINE" and row.get("te") is True
             markets.append(
                 MarketRecord(
@@ -65,9 +62,15 @@ class HtxSpotConnector:
                     self.venue,
                     self.market_type,
                     self.product,
-                    _required(row, "sc", source=self.source),
-                    _required(row, "bcdn", source=self.source).upper(),
-                    _required(row, "qcdn", source=self.source).upper(),
+                    required_text(
+                        row, "sc", source=self.source, record_kind="instrument"
+                    ),
+                    required_text(
+                        row, "bcdn", source=self.source, record_kind="instrument"
+                    ).upper(),
+                    required_text(
+                        row, "qcdn", source=self.source, record_kind="instrument"
+                    ).upper(),
                     None,
                     "SPOT",
                     normalize_status(venue_status) if active else "CLOSED",
@@ -126,9 +129,13 @@ class HtxFutureConnector:
                 raise ValueError(
                     f"{self.source}: unknown contract_status {row.get('contract_status')!r}"
                 ) from exc
-            base_symbol = _required(row, "symbol", source=self.source).upper()
+            base_symbol = required_text(
+                row, "symbol", source=self.source, record_kind="instrument"
+            ).upper()
             if self.linear:
-                pair = _required(row, "pair", source=self.source).split("-")
+                pair = required_text(
+                    row, "pair", source=self.source, record_kind="instrument"
+                ).split("-")
                 if len(pair) != 2:
                     raise ValueError(f"{self.source}: invalid pair {row.get('pair')!r}")
                 quote_symbol = pair[1].upper()
@@ -146,7 +153,9 @@ class HtxFutureConnector:
                     self.venue,
                     self.market_type,
                     contract_type,
-                    _required(row, "contract_code", source=self.source),
+                    required_text(
+                        row, "contract_code", source=self.source, record_kind="instrument"
+                    ),
                     base_symbol,
                     quote_symbol,
                     settle_symbol,
@@ -187,12 +196,15 @@ class HtxFutureConnector:
         return snapshot
 
     def _expires_at(self, value: object) -> str | None:
-        if not self.dated or value in (None, "", 0, "0"):
+        if not self.dated:
             return None
-        try:
-            return datetime.fromtimestamp(int(str(value)) / 1000, timezone.utc).isoformat()
-        except (OverflowError, TypeError, ValueError) as exc:
-            raise ValueError(f"{self.source}: invalid delivery_time {value!r}") from exc
+        return strict_epoch_timestamp(
+            value,
+            milliseconds=True,
+            source=self.source,
+            field="delivery_time",
+            allow_missing=True,
+        )
 
 
 def htx_connectors() -> list[HtxSpotConnector | HtxFutureConnector]:

@@ -7,18 +7,19 @@ from urllib.parse import urlencode
 
 import httpx
 
-from mdv.connectors.base import epoch_timestamp, fetch_json, market_availability, session_status, utc_now
+from mdv.connectors.base import (
+    SingleEndpointConnector,
+    epoch_timestamp,
+    fetch_json,
+    market_availability,
+    required_text,
+    session_status,
+    utc_now,
+)
 from mdv.contract_metadata import NORMALIZATION_VERSION, positive_decimal, with_contract_evidence
 from mdv.matching import normalize_venue_asset_symbol
 from mdv.models import FinancingRecord, FinancingSnapshot, MarketRecord, MarketSnapshot, TradingSchedule
 from mdv.normalization import contract_direction, normalize_status
-
-
-def _required(row: dict, name: str, *, source: str) -> str:
-    value = str(row.get(name) or "").strip()
-    if not value:
-        raise ValueError(f"{source}: product has no {name}")
-    return value
 
 
 def _restricted(row: dict) -> bool:
@@ -65,15 +66,12 @@ def coinbase_market_schedule(market: dict, raw: dict) -> TradingSchedule | None:
     )
 
 
-class CoinbaseSpotConnector:
+class CoinbaseSpotConnector(SingleEndpointConnector[MarketSnapshot]):
     source = "COINBASE_SPOT"
     venue = "COINBASE"
     market_type = "SPOT"
     product = "SPOT"
     url = "https://api.exchange.coinbase.com/products"
-
-    async def fetch(self, client: httpx.AsyncClient) -> MarketSnapshot:
-        return self.parse(await fetch_json(client, self.url), observed_at=utc_now())
 
     def parse(self, payload: object, *, observed_at: str) -> MarketSnapshot:
         if not isinstance(payload, list):
@@ -83,7 +81,9 @@ class CoinbaseSpotConnector:
         for row in payload:
             if not isinstance(row, dict):
                 raise ValueError(f"{self.source}: product is not an object")
-            venue_status = _required(row, "status", source=self.source).upper()
+            venue_status = required_text(
+                row, "status", source=self.source, record_kind="product"
+            ).upper()
             active, status = _active_status(venue_status, row)
             markets.append(
                 MarketRecord(
@@ -91,9 +91,15 @@ class CoinbaseSpotConnector:
                     self.venue,
                     self.market_type,
                     self.product,
-                    _required(row, "id", source=self.source),
-                    _required(row, "base_currency", source=self.source).upper(),
-                    _required(row, "quote_currency", source=self.source).upper(),
+                    required_text(
+                        row, "id", source=self.source, record_kind="product"
+                    ),
+                    required_text(
+                        row, "base_currency", source=self.source, record_kind="product"
+                    ).upper(),
+                    required_text(
+                        row, "quote_currency", source=self.source, record_kind="product"
+                    ).upper(),
                     None,
                     "SPOT",
                     status,
@@ -197,10 +203,16 @@ class CoinbasePerpetualConnector:
                 raise ValueError(f"{self.source}: international instrument is not an object")
             if str(row.get("type") or "").upper() != "PERP":
                 continue
-            symbol = _required(row, "symbol", source=self.source).upper()
+            symbol = required_text(
+                row, "symbol", source=self.source, record_kind="product"
+            ).upper()
             asset_key = (
-                _required(row, "base_asset_name", source=self.source).upper(),
-                _required(row, "quote_asset_name", source=self.source).upper(),
+                required_text(
+                    row, "base_asset_name", source=self.source, record_kind="product"
+                ).upper(),
+                required_text(
+                    row, "quote_asset_name", source=self.source, record_kind="product"
+                ).upper(),
             )
             if symbol in by_symbol or asset_key in by_assets:
                 raise ValueError(
@@ -224,11 +236,19 @@ class CoinbasePerpetualConnector:
             raise ValueError(f"{self.source}: product has no future_product_details")
         if str(details.get("contract_expiry_type") or "").upper() != "PERPETUAL":
             raise ValueError(f"{self.source}: product is not perpetual")
-        venue_status = _required(row, "status", source=self.source).upper()
+        venue_status = required_text(
+            row, "status", source=self.source, record_kind="product"
+        ).upper()
         active, status = _active_status(venue_status, row)
-        base_symbol = _required(details, "contract_root_unit", source=self.source).upper()
-        quote_symbol = _required(row, "quote_currency_id", source=self.source).upper()
-        product_id = _required(row, "product_id", source=self.source)
+        base_symbol = required_text(
+            details, "contract_root_unit", source=self.source, record_kind="product"
+        ).upper()
+        quote_symbol = required_text(
+            row, "quote_currency_id", source=self.source, record_kind="product"
+        ).upper()
+        product_id = required_text(
+            row, "product_id", source=self.source, record_kind="product"
+        )
         instrument = instruments[0].get(product_id.upper().removesuffix("-INTX"))
         if instrument is None:
             instrument = instruments[1].get((base_symbol, quote_symbol))
@@ -328,15 +348,12 @@ class CoinbasePerpetualConnector:
         )
 
 
-class CoinbaseCrossMarginConnector:
+class CoinbaseCrossMarginConnector(SingleEndpointConnector[FinancingSnapshot]):
     source = "COINBASE_CROSS_MARGIN"
     venue = "COINBASE"
     market_type = "FINANCING"
     product = "CROSS_MARGIN"
     url = CoinbaseSpotConnector.url
-
-    async def fetch(self, client: httpx.AsyncClient) -> FinancingSnapshot:
-        return self.parse(await fetch_json(client, self.url), observed_at=utc_now())
 
     def parse(self, payload: object, *, observed_at: str) -> FinancingSnapshot:
         if not isinstance(payload, list):
@@ -345,11 +362,17 @@ class CoinbaseCrossMarginConnector:
         for row in payload:
             if not isinstance(row, dict):
                 raise ValueError(f"{self.source}: product is not an object")
-            pair = _required(row, "id", source=self.source)
-            venue_status = _required(row, "status", source=self.source).upper()
+            pair = required_text(
+                row, "id", source=self.source, record_kind="product"
+            )
+            venue_status = required_text(
+                row, "status", source=self.source, record_kind="product"
+            ).upper()
             active, _ = _active_status(venue_status, row)
             for role, field in (("BASE", "base_currency"), ("QUOTE", "quote_currency")):
-                asset = _required(row, field, source=self.source).upper()
+                asset = required_text(
+                    row, field, source=self.source, record_kind="product"
+                ).upper()
                 evidence[asset].append(
                     {
                         "pair": pair,

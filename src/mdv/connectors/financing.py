@@ -5,7 +5,7 @@ from collections import defaultdict
 
 import httpx
 
-from mdv.connectors.base import fetch_json, utc_now
+from mdv.connectors.base import SingleEndpointConnector, fetch_json, utc_now
 from mdv.models import FinancingRecord, FinancingSnapshot
 
 
@@ -23,15 +23,12 @@ def _bitget_data(payload: object, *, source: str) -> object:
     return payload.get("data")
 
 
-class BinanceCrossMarginPublicConnector:
+class BinanceCrossMarginPublicConnector(SingleEndpointConnector[FinancingSnapshot]):
     source = "BINANCE_CROSS_MARGIN_PUBLIC"
     venue = "BINANCE"
     market_type = "FINANCING"
     product = "CROSS_MARGIN"
     url = "https://api.binance.com/api/v3/exchangeInfo?showPermissionSets=true"
-
-    async def fetch(self, client: httpx.AsyncClient) -> FinancingSnapshot:
-        return self.parse(await fetch_json(client, self.url), observed_at=utc_now())
 
     def parse(self, payload: object, *, observed_at: str) -> FinancingSnapshot:
         symbols = payload.get("symbols") if isinstance(payload, dict) else None
@@ -81,15 +78,12 @@ class BinanceCrossMarginPublicConnector:
         return snapshot
 
 
-class BybitCrossMarginConnector:
+class BybitCrossMarginConnector(SingleEndpointConnector[FinancingSnapshot]):
     source = "BYBIT_CROSS_MARGIN"
     venue = "BYBIT"
     market_type = "FINANCING"
     product = "CROSS_MARGIN"
     url = "https://api.bybit.com/v5/spot-margin-trade/data"
-
-    async def fetch(self, client: httpx.AsyncClient) -> FinancingSnapshot:
-        return self.parse(await fetch_json(client, self.url), observed_at=utc_now())
 
     def parse(self, payload: object, *, observed_at: str) -> FinancingSnapshot:
         if not isinstance(payload, dict) or payload.get("retCode") != 0:
@@ -226,15 +220,12 @@ class BybitCryptoLoanConnector:
         return value
 
 
-class BitgetCrossMarginConnector:
+class BitgetCrossMarginConnector(SingleEndpointConnector[FinancingSnapshot]):
     source = "BITGET_CROSS_MARGIN"
     venue = "BITGET"
     market_type = "FINANCING"
     product = "CROSS_MARGIN"
     url = "https://api.bitget.com/api/v2/margin/currencies"
-
-    async def fetch(self, client: httpx.AsyncClient) -> FinancingSnapshot:
-        return self.parse(await fetch_json(client, self.url), observed_at=utc_now())
 
     def parse(self, payload: object, *, observed_at: str) -> FinancingSnapshot:
         rows = _bitget_data(payload, source=self.source)
@@ -264,15 +255,12 @@ class BitgetCrossMarginConnector:
         return snapshot
 
 
-class BitgetCryptoLoanConnector:
+class BitgetCryptoLoanConnector(SingleEndpointConnector[FinancingSnapshot]):
     source = "BITGET_CRYPTO_LOAN"
     venue = "BITGET"
     market_type = "FINANCING"
     product = "CRYPTO_LOAN"
     url = "https://api.bitget.com/api/v2/earn/loan/public/coinInfos"
-
-    async def fetch(self, client: httpx.AsyncClient) -> FinancingSnapshot:
-        return self.parse(await fetch_json(client, self.url), observed_at=utc_now())
 
     def parse(self, payload: object, *, observed_at: str) -> FinancingSnapshot:
         data = _bitget_data(payload, source=self.source)
@@ -321,15 +309,12 @@ class BitgetCryptoLoanConnector:
         return snapshot
 
 
-class GateCrossMarginConnector:
+class GateCrossMarginConnector(SingleEndpointConnector[FinancingSnapshot]):
     source = "GATE_CROSS_MARGIN"
     venue = "GATE"
     market_type = "FINANCING"
     product = "CROSS_MARGIN"
     url = "https://api.gateio.ws/api/v4/margin/cross/currencies"
-
-    async def fetch(self, client: httpx.AsyncClient) -> FinancingSnapshot:
-        return self.parse(await fetch_json(client, self.url), observed_at=utc_now())
 
     def parse(self, payload: object, *, observed_at: str) -> FinancingSnapshot:
         if not isinstance(payload, list):
@@ -364,15 +349,12 @@ class GateCrossMarginConnector:
         return snapshot
 
 
-class GateCryptoLoanConnector:
+class GateCryptoLoanConnector(SingleEndpointConnector[FinancingSnapshot]):
     source = "GATE_CRYPTO_LOAN"
     venue = "GATE"
     market_type = "FINANCING"
     product = "CRYPTO_LOAN"
     url = "https://api.gateio.ws/api/v4/loan/multi_collateral/currencies"
-
-    async def fetch(self, client: httpx.AsyncClient) -> FinancingSnapshot:
-        return self.parse(await fetch_json(client, self.url), observed_at=utc_now())
 
     def parse(self, payload: object, *, observed_at: str) -> FinancingSnapshot:
         if not isinstance(payload, dict):
@@ -400,15 +382,12 @@ class GateCryptoLoanConnector:
         return snapshot
 
 
-class KucoinCrossMarginConnector:
+class KucoinCrossMarginConnector(SingleEndpointConnector[FinancingSnapshot]):
     source = "KUCOIN_CROSS_MARGIN"
     venue = "KUCOIN"
     market_type = "FINANCING"
     product = "CROSS_MARGIN"
     url = "https://api.kucoin.com/api/v1/margin/config"
-
-    async def fetch(self, client: httpx.AsyncClient) -> FinancingSnapshot:
-        return self.parse(await fetch_json(client, self.url), observed_at=utc_now())
 
     def parse(self, payload: object, *, observed_at: str) -> FinancingSnapshot:
         if not isinstance(payload, dict) or str(payload.get("code")) != "200000":

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
-import httpx
-
-from mdv.connectors.base import epoch_timestamp, fetch_json, market_availability, session_status, utc_now
+from mdv.connectors.base import (
+    SingleEndpointConnector,
+    epoch_timestamp,
+    market_availability,
+    required_text,
+    session_status,
+    strict_epoch_timestamp,
+)
 from mdv.models import MarketRecord, MarketSnapshot, TradingSchedule
 from mdv.normalization import contract_direction, normalize_status
 
@@ -17,13 +20,6 @@ def _rows(payload: object, *, source: str) -> list:
     if not isinstance(rows, list):
         raise ValueError(f"{source}: response has no data.symbols array")
     return rows
-
-
-def _required(row: dict, name: str, *, source: str) -> str:
-    value = str(row.get(name) or "").strip()
-    if not value:
-        raise ValueError(f"{source}: market has no {name}")
-    return value.upper()
 
 
 def bitmart_market_schedule(market: dict, raw: dict) -> TradingSchedule | None:
@@ -54,31 +50,36 @@ def bitmart_market_schedule(market: dict, raw: dict) -> TradingSchedule | None:
     )
 
 
-class BitmartSpotConnector:
+class BitmartSpotConnector(SingleEndpointConnector[MarketSnapshot]):
     source = "BITMART_SPOT"
     venue = "BITMART"
     market_type = "SPOT"
     product = "SPOT"
     url = "https://api-cloud.bitmart.com/spot/v1/symbols/details"
 
-    async def fetch(self, client: httpx.AsyncClient) -> MarketSnapshot:
-        return self.parse(await fetch_json(client, self.url), observed_at=utc_now())
-
     def parse(self, payload: object, *, observed_at: str) -> MarketSnapshot:
         markets = []
         for row in _rows(payload, source=self.source):
             if not isinstance(row, dict):
                 raise ValueError(f"{self.source}: market is not an object")
-            venue_status = _required(row, "trade_status", source=self.source)
+            venue_status = required_text(
+                row, "trade_status", source=self.source, record_kind="market"
+            ).upper()
             markets.append(
                 MarketRecord(
                     self.source,
                     self.venue,
                     self.market_type,
                     self.product,
-                    _required(row, "symbol", source=self.source),
-                    _required(row, "base_currency", source=self.source),
-                    _required(row, "quote_currency", source=self.source),
+                    required_text(
+                        row, "symbol", source=self.source, record_kind="market"
+                    ).upper(),
+                    required_text(
+                        row, "base_currency", source=self.source, record_kind="market"
+                    ).upper(),
+                    required_text(
+                        row, "quote_currency", source=self.source, record_kind="market"
+                    ).upper(),
                     None,
                     "SPOT",
                     normalize_status(venue_status),
@@ -96,15 +97,12 @@ class BitmartSpotConnector:
         return snapshot
 
 
-class BitmartFutureConnector:
+class BitmartFutureConnector(SingleEndpointConnector[MarketSnapshot]):
     source = "BITMART_FUTURE"
     venue = "BITMART"
     market_type = "FUTURE"
     product = "FUTURES"
     url = "https://api-cloud-v2.bitmart.com/contract/public/details"
-
-    async def fetch(self, client: httpx.AsyncClient) -> MarketSnapshot:
-        return self.parse(await fetch_json(client, self.url), observed_at=utc_now())
 
     def parse(self, payload: object, *, observed_at: str) -> MarketSnapshot:
         markets = []
@@ -112,12 +110,18 @@ class BitmartFutureConnector:
             if not isinstance(row, dict):
                 raise ValueError(f"{self.source}: contract is not an object")
             contract_type = self._contract_type(row)
-            base_symbol = _required(row, "base_currency", source=self.source)
-            quote_symbol = _required(row, "quote_currency", source=self.source)
+            base_symbol = required_text(
+                row, "base_currency", source=self.source, record_kind="market"
+            ).upper()
+            quote_symbol = required_text(
+                row, "quote_currency", source=self.source, record_kind="market"
+            ).upper()
             venue_product, settle_symbol = self._margin_product(
                 base_symbol=base_symbol, quote_symbol=quote_symbol
             )
-            venue_status = _required(row, "status", source=self.source)
+            venue_status = required_text(
+                row, "status", source=self.source, record_kind="market"
+            ).upper()
             raw = dict(row)
             if isinstance(row.get("tradfi_info"), dict):
                 raw["_metadata"] = {
@@ -144,7 +148,9 @@ class BitmartFutureConnector:
                     self.venue,
                     self.market_type,
                     contract_type,
-                    _required(row, "symbol", source=self.source),
+                    required_text(
+                        row, "symbol", source=self.source, record_kind="market"
+                    ).upper(),
                     base_symbol,
                     quote_symbol,
                     settle_symbol,
@@ -204,12 +210,15 @@ class BitmartFutureConnector:
         return "USDT-M", quote_symbol
 
     def _expires_at(self, value: object, contract_type: str) -> str | None:
-        if contract_type != "DATED" or value in (None, "", 0, "0"):
+        if contract_type != "DATED":
             return None
-        try:
-            return datetime.fromtimestamp(int(str(value)) / 1000, timezone.utc).isoformat()
-        except (OverflowError, TypeError, ValueError) as exc:
-            raise ValueError(f"{self.source}: invalid expire_timestamp {value!r}") from exc
+        return strict_epoch_timestamp(
+            value,
+            milliseconds=True,
+            source=self.source,
+            field="expire_timestamp",
+            allow_missing=True,
+        )
 
 
 def bitmart_connectors() -> list[BitmartSpotConnector | BitmartFutureConnector]:

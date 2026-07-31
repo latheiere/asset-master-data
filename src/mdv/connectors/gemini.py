@@ -4,7 +4,7 @@ import asyncio
 
 import httpx
 
-from mdv.connectors.base import fetch_json, utc_now
+from mdv.connectors.base import SingleEndpointConnector, fetch_json, utc_now
 from mdv.models import MarketRecord, MarketSnapshot
 from mdv.normalization import contract_direction, normalize_status
 
@@ -26,15 +26,12 @@ def _split_symbol(symbol: object, *, source: str) -> tuple[str, str]:
     raise ValueError(f"{source}: cannot derive base/quote from {symbol!r}")
 
 
-class GeminiSpotConnector:
+class GeminiSpotConnector(SingleEndpointConnector[MarketSnapshot]):
     source = "GEMINI_SPOT"
     venue = "GEMINI"
     market_type = "SPOT"
     product = "SPOT"
     url = SYMBOLS_URL
-
-    async def fetch(self, client: httpx.AsyncClient) -> MarketSnapshot:
-        return self.parse(await fetch_json(client, self.url), observed_at=utc_now())
 
     def parse(self, payload: object, *, observed_at: str) -> MarketSnapshot:
         if not isinstance(payload, list):
