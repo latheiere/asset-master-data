@@ -97,6 +97,7 @@ collection run or current row can be changed.
 | KuCoin | Spot | Perpetuals and dated futures | Public currency catalog | — |
 | MEXC | Spot | Perpetuals | — | — |
 | OKX | Spot | Linear/inverse perpetuals and dated futures | — | — |
+| Upbit | Spot | — | — | — |
 | WhiteBIT | Spot | Crypto and TradFi perpetuals | — | — |
 | XT | Spot | Linear perpetuals and dated futures | Pair eligibility and rates | Loan and collateral assets |
 
@@ -104,7 +105,7 @@ Binance and Coinbase eligibility comes from public pair-level market flags;
 Bitget, Bitfinex, and XT also publish pair-level evidence. Bybit, Gate, and KuCoin publish
 asset-level margin catalogs. Gate and XT publish public loan and collateral
 catalogs; XT additionally provides regular-user rates, terms, limits, and pledge
-thresholds. Binance, BitMart, Coinbase, Deribit, Gemini, KuCoin, and MEXC do not expose credential-free
+thresholds. Binance, BitMart, Coinbase, Deribit, Gemini, KuCoin, MEXC, and Upbit do not expose credential-free
 crypto-loan catalogs, so those universes are not collected. MEXC, HTX, and OKX
 do not expose a complete public margin catalog; Hyperliquid and WhiteBIT do not
 expose a complete public financing catalog.

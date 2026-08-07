@@ -12,6 +12,7 @@ from mdv.connectors.hyperliquid import hyperliquid_connectors
 from mdv.connectors.kucoin import kucoin_connectors
 from mdv.connectors.mexc import mexc_connectors
 from mdv.connectors.okx import okx_connectors
+from mdv.connectors.upbit import upbit_connectors
 from mdv.connectors.whitebit import whitebit_connectors
 from mdv.connectors.xt import xt_connectors, xt_financing_connectors
 from mdv.lifecycle import (
@@ -46,6 +47,7 @@ __all__ = [
     "kucoin_connectors",
     "mexc_connectors",
     "okx_connectors",
+    "upbit_connectors",
     "whitebit_connectors",
     "xt_connectors",
     "xt_financing_connectors",

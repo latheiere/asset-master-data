@@ -49,7 +49,7 @@ def test_uniform_single_endpoint_connector_classes_inherit_fetch():
         if isinstance(connector, SingleEndpointConnector)
     }
 
-    assert len(connector_types) == 24
+    assert len(connector_types) == 25
     assert all("fetch" not in connector_type.__dict__ for connector_type in connector_types)
 
 

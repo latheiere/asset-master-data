@@ -27,6 +27,7 @@ from mdv.connectors.financing import (
 from mdv.connectors.mexc import mexc_connectors, mexc_market_schedule
 from mdv.connectors.kucoin import kucoin_connectors
 from mdv.connectors.okx import okx_connectors
+from mdv.connectors.upbit import upbit_connectors
 from mdv.connectors.whitebit import (
     whitebit_connectors,
     whitebit_market_absence_scope,
@@ -220,6 +221,13 @@ def _whitebit_trade_url(market: dict) -> str | None:
     return f"https://whitebit.com/trade/{raw}" if raw else None
 
 
+def _upbit_trade_url(market: dict) -> str | None:
+    raw, _, _, _, _ = _encoded_market(market)
+    if market.get("market_type") != "SPOT" or not raw:
+        return None
+    return f"https://upbit.com/exchange?code=CRIX.UPBIT.{raw}"
+
+
 INTEGRATIONS = {
     integration.venue: integration
     for integration in (
@@ -265,6 +273,7 @@ INTEGRATIONS = {
         VenueIntegration(
             "KUCOIN", kucoin_connectors, _kucoin_trade_url, kucoin_financing_connectors,
         ),
+        VenueIntegration("UPBIT", upbit_connectors, _upbit_trade_url),
         VenueIntegration(
             "WHITEBIT", whitebit_connectors, _whitebit_trade_url,
             market_schedule_builder=whitebit_market_schedule,

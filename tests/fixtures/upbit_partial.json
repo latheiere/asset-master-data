@@ -1,0 +1,12 @@
+[
+  {
+    "market": "KRW-BTC",
+    "korean_name": "비트코인",
+    "english_name": "Bitcoin"
+  },
+  {
+    "market": "USDT-",
+    "korean_name": "불완전",
+    "english_name": "Incomplete"
+  }
+]
