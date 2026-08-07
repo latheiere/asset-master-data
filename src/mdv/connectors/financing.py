@@ -1,11 +1,16 @@
 from __future__ import annotations
 
-import asyncio
 from collections import defaultdict
 
 import httpx
 
-from mdv.connectors.base import SingleEndpointConnector, fetch_json, utc_now
+from mdv.connectors.base import (
+    SingleEndpointConnector,
+    fetch_json,
+    gather_or_raise,
+    utc_now,
+)
+from mdv.connectors.bybit import BYBIT_BASE_URL
 from mdv.models import FinancingRecord, FinancingSnapshot
 
 
@@ -83,7 +88,7 @@ class BybitCrossMarginConnector(SingleEndpointConnector[FinancingSnapshot]):
     venue = "BYBIT"
     market_type = "FINANCING"
     product = "CROSS_MARGIN"
-    url = "https://api.bybit.com/v5/spot-margin-trade/data"
+    url = f"{BYBIT_BASE_URL}/v5/spot-margin-trade/data"
 
     def parse(self, payload: object, *, observed_at: str) -> FinancingSnapshot:
         if not isinstance(payload, dict) or payload.get("retCode") != 0:
@@ -135,11 +140,11 @@ class BybitCryptoLoanConnector:
     venue = "BYBIT"
     market_type = "FINANCING"
     product = "CRYPTO_LOAN"
-    loan_url = "https://api.bybit.com/v5/crypto-loan-common/loanable-data"
-    collateral_url = "https://api.bybit.com/v5/crypto-loan/collateral-data"
+    loan_url = f"{BYBIT_BASE_URL}/v5/crypto-loan-common/loanable-data"
+    collateral_url = f"{BYBIT_BASE_URL}/v5/crypto-loan/collateral-data"
 
     async def fetch(self, client: httpx.AsyncClient) -> FinancingSnapshot:
-        loan, collateral = await asyncio.gather(
+        loan, collateral = await gather_or_raise(
             fetch_json(client, self.loan_url),
             fetch_json(client, self.collateral_url),
         )

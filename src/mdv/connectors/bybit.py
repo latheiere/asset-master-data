@@ -16,6 +16,9 @@ from mdv.models import MarketRecord, MarketSnapshot, TradingSchedule
 from mdv.normalization import contract_direction, normalize_contract_type, normalize_product
 
 
+BYBIT_BASE_URL = "https://api.bytick.com"
+
+
 def bybit_market_schedule(market: dict, raw: dict) -> TradingSchedule | None:
     if (
         market.get("market_type") != "FUTURE"
@@ -30,7 +33,7 @@ def bybit_market_schedule(market: dict, raw: dict) -> TradingSchedule | None:
 
 class BybitConnector:
     venue = "BYBIT"
-    url = "https://api.bybit.com/v5/market/instruments-info"
+    url = f"{BYBIT_BASE_URL}/v5/market/instruments-info"
 
     def __init__(
         self,

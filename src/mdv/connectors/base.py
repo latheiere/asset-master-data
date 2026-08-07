@@ -6,7 +6,7 @@ import random
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable, Generic, Mapping, Protocol, TypeVar
+from typing import Any, Awaitable, Callable, Generic, Mapping, Protocol, TypeVar
 
 import httpx
 
@@ -24,6 +24,21 @@ class _StreamingJSONError(ValueError):
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def exception_detail(exc: BaseException) -> str:
+    """Include an exception type even when its message is empty."""
+    message = str(exc).strip()
+    return f"{type(exc).__name__}: {message}" if message else type(exc).__name__
+
+
+async def gather_or_raise(*awaitables: Awaitable[Any]) -> tuple[Any, ...]:
+    """Drain concurrent requests before propagating the first failure."""
+    results = await asyncio.gather(*awaitables, return_exceptions=True)
+    for result in results:
+        if isinstance(result, BaseException):
+            raise result
+    return tuple(results)
 
 
 def required_text(
@@ -156,7 +171,10 @@ async def fetch_json(client: httpx.AsyncClient, url: str, *, attempts: int = 3) 
                 raise
             if attempt + 1 < attempts:
                 await asyncio.sleep(_retry_delay(exc, attempt))
-    raise RuntimeError(f"GET {url} failed after {attempts} attempts: {last_error}")
+    assert last_error is not None
+    raise RuntimeError(
+        f"GET {url} failed after {attempts} attempts: {exception_detail(last_error)}"
+    ) from last_error
 
 
 async def fetch_json_array(
@@ -189,7 +207,10 @@ async def fetch_json_array(
                 raise
             if attempt + 1 < attempts:
                 await asyncio.sleep(_retry_delay(exc, attempt))
-    raise RuntimeError(f"GET {url} failed after {attempts} attempts: {last_error}")
+    assert last_error is not None
+    raise RuntimeError(
+        f"GET {url} failed after {attempts} attempts: {exception_detail(last_error)}"
+    ) from last_error
 
 
 async def _iter_json_array(
@@ -262,7 +283,10 @@ async def post_json(
                 raise
             if attempt + 1 < attempts:
                 await asyncio.sleep(_retry_delay(exc, attempt))
-    raise RuntimeError(f"POST {url} failed after {attempts} attempts: {last_error}")
+    assert last_error is not None
+    raise RuntimeError(
+        f"POST {url} failed after {attempts} attempts: {exception_detail(last_error)}"
+    ) from last_error
 
 
 def _transient_status(status_code: int) -> bool:

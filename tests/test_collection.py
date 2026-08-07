@@ -8,7 +8,7 @@ import pytest
 
 from mdv.cli import build_parser
 from mdv.collection import CollectionService
-from mdv.connectors.base import fetch_json, fetch_json_array
+from mdv.connectors.base import fetch_json, fetch_json_array, gather_or_raise
 from mdv.db import SQLiteStore
 from mdv.lifecycle import SourceLifecycle
 from mdv.models import FinancingRecord, FinancingSnapshot, MarketRecord, MarketSnapshot
@@ -379,6 +379,41 @@ def test_connector_retry_is_bounded_and_skips_permanent_http_errors(monkeypatch)
 
     asyncio.run(run())
     assert calls == {"permanent": 1, "transient": 2}
+
+
+def test_connector_retry_reports_exception_type_when_message_is_empty(monkeypatch):
+    async def no_sleep(_delay):
+        return None
+
+    monkeypatch.setattr("mdv.connectors.base.asyncio.sleep", no_sleep)
+
+    async def run():
+        def timeout(_request):
+            raise httpx.ReadTimeout("")
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(timeout)) as client:
+            await fetch_json(client, "https://example.test", attempts=2)
+
+    with pytest.raises(RuntimeError, match="failed after 2 attempts: ReadTimeout"):
+        asyncio.run(run())
+
+
+def test_concurrent_connector_requests_are_drained_before_failure_propagates():
+    completed = []
+
+    async def fail():
+        raise RuntimeError("request failed")
+
+    async def finish():
+        await asyncio.sleep(0)
+        completed.append(True)
+
+    async def run():
+        await gather_or_raise(fail(), finish())
+
+    with pytest.raises(RuntimeError, match="request failed"):
+        asyncio.run(run())
+    assert completed == [True]
 
 
 def test_streaming_json_array_handles_chunk_boundaries_and_retries(monkeypatch):
