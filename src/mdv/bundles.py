@@ -15,7 +15,7 @@ from mdv.connectors import (
     lifecycle_snapshot,
     source_is_collectable,
 )
-from mdv.connectors.base import Connector, utc_now
+from mdv.connectors.base import Connector, exception_detail, utc_now
 from mdv.db import SQLiteStore
 from mdv.lifecycle import SourceLifecycle
 from mdv.models import (
@@ -110,7 +110,7 @@ async def export_collection_bundle(
         if isinstance(value, BaseException):
             entry.update(
                 status="FAILED",
-                error=f"{type(value).__name__}: {value}",
+                error=exception_detail(value),
             )
         else:
             try:
@@ -122,7 +122,7 @@ async def export_collection_bundle(
                 value.validate()
             except Exception as exc:
                 entry.update(
-                    status="FAILED", error=f"{type(exc).__name__}: {exc}"
+                    status="FAILED", error=exception_detail(exc)
                 )
             else:
                 entry.update(
@@ -244,7 +244,7 @@ def _apply_collection_bundle_unlocked(
                 tag_observed_at = snapshot.observed_at
                 tag_result_index = len(results) - 1
         except Exception as exc:
-            error = f"{type(exc).__name__}: {exc}"
+            error = exception_detail(exc)
             run_id = store.record_failed_run(
                 source=entry["source"],
                 venue=entry["venue"],
@@ -265,7 +265,7 @@ def _apply_collection_bundle_unlocked(
                 tag_run_id=tag_run_id, tag_observed_at=tag_observed_at
             )
         except Exception as exc:
-            projection_error = f"projection rebuild failed: {type(exc).__name__}: {exc}"
+            projection_error = f"projection rebuild failed: {exception_detail(exc)}"
             failed_index = tag_result_index
             if failed_index is None:
                 failed_index = next(index for index, result in enumerate(results) if result.ok)

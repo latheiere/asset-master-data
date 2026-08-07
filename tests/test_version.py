@@ -243,6 +243,17 @@ def test_make_exposes_production_collection_separately_from_deployment():
     assert "-m mdv.runtime_backup --help" in makefile
 
 
+def test_local_live_commands_share_the_configured_database_path():
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+
+    assert "CONFIG_PATH ?= config/config.yaml" in makefile
+    assert (
+        'COLLECT_COMMAND ?= $(PYTHON) -m mdv.cli --config "$(CONFIG_PATH)" collect'
+        in makefile
+    )
+    assert '$(PYTHON) -m mdv.cli --config "$(CONFIG_PATH)" serve' in makefile
+
+
 def test_cli_reports_distribution_version(capsys):
     with pytest.raises(SystemExit, match="0"):
         build_parser().parse_args(["--version"])

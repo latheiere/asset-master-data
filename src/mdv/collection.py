@@ -12,7 +12,7 @@ from mdv.connectors import (
     default_collection_connectors,
     lifecycle_snapshot,
 )
-from mdv.connectors.base import Connector
+from mdv.connectors.base import Connector, exception_detail
 from mdv.db import SQLiteStore
 from mdv.lifecycle import SourceLifecycle
 from mdv.models import FinancingSnapshot
@@ -238,7 +238,7 @@ class CollectionService:
                     for task in completed:
                         index, connector, value = task.result()
                         if isinstance(value, BaseException):
-                            error = f"{type(value).__name__}: {value}"
+                            error = exception_detail(value)
                             run_id = self.store.record_failed_run(
                                 source=connector.source,
                                 venue=connector.venue,
@@ -267,7 +267,7 @@ class CollectionService:
                                 )
                             )
                         except Exception as exc:
-                            error = f"{type(exc).__name__}: {exc}"
+                            error = exception_detail(exc)
                             run_id = self.store.record_failed_run(
                                 source=connector.source,
                                 venue=connector.venue,
@@ -319,7 +319,7 @@ class CollectionService:
             for index, connector in connectors:
                 if results[index] is not None:
                     continue
-                error = f"{type(exc).__name__}: {exc}"
+                error = exception_detail(exc)
                 run_id = self.store.record_failed_run(
                     source=connector.source,
                     venue=connector.venue,
@@ -338,7 +338,7 @@ class CollectionService:
                     tag_run_id=tag_run_id, tag_observed_at=tag_observed_at
                 )
             except Exception as exc:
-                projection_error = f"projection rebuild failed: {type(exc).__name__}: {exc}"
+                projection_error = f"projection rebuild failed: {exception_detail(exc)}"
                 failed_index = tag_result_index
                 if failed_index is None:
                     failed_index = next(

@@ -4,14 +4,20 @@ from urllib.parse import urlencode
 
 import httpx
 
-from mdv.connectors.base import fetch_json, required_text, strict_epoch_timestamp, utc_now
-from mdv.models import MarketRecord, MarketSnapshot
+from mdv.connectors.base import (
+    exception_detail,
+    fetch_json,
+    required_text,
+    strict_epoch_timestamp,
+    utc_now,
+)
+from mdv.models import MarketIngestIssue, MarketRecord, MarketSnapshot
 from mdv.normalization import contract_direction, normalize_status
 
 
 class OkxConnector:
     venue = "OKX"
-    base_url = "https://www.okx.com/api/v5/public/instruments"
+    base_url = "https://openapi.okx.com/api/v5/public/instruments"
 
     def __init__(self, *, inst_type: str):
         self.inst_type = inst_type.upper()
@@ -34,16 +40,31 @@ class OkxConnector:
         rows = payload.get("data")
         if not isinstance(rows, list):
             raise ValueError(f"{self.source}: response has no data array")
-        markets = tuple(
-            market for row in rows if (market := self._market(row)) is not None
-        )
+        markets = []
+        issues = []
+        for row in rows:
+            try:
+                market = self._market(row)
+            except (TypeError, ValueError) as exc:
+                raw = dict(row) if isinstance(row, dict) else {"value": row}
+                issues.append(
+                    MarketIngestIssue(
+                        raw_symbol=str(raw.get("instId") or "<unknown>"),
+                        error=exception_detail(exc),
+                        raw=raw,
+                    )
+                )
+                continue
+            if market is not None:
+                markets.append(market)
         snapshot = MarketSnapshot(
             self.source,
             self.venue,
             self.market_type,
             self.product,
             observed_at,
-            markets,
+            tuple(markets),
+            tuple(issues),
         )
         snapshot.validate()
         return snapshot
@@ -84,6 +105,8 @@ class OkxConnector:
             family = str(row.get("uly") or row.get("instFamily") or "").strip()
             parts = family.split("-")
             if len(parts) < 2 or not parts[0] or not parts[1]:
+                if venue_status == "PREOPEN":
+                    return None
                 raise ValueError(f"{self.source}: instrument has no usable uly/instFamily")
             base_symbol, quote_symbol = parts[0].upper(), parts[1].upper()
             settle_symbol = required_text(

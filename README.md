@@ -113,10 +113,15 @@ remain excluded and follow their existing separate encrypted recovery policy.
 that release under `.local/releases/` and pass its configuration plus the
 printed `RUNTIME_RELEASE`, `RUNTIME_REVISION`, and `RUNTIME_VERSION` values to
 `make restore`; identity mismatch is rejected before state replacement.
+All local live commands resolve `database.path` through the same
+`CONFIG_PATH` configuration, including the API service, collection, backup,
+and restore commands. A long-running process retains the settings loaded at
+startup, so it must be restarted after changing the configuration path.
 The one-time `make migrate-state` command refuses an active or existing target,
 leaves the legacy database untouched, and installs the verified snapshot as the
-new state directory. Do not run it while any non-systemd process has the legacy
-database open.
+new state directory. The legacy path is an offline migration input only and is
+not used by normal runtime commands. Do not run migration while any
+non-systemd process has the legacy database open.
 
 Every production deployment is an immutable SemVer release tagged on `main`.
 Deployment validates the tag/version/revision contract, stops all database

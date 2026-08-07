@@ -73,6 +73,25 @@ def test_okx_skips_official_preopen_listing_placeholders_without_symbols():
     assert [market.raw_symbol for market in snapshot.markets] == ["BTC-USDT"]
 
 
+def test_okx_skips_preopen_derivative_placeholders_without_contract_dimensions():
+    payload = fixture("okx_success.json")["swap"]
+    payload["data"].append(
+        {
+            "instType": "SWAP",
+            "instId": "PREOPEN-SWAP",
+            "state": "preopen",
+            "uly": "",
+            "instFamily": "",
+            "settleCcy": "",
+        }
+    )
+
+    snapshot = okx_connectors()[1].parse(payload, observed_at=OBSERVED_AT)
+
+    assert len(snapshot.markets) == 1
+    assert snapshot.issues == ()
+
+
 def test_okx_derives_named_preopen_spot_currencies_from_instrument_id():
     payload = fixture("okx_success.json")["spot"]
     payload["data"] = [
@@ -95,6 +114,25 @@ def test_okx_derives_named_preopen_spot_currencies_from_instrument_id():
     assert market.quote_symbol == "USDT"
     assert market.status == "PRELAUNCH"
     assert market.active is False
+
+
+def test_okx_malformed_instrument_is_quarantined_without_discarding_valid_siblings():
+    payload = fixture("okx_success.json")["swap"]
+    payload["data"].append(
+        {
+            "instType": "SWAP",
+            "instId": "MALFORMED-SWAP",
+            "state": "live",
+            "settleCcy": "USD",
+        }
+    )
+
+    snapshot = okx_connectors()[1].parse(payload, observed_at=OBSERVED_AT)
+
+    assert len(snapshot.markets) == 1
+    assert len(snapshot.issues) == 1
+    assert snapshot.issues[0].raw_symbol == "MALFORMED-SWAP"
+    assert "no usable uly/instFamily" in snapshot.issues[0].error
 
 
 def test_hyperliquid_recorded_spot_and_all_perp_dex_fixtures():

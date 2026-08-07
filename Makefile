@@ -1,11 +1,11 @@
 PYTHON ?= .venv/bin/python
 PYTHON_BOOTSTRAP ?= python3.13
-COLLECT_COMMAND ?= $(PYTHON) -m mdv.cli --config config/config.yaml collect
+CONFIG_PATH ?= config/config.yaml
+COLLECT_COMMAND ?= $(PYTHON) -m mdv.cli --config "$(CONFIG_PATH)" collect
 PACKAGE_DIR ?= .tmp/package-dist
 PACKAGE_SMOKE_VENV ?= .tmp/package-smoke
 BACKUP_DIR ?= .local/backups
 BACKUP_FILE ?= $(BACKUP_DIR)/asset-master-data-runtime.tar.gz
-CONFIG_PATH ?= config/config.yaml
 DB_PATH ?=
 LEGACY_DB_PATH ?= .data/mdv.sqlite3
 RUNTIME_VERSION ?= $(shell $(PYTHON) -c 'import mdv; print(mdv.__version__)')
@@ -66,7 +66,7 @@ collect:
 	$(COLLECT_COMMAND)
 
 serve:
-	$(PYTHON) -m mdv.cli --config config/config.yaml serve
+	$(PYTHON) -m mdv.cli --config "$(CONFIG_PATH)" serve
 
 install-systemd:
 	bash deploy/systemd/install_systemd.sh
