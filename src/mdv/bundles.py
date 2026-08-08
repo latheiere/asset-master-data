@@ -357,10 +357,21 @@ def _decode_snapshot(
         try:
             decoded_rows = []
             for row in rows:
-                schedule = row.get("trading_schedule")
+                decoded_row = dict(row)
+                normalize_bundle_market = getattr(
+                    connector, "normalize_bundle_market", None
+                )
+                if callable(normalize_bundle_market):
+                    decoded_row = normalize_bundle_market(
+                        decoded_row,
+                        observed_at=value["observed_at"],
+                    )
+                    if not isinstance(decoded_row, dict):
+                        raise TypeError("connector returned a malformed bundle market")
+                schedule = decoded_row.get("trading_schedule")
                 decoded_rows.append(
                     {
-                        **row,
+                        **decoded_row,
                         "trading_schedule": (
                             TradingSchedule(**schedule)
                             if isinstance(schedule, dict)
