@@ -67,6 +67,13 @@ def test_binance_future_parser_preserves_market_fields():
     assert market.venue_product == "USD-M"
     assert market.contract_direction == "LINEAR"
     assert market.max_market_order_size == "250.000"
+    assert market.venue_base_multiplier == "1000"
+    assert market.contract_multiplier == "1"
+    assert market.contract_multiplier_unit == "VENUE_BASE"
+    assert market.contract_value_currency == "PEPE"
+    assert market.open_interest_unit == "BASE_ASSET"
+    assert market.contract_metadata_reason is None
+    assert market.raw["_metadata"]["CONTRACT_METADATA"]["open_interest_unit"] == "BASE_ASSET"
 
 
 def test_kucoin_perpetual_delisting_timestamp_is_not_a_contract_expiry():
@@ -183,6 +190,7 @@ def test_binance_coinm_parser_uses_contract_status():
                     "marginAsset": "BTC",
                     "contractType": "PERPETUAL",
                     "contractStatus": "TRADING",
+                    "contractSize": "100",
                 }
             ]
         },
@@ -190,6 +198,40 @@ def test_binance_coinm_parser_uses_contract_status():
     )
     assert snapshot.markets[0].status == "TRADING"
     assert snapshot.markets[0].active is True
+    assert snapshot.markets[0].contract_multiplier == "100"
+    assert snapshot.markets[0].contract_multiplier_unit == "QUOTE"
+    assert snapshot.markets[0].open_interest_unit == "CONTRACT"
+
+
+def test_binance_asset_dimensional_oi_rejects_conflicting_contract_size():
+    connector = BinanceConnector(
+        source="BINANCE_USDM_FUTURE",
+        market_type="FUTURE",
+        product="USD-M",
+        url="https://example.test",
+    )
+    market = connector.parse(
+        {
+            "symbols": [
+                {
+                    "symbol": "ALPHAUSDT",
+                    "baseAsset": "ALPHA",
+                    "quoteAsset": "USDT",
+                    "marginAsset": "USDT",
+                    "contractType": "PERPETUAL",
+                    "status": "TRADING",
+                    "contractSize": "10",
+                }
+            ]
+        },
+        observed_at="2026-07-03T00:00:00+00:00",
+    ).markets[0]
+
+    assert market.venue_base_multiplier == "1"
+    assert market.contract_multiplier is None
+    assert market.contract_multiplier_unit is None
+    assert market.open_interest_unit is None
+    assert market.contract_metadata_reason == "BINANCE_USDM_CONTRACT_SIZE_CONFLICT"
 
 
 def test_binance_delivery_contracts_use_dated_product_and_expiry_cycle():
@@ -366,6 +408,17 @@ def test_bybit_parsers_accept_recorded_spot_linear_and_inverse_shapes():
     assert inverse.markets[1].contract_type == "DATED"
     assert inverse.markets[1].expires_at == "2026-12-25T00:00:00+00:00"
     assert inverse.markets[1].raw["contractType"] == "InverseFutures"
+    assert all(market.contract_multiplier == "1" for market in linear.markets)
+    assert all(market.contract_multiplier_unit == "VENUE_BASE" for market in linear.markets)
+    assert all(market.open_interest_unit == "BASE_ASSET" for market in linear.markets)
+    assert all(market.contract_multiplier == "1" for market in inverse.markets)
+    assert all(market.contract_multiplier_unit == "QUOTE" for market in inverse.markets)
+    assert all(market.open_interest_unit == "QUOTE_ASSET" for market in inverse.markets)
+    assert (
+        linear.markets[0].raw["_metadata"]["CONTRACT_METADATA"]
+        ["quantity_increment_is_not_contract_multiplier"]
+        is True
+    )
 
 
 def test_bybit_derivative_fetch_follows_pagination_cursor():

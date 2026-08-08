@@ -6,10 +6,23 @@ from collections.abc import Iterable
 import httpx
 
 from mdv.connectors.base import post_json, utc_now
+from mdv.contract_metadata import (
+    NORMALIZATION_VERSION,
+    canonical_base_symbol,
+    with_contract_evidence,
+)
 from mdv.models import MarketRecord, MarketSnapshot
 
 
 INFO_URL = "https://api.hyperliquid.xyz/info"
+PERPETUAL_METADATA_SPEC_URL = (
+    "https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/"
+    "info-endpoint/perpetuals"
+)
+PERPETUAL_SIZE_SPEC_URL = (
+    "https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/"
+    "tick-and-lot-size"
+)
 EVM_RPC_URL = "https://rpc.hyperliquid.xyz/evm"
 ERC20_NAME_SELECTOR = "0x06fdde03"
 ERC20_SYMBOL_SELECTOR = "0x95d89b41"
@@ -285,6 +298,16 @@ class HyperliquidPerpConnector:
                     "HYPERLIQUID_DEX_INDEX": dex_index,
                     "HYPERLIQUID_COLLATERAL_TOKEN_INDEX": collateral_index,
                 }
+                raw = with_contract_evidence(
+                    raw,
+                    {
+                        "source": PERPETUAL_METADATA_SPEC_URL,
+                        "size_spec_source": PERPETUAL_SIZE_SPEC_URL,
+                        "normalization_version": NORMALIZATION_VERSION,
+                        "open_interest_unit": "BASE_ASSET",
+                        "size_decimals": row.get("szDecimals"),
+                    },
+                )
                 markets.append(
                     MarketRecord(
                         self.source,
@@ -298,11 +321,21 @@ class HyperliquidPerpConnector:
                         "PERP",
                         "TRADING" if active else "DELISTING",
                         active,
-                        None,
+                        "1",
                         raw,
                         venue_product=("PERP" if dex_name == "HYPERLIQUID" else f"HIP-3:{dex_name}"),
                         venue_status="TRADING" if active else "DELISTED",
                         contract_direction="LINEAR",
+                        contract_multiplier_unit="VENUE_BASE",
+                        contract_value_currency=canonical_base_symbol(
+                            base_name,
+                            venue=self.venue,
+                            market_type=self.market_type,
+                        ),
+                        open_interest_unit="BASE_ASSET",
+                        contract_metadata_source=PERPETUAL_METADATA_SPEC_URL,
+                        contract_metadata_observed_at=observed_at,
+                        contract_metadata_normalization_version=NORMALIZATION_VERSION,
                     )
                 )
         snapshot = MarketSnapshot(
