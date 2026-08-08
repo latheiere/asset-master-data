@@ -10,6 +10,8 @@ from mdv.matching import (
 def test_normalize_futures_unit_prefix_without_breaking_numeric_asset_name():
     assert normalize_asset_symbol("1000PEPE", allow_unit_prefix=True).symbol == "PEPE"
     assert normalize_asset_symbol("1000PEPE", allow_unit_prefix=True).multiplier == 1000
+    assert normalize_asset_symbol("1MPEPE", allow_unit_prefix=True).symbol == "PEPE"
+    assert normalize_asset_symbol("1MPEPE", allow_unit_prefix=True).multiplier == 1_000_000
     assert normalize_asset_symbol("1INCH", allow_unit_prefix=True).symbol == "1INCH"
     assert normalize_asset_symbol("1000PEPE", allow_unit_prefix=False).symbol == "1000PEPE"
     assert normalize_asset_symbol("币安人生", allow_unit_prefix=True).symbol == "币安人生"

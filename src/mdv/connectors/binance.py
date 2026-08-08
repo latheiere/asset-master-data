@@ -12,6 +12,7 @@ from mdv.connectors.base import (
     strict_epoch_timestamp,
     utc_now,
 )
+from mdv.contract_metadata import NORMALIZATION_VERSION, canonical_base_symbol
 from mdv.models import MarketRecord, MarketSnapshot, TradingSchedule
 from mdv.normalization import contract_direction, normalize_contract_type, normalize_product, normalize_status
 
@@ -61,6 +62,7 @@ class BinanceConnector:
                 row,
                 metadata=metadata_by_symbol.get(str(row.get("symbol") or "").upper()),
                 compact_raw=True,
+                observed_at=observed_at,
             ),
         )
         return self._snapshot(markets, observed_at=observed_at)
@@ -75,6 +77,7 @@ class BinanceConnector:
                 row,
                 metadata=metadata_by_symbol.get(str(row.get("symbol") or "").upper()),
                 compact_raw=False,
+                observed_at=observed_at,
             )
             for row in symbols
         ]
@@ -98,6 +101,7 @@ class BinanceConnector:
         *,
         metadata: dict | None,
         compact_raw: bool,
+        observed_at: str,
     ) -> MarketRecord:
         venue_status = str(
             row.get("status") or row.get("contractStatus") or "UNKNOWN"
@@ -143,6 +147,21 @@ class BinanceConnector:
             if compact_raw
             else None
         )
+        multiplier = (
+            str(row.get("contractSize"))
+            if row.get("contractSize") is not None
+            else None
+        )
+        direction = contract_direction(
+            market_type=self.market_type,
+            base_symbol=str(row["baseAsset"]),
+            quote_symbol=str(row["quoteAsset"]),
+            settle_symbol=settle_symbol,
+        )
+        multiplier_unit = (
+            "QUOTE" if multiplier is not None and direction == "INVERSE"
+            else ("VENUE_BASE" if multiplier is not None else None)
+        )
         return MarketRecord(
             source=self.source,
             venue=self.venue,
@@ -155,11 +174,7 @@ class BinanceConnector:
             contract_type=contract_type,
             status=availability.status,
             active=availability.active,
-            contract_multiplier=(
-                str(row.get("contractSize"))
-                if row.get("contractSize") is not None
-                else None
-            ),
+            contract_multiplier=multiplier,
             raw={} if compact_raw else raw,
             raw_json=raw_json,
             max_market_order_size=(
@@ -171,12 +186,7 @@ class BinanceConnector:
             expires_at=self._expires_at(row.get("deliveryDate"), contract_type),
             venue_product=self.product,
             venue_status=venue_status,
-            contract_direction=contract_direction(
-                market_type=self.market_type,
-                base_symbol=str(row["baseAsset"]),
-                quote_symbol=str(row["quoteAsset"]),
-                settle_symbol=settle_symbol,
-            ),
+            contract_direction=direction,
             expiry_cycle={
                 "CURRENT_MONTH": "M",
                 "NEXT_MONTH": "BM",
@@ -184,6 +194,26 @@ class BinanceConnector:
                 "NEXT_QUARTER": "BQ",
             }.get(raw_contract_type),
             trading_schedule=availability.trading_schedule,
+            contract_multiplier_unit=multiplier_unit,
+            contract_value_currency=(
+                str(row["quoteAsset"]).upper()
+                if multiplier_unit == "QUOTE"
+                else (
+                    canonical_base_symbol(
+                        str(row["baseAsset"]),
+                        venue=self.venue,
+                        market_type=self.market_type,
+                    )
+                    if multiplier is not None
+                    else None
+                )
+            ),
+            open_interest_unit=("CONTRACT" if multiplier is not None else None),
+            contract_metadata_source=(self.url if multiplier is not None else None),
+            contract_metadata_observed_at=(observed_at if multiplier is not None else None),
+            contract_metadata_normalization_version=(
+                NORMALIZATION_VERSION if multiplier is not None else None
+            ),
         )
 
     def _snapshot(

@@ -166,12 +166,12 @@ def test_market_and_asset_projections_share_contract_metadata_semantics(tmp_path
         contract_multiplier="0.1",
         raw={"product_id": "BLUR-PERP-INTX"},
         contract_direction="LINEAR",
-        contract_multiplier_unit="BLUR",
+        contract_multiplier_unit="CANONICAL_BASE",
         contract_value_currency="BLUR",
         open_interest_unit="CONTRACT",
         contract_metadata_source="https://api.international.coinbase.com/api/v1/instruments",
         contract_metadata_observed_at="2026-07-19T00:00:00+00:00",
-        contract_metadata_normalization_version="derivative-contract-metadata-v1",
+        contract_metadata_normalization_version="derivative-contract-metadata-v2",
     )
     store.apply_snapshot(MarketSnapshot(
         source=row.source,
@@ -185,7 +185,7 @@ def test_market_and_asset_projections_share_contract_metadata_semantics(tmp_path
     flat = store.list_markets({"venue": "COINBASE"})[0]
     nested = store.list_assets({"venue": "COINBASE"})["assets"][0]["venues"][0]["futures"][0]
     fields = (
-        "contract_multiplier", "contract_multiplier_unit",
+        "contract_multiplier", "contract_multiplier_unit", "venue_base_multiplier",
         "contract_value_currency", "open_interest_unit",
         "contract_metadata_reason", "contract_metadata_source",
         "contract_metadata_observed_at",
@@ -213,6 +213,39 @@ def test_snapshot_nulls_unsafe_contract_multiplier_per_symbol(value):
     }
     assert market.contract_metadata_observed_at == normalized.observed_at
     assert normalized.issues == ()
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "NaN", "Infinity", "invalid"])
+def test_derivative_rejects_non_positive_or_invalid_venue_base_multiplier(value):
+    current = snapshot()
+    candidate = MarketSnapshot(
+        source=current.source,
+        venue=current.venue,
+        market_type=current.market_type,
+        product=current.product,
+        observed_at=current.observed_at,
+        markets=(replace(current.markets[0], venue_base_multiplier=value),),
+    )
+
+    assert candidate.markets == ()
+    assert len(candidate.issues) == 1
+    assert "unsafe venue base multiplier" in candidate.issues[0].error
+
+
+def test_derivative_rejects_multiplier_without_denomination():
+    current = snapshot()
+    candidate = MarketSnapshot(
+        source=current.source,
+        venue=current.venue,
+        market_type=current.market_type,
+        product=current.product,
+        observed_at=current.observed_at,
+        markets=(replace(current.markets[0], contract_multiplier="2"),),
+    )
+
+    assert candidate.markets == ()
+    assert len(candidate.issues) == 1
+    assert "ambiguous contract multiplier unit" in candidate.issues[0].error
 
 
 def test_partial_snapshot_updates_valid_symbol_and_preserves_failed_sibling(tmp_path):
@@ -874,7 +907,7 @@ def test_financing_migration_upgrades_schema_12_without_rewriting_market_data(tm
                 "SELECT name FROM sqlite_master WHERE type = 'index'"
             )
         }
-    assert versions[-1] == 20
+    assert versions[-1] == 21
     assert {
         "financing_products", "financing_observations",
         "financing_lifecycle_events", "financing_asset_mappings",
@@ -887,7 +920,7 @@ def test_financing_migration_upgrades_schema_12_without_rewriting_market_data(tm
         "contract_multiplier_unit", "contract_value_currency",
         "open_interest_unit", "contract_metadata_reason",
         "contract_metadata_source", "contract_metadata_observed_at",
-        "contract_metadata_normalization_version",
+        "contract_metadata_normalization_version", "venue_base_multiplier",
     }.issubset(market_columns)
     assert {
         "idx_collection_runs_status_started",
@@ -898,6 +931,69 @@ def test_financing_migration_upgrades_schema_12_without_rewriting_market_data(tm
     }.issubset(indexes)
     assert "audit_compaction_stats" in tables
     assert venue == "Bybit"
+
+
+def test_contract_unit_migration_preserves_only_unambiguous_denominations(tmp_path):
+    path = tmp_path / "schema20.sqlite3"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, filename TEXT NOT NULL, applied_at TEXT NOT NULL)"
+    )
+    migration_dir = resources.files("mdv.migrations")
+    for version in range(1, 21):
+        entry = next(
+            item for item in migration_dir.iterdir()
+            if item.name.startswith(f"{version:03d}_")
+        )
+        conn.executescript(entry.read_text(encoding="utf-8"))
+        conn.execute(
+            "INSERT INTO schema_migrations(version, filename, applied_at) VALUES (?, ?, ?)",
+            (version, entry.name, "2026-07-19T00:00:00+00:00"),
+        )
+    conn.execute("INSERT INTO venues(venue, display_name) VALUES ('TEST', 'Test')")
+    rows = [
+        ("TEST:BUNDLE", "BUNDLE", "1000UNIT", "USDT", "USDT", "1000", "UNIT", "UNIT"),
+        ("TEST:INVERSE", "INVERSE", "BASE", "USD", "BASE", "1", "USD", "USD"),
+        ("TEST:AMBIGUOUS", "AMBIGUOUS", "BASE", "USD", "USD", "1", None, None),
+    ]
+    conn.executemany(
+        """
+        INSERT INTO markets(
+            market_id, source, venue, market_type, product, raw_symbol,
+            base_symbol, quote_symbol, settle_symbol, contract_type,
+            status, active, contract_multiplier, underlying_multiplier,
+            first_seen_at, last_seen_at, raw_json, content_hash,
+            contract_multiplier_unit, contract_value_currency, open_interest_unit
+        ) VALUES (
+            ?, 'TEST_FUTURE', 'TEST', 'FUTURE', 'PERP', ?, ?, ?, ?, 'PERP',
+            'TRADING', 1, '1', ?, '2026-07-19T00:00:00+00:00',
+            '2026-07-19T00:00:00+00:00', '{}', 'hash', ?, ?, 'CONTRACT'
+        )
+        """,
+        rows,
+    )
+    conn.commit()
+    conn.close()
+
+    store = SQLiteStore(path)
+    store.migrate()
+
+    with store.readonly() as migrated:
+        values = {
+            row["market_id"]: dict(row)
+            for row in migrated.execute(
+                "SELECT market_id, contract_multiplier, contract_multiplier_unit, "
+                "venue_base_multiplier, contract_metadata_reason FROM markets"
+            )
+        }
+    assert values["TEST:BUNDLE"]["contract_multiplier_unit"] == "CANONICAL_BASE"
+    assert values["TEST:BUNDLE"]["venue_base_multiplier"] == "1000"
+    assert values["TEST:INVERSE"]["contract_multiplier_unit"] == "QUOTE"
+    assert values["TEST:INVERSE"]["venue_base_multiplier"] == "1"
+    assert values["TEST:AMBIGUOUS"]["contract_multiplier"] is None
+    assert values["TEST:AMBIGUOUS"]["contract_metadata_reason"] == (
+        "RECOLLECTION_REQUIRED_FOR_EXPLICIT_CONTRACT_DENOMINATION"
+    )
 
 
 def test_schedule_migration_backfills_existing_session_market(tmp_path):
@@ -1374,6 +1470,7 @@ def test_asset_view_separates_venue_symbol_from_underlying_unit(tmp_path):
     assert asset["canonical_symbol"] == "BONK"
     assert asset["venue_symbols"] == [{"venue": "BINANCE", "symbols": ["1000BONK", "BONK"]}]
     assert future["underlying_unit"] == "1000 BONK"
+    assert future["venue_base_multiplier"] == "1000"
 
 
 def test_raw_market_api_defaults_to_active_only(tmp_path):

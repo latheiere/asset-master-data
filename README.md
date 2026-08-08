@@ -38,10 +38,10 @@ public venue catalogs -> transactional SQLite history -> versioned identity mapp
   status. Prior source payloads, last-seen timestamps, and lifecycle events
   remain auditable.
 - Consumers integrate only through the documented API or exports.
-- Derivative projections publish auditable contract-multiplier and native
-  open-interest units. Conflicting or incomplete venue specifications remain
-  null with an explicit reason; quantity/tick increments are never substituted
-  for contract value.
+- Derivative projections publish auditable venue-to-canonical base conversion,
+  contract-multiplier denomination, and native open-interest units. Conflicting
+  or incomplete venue specifications remain null with an explicit reason;
+  quantity/tick increments are never substituted for contract value.
 - SQLite runs locally with WAL, migrations, and online backups.
 
 ## Quick start

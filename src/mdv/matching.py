@@ -6,7 +6,12 @@ from dataclasses import dataclass, field
 
 
 MATCHER_VERSION = "evidence-v4"
-UNIT_PREFIXES = ("1000000", "10000", "1000")
+UNIT_PREFIXES = (
+    ("1000000", 1_000_000),
+    ("10000", 10_000),
+    ("1000", 1_000),
+    ("1M", 1_000_000),
+)
 
 
 @dataclass(frozen=True)
@@ -40,10 +45,10 @@ def normalize_asset_symbol(symbol: str, *, allow_unit_prefix: bool) -> Normalize
     if not clean:
         raise ValueError("asset symbol is empty after normalization")
     if allow_unit_prefix:
-        for prefix in UNIT_PREFIXES:
+        for prefix, multiplier in UNIT_PREFIXES:
             suffix = clean[len(prefix) :] if clean.startswith(prefix) else ""
             if suffix and suffix[0].isalpha() and len(suffix) >= 2:
-                return NormalizedSymbol(suffix, int(prefix), "UNIT_PREFIX_SYMBOL")
+                return NormalizedSymbol(suffix, multiplier, "UNIT_PREFIX_SYMBOL")
     return NormalizedSymbol(clean, 1, "EXACT_SYMBOL")
 
 

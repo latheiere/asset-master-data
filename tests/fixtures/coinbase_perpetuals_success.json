@@ -46,6 +46,38 @@
         "contract_expiry_type": "PERPETUAL",
         "perpetual_details": {"underlying_type": "SPOT"}
       }
+    },
+    {
+      "product_id": "1MPEPE-PERP-INTX",
+      "status": "STANDARD",
+      "trading_disabled": false,
+      "is_disabled": false,
+      "view_only": false,
+      "quote_currency_id": "USDC",
+      "base_max_size": "1000000",
+      "product_venue": "INTX",
+      "future_product_details": {
+        "contract_root_unit": "1MPEPE",
+        "contract_size": "1",
+        "contract_expiry_type": "PERPETUAL",
+        "perpetual_details": {"underlying_type": "SPOT"}
+      }
+    },
+    {
+      "product_id": "DOGE-PERP-INTX",
+      "status": "STANDARD",
+      "trading_disabled": false,
+      "is_disabled": false,
+      "view_only": false,
+      "quote_currency_id": "USDC",
+      "base_max_size": "1000000",
+      "product_venue": "INTX",
+      "future_product_details": {
+        "contract_root_unit": "DOGE",
+        "contract_size": "10",
+        "contract_expiry_type": "PERPETUAL",
+        "perpetual_details": {"underlying_type": "SPOT"}
+      }
     }
   ]
 }

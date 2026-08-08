@@ -111,7 +111,7 @@ class WhitebitConnector:
                     contract_metadata_reason = "WHITEBIT_FUTURES_SPEC_CONFLICT"
                 else:
                     contract_multiplier = "1"
-                    contract_multiplier_unit = base_symbol
+                    contract_multiplier_unit = "VENUE_BASE"
                     contract_value_currency = base_symbol
                     open_interest_unit = "BASE_ASSET"
                 raw = with_contract_evidence(

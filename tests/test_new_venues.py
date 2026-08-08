@@ -56,6 +56,19 @@ def test_okx_recorded_spot_swap_and_expiry_fixtures_normalize_dimensions():
     assert futures.markets[0].expires_at == "2026-09-25T08:00:00+00:00"
 
 
+def test_explicit_unknown_multiplier_currency_is_unresolved():
+    payload = fixture("okx_success.json")["swap"]
+    payload["data"][0]["ctValCcy"] = "OTHER"
+
+    market = okx_connectors()[1].parse(
+        payload, observed_at=OBSERVED_AT
+    ).markets[0]
+
+    assert market.contract_multiplier is None
+    assert market.contract_multiplier_unit is None
+    assert market.contract_metadata_reason == "CONTRACT_MULTIPLIER_CURRENCY_CONFLICT"
+
+
 def test_okx_skips_official_preopen_listing_placeholders_without_symbols():
     payload = fixture("okx_success.json")["spot"]
     payload["data"].append(
@@ -321,7 +334,7 @@ def test_whitebit_recorded_spot_crypto_and_tradfi_perp_fixtures():
     ]
     assert futures.markets[0].contract_direction == "LINEAR"
     assert futures.markets[0].contract_multiplier == "1"
-    assert futures.markets[0].contract_multiplier_unit == "BTC"
+    assert futures.markets[0].contract_multiplier_unit == "VENUE_BASE"
     assert futures.markets[0].open_interest_unit == "BASE_ASSET"
     assert futures.markets[1].active is False
     assert futures.markets[1].raw["_metadata"]["ASSET_TAGS"][0]["tag"] == "TRADFI"
@@ -368,11 +381,14 @@ def test_coinbase_recorded_perpetual_and_margin_fixtures_normalize_dimensions():
         "BTC-PERP-INTX",
         "META-PERP-INTX",
         "1000BONK-PERP-INTX",
+        "1MPEPE-PERP-INTX",
+        "DOGE-PERP-INTX",
     ]
     assert perpetuals.markets[0].active is True
     assert perpetuals.markets[0].contract_multiplier == "1"
     assert perpetuals.markets[0].contract_direction == "LINEAR"
-    assert perpetuals.markets[0].contract_multiplier_unit == "BTC"
+    assert perpetuals.markets[0].contract_multiplier_unit == "CANONICAL_BASE"
+    assert perpetuals.markets[0].venue_base_multiplier == "1"
     assert perpetuals.markets[0].open_interest_unit == "CONTRACT"
     assert perpetuals.markets[0].contract_metadata_reason is None
     assert perpetuals.markets[1].status == "PAUSED"
@@ -384,8 +400,15 @@ def test_coinbase_recorded_perpetual_and_margin_fixtures_normalize_dimensions():
         {"market_type": "FUTURE", "base_symbol": "META"}, perpetuals.markets[1].raw
     ).classifications
     assert perpetuals.markets[2].contract_multiplier == "1000"
-    assert perpetuals.markets[2].contract_multiplier_unit == "BONK"
+    assert perpetuals.markets[2].contract_multiplier_unit == "CANONICAL_BASE"
+    assert perpetuals.markets[2].venue_base_multiplier == "1000"
     assert perpetuals.markets[2].open_interest_unit == "CONTRACT"
+    assert perpetuals.markets[3].contract_multiplier == "1000000"
+    assert perpetuals.markets[3].contract_multiplier_unit == "CANONICAL_BASE"
+    assert perpetuals.markets[3].venue_base_multiplier == "1000000"
+    assert perpetuals.markets[4].contract_multiplier == "10"
+    assert perpetuals.markets[4].contract_multiplier_unit == "CANONICAL_BASE"
+    assert perpetuals.markets[4].venue_base_multiplier == "1"
 
     eligible = {record.raw_asset_symbol for record in margin.records if record.eligible}
     assert eligible == {"BTC", "USD"}

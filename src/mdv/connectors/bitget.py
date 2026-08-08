@@ -170,7 +170,10 @@ class BitgetFutureConnector:
                 settle_symbol=settle_symbol,
             )
             oi_unit = "QUOTE_ASSET" if direction == "INVERSE" else "BASE_ASSET"
-            multiplier_unit = quote_symbol if direction == "INVERSE" else base_symbol
+            multiplier_unit = "QUOTE" if direction == "INVERSE" else "VENUE_BASE"
+            contract_value_currency = (
+                quote_symbol if direction == "INVERSE" else base_symbol
+            )
             raw = with_contract_evidence(
                 _asset_tags(row, tags),
                 {
@@ -218,7 +221,7 @@ class BitgetFutureConnector:
                     expiry_cycle=self._expiry_cycle(row),
                     trading_schedule=availability.trading_schedule,
                     contract_multiplier_unit=multiplier_unit,
-                    contract_value_currency=multiplier_unit,
+                    contract_value_currency=contract_value_currency,
                     open_interest_unit=oi_unit,
                     contract_metadata_source=self.url,
                     contract_metadata_observed_at=observed_at,

@@ -532,7 +532,7 @@ def test_bitget_parsers_accept_spot_and_all_future_product_shapes():
     assert future.markets[0].contract_direction == "INVERSE"
     assert future.markets[0].venue_product == "COIN-M"
     assert future.markets[0].contract_multiplier == "1"
-    assert future.markets[0].contract_multiplier_unit == "USD"
+    assert future.markets[0].contract_multiplier_unit == "QUOTE"
     assert future.markets[0].open_interest_unit == "QUOTE_ASSET"
     assert future.markets[1].contract_type == "DATED"
     assert future.markets[1].product == "DATED"
@@ -551,15 +551,16 @@ def test_bitget_recorded_linear_and_inverse_oi_units_are_unambiguous():
 
     assert (linear.contract_direction, linear.contract_multiplier) == ("LINEAR", "1")
     assert (linear.contract_multiplier_unit, linear.open_interest_unit) == (
-        "WIF", "BASE_ASSET"
+        "VENUE_BASE", "BASE_ASSET"
     )
     assert (inverse.contract_direction, inverse.contract_multiplier) == ("INVERSE", "1")
     assert (inverse.contract_multiplier_unit, inverse.open_interest_unit) == (
-        "USD", "QUOTE_ASSET"
+        "QUOTE", "QUOTE_ASSET"
     )
+    assert inverse.venue_base_multiplier == "1"
     assert inverse.raw["_metadata"]["CONTRACT_METADATA"] == {
         "source": "https://api.bitget.com/api/v2/mix/market/contracts",
-        "normalization_version": "derivative-contract-metadata-v1",
+        "normalization_version": "derivative-contract-metadata-v2",
         "open_interest_unit": "QUOTE_ASSET",
         "quantity_increment": "0.0001",
         "quantity_increment_is_not_contract_multiplier": True,

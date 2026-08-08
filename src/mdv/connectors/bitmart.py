@@ -8,6 +8,7 @@ from mdv.connectors.base import (
     session_status,
     strict_epoch_timestamp,
 )
+from mdv.contract_metadata import NORMALIZATION_VERSION, canonical_base_symbol
 from mdv.models import MarketRecord, MarketSnapshot, TradingSchedule
 from mdv.normalization import contract_direction, normalize_status
 
@@ -142,6 +143,17 @@ class BitmartFutureConnector(SingleEndpointConnector[MarketSnapshot]):
                 default_active=venue_status == "TRADING",
                 trading_schedule=schedule,
             )
+            multiplier = (
+                str(row["contract_size"])
+                if row.get("contract_size") not in (None, "")
+                else None
+            )
+            direction = contract_direction(
+                market_type=self.market_type,
+                base_symbol=base_symbol,
+                quote_symbol=quote_symbol,
+                settle_symbol=settle_symbol,
+            )
             markets.append(
                 MarketRecord(
                     self.source,
@@ -157,11 +169,7 @@ class BitmartFutureConnector(SingleEndpointConnector[MarketSnapshot]):
                     contract_type,
                     availability.status,
                     availability.active,
-                    (
-                        str(row["contract_size"])
-                        if row.get("contract_size") not in (None, "")
-                        else None
-                    ),
+                    multiplier,
                     raw,
                     expires_at=self._expires_at(row.get("expire_timestamp"), contract_type),
                     max_market_order_size=(
@@ -171,13 +179,33 @@ class BitmartFutureConnector(SingleEndpointConnector[MarketSnapshot]):
                     ),
                     venue_product=venue_product,
                     venue_status=venue_status,
-                    contract_direction=contract_direction(
-                        market_type=self.market_type,
-                        base_symbol=base_symbol,
-                        quote_symbol=quote_symbol,
-                        settle_symbol=settle_symbol,
-                    ),
+                    contract_direction=direction,
                     trading_schedule=availability.trading_schedule,
+                    contract_multiplier_unit=(
+                        "QUOTE" if multiplier is not None and direction == "INVERSE"
+                        else ("VENUE_BASE" if multiplier is not None else None)
+                    ),
+                    contract_value_currency=(
+                        quote_symbol
+                        if multiplier is not None and direction == "INVERSE"
+                        else (
+                            canonical_base_symbol(
+                                base_symbol,
+                                venue=self.venue,
+                                market_type=self.market_type,
+                            )
+                            if multiplier is not None
+                            else None
+                        )
+                    ),
+                    open_interest_unit=("CONTRACT" if multiplier is not None else None),
+                    contract_metadata_source=(self.url if multiplier is not None else None),
+                    contract_metadata_observed_at=(
+                        observed_at if multiplier is not None else None
+                    ),
+                    contract_metadata_normalization_version=(
+                        NORMALIZATION_VERSION if multiplier is not None else None
+                    ),
                 )
             )
         snapshot = MarketSnapshot(

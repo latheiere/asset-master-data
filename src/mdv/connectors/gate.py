@@ -7,7 +7,11 @@ from mdv.connectors.base import (
     session_status,
     strict_epoch_timestamp,
 )
-from mdv.contract_metadata import NORMALIZATION_VERSION, positive_decimal
+from mdv.contract_metadata import (
+    NORMALIZATION_VERSION,
+    canonical_base_symbol,
+    positive_decimal,
+)
 from mdv.models import MarketRecord, MarketSnapshot, TradingSchedule
 from mdv.normalization import contract_direction, normalize_product, normalize_status
 
@@ -144,6 +148,12 @@ class GateFutureConnector(SingleEndpointConnector[MarketSnapshot]):
             contract_metadata_reason = None
             if raw_multiplier is not None and contract_multiplier is None:
                 contract_metadata_reason = "SOURCE_RETURNED_NON_POSITIVE_CONTRACT_MULTIPLIER"
+            direction = contract_direction(
+                market_type=self.market_type,
+                base_symbol=base_symbol,
+                quote_symbol=quote_symbol,
+                settle_symbol=self.settle,
+            )
             markets.append(
                 MarketRecord(
                     source=self.source,
@@ -167,21 +177,47 @@ class GateFutureConnector(SingleEndpointConnector[MarketSnapshot]):
                     ),
                     venue_product=self.product,
                     venue_status=venue_status,
-                    contract_direction=contract_direction(
-                        market_type=self.market_type,
-                        base_symbol=base_symbol,
-                        quote_symbol=quote_symbol,
-                        settle_symbol=self.settle,
-                    ),
+                    contract_direction=direction,
                     expiry_cycle=self._expiry_cycle(row),
                     trading_schedule=availability.trading_schedule,
                     contract_metadata_reason=contract_metadata_reason,
-                    contract_metadata_source=(self.url if contract_metadata_reason else None),
+                    contract_multiplier_unit=(
+                        "QUOTE"
+                        if contract_multiplier is not None and direction == "INVERSE"
+                        else (
+                            "VENUE_BASE" if contract_multiplier is not None else None
+                        )
+                    ),
+                    contract_value_currency=(
+                        quote_symbol
+                        if contract_multiplier is not None and direction == "INVERSE"
+                        else (
+                            canonical_base_symbol(
+                                base_symbol,
+                                venue=self.venue,
+                                market_type=self.market_type,
+                            )
+                            if contract_multiplier is not None
+                            else None
+                        )
+                    ),
+                    open_interest_unit=(
+                        "CONTRACT" if contract_multiplier is not None else None
+                    ),
+                    contract_metadata_source=(
+                        self.url
+                        if contract_multiplier is not None or contract_metadata_reason
+                        else None
+                    ),
                     contract_metadata_observed_at=(
-                        observed_at if contract_metadata_reason else None
+                        observed_at
+                        if contract_multiplier is not None or contract_metadata_reason
+                        else None
                     ),
                     contract_metadata_normalization_version=(
-                        NORMALIZATION_VERSION if contract_metadata_reason else None
+                        NORMALIZATION_VERSION
+                        if contract_multiplier is not None or contract_metadata_reason
+                        else None
                     ),
                 )
             )

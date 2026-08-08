@@ -11,6 +11,10 @@ from mdv.connectors.base import (
     strict_epoch_timestamp,
     utc_now,
 )
+from mdv.contract_metadata import (
+    NORMALIZATION_VERSION,
+    canonical_base_symbol,
+)
 from mdv.models import MarketIngestIssue, MarketRecord, MarketSnapshot
 from mdv.normalization import contract_direction, normalize_status
 
@@ -44,7 +48,7 @@ class OkxConnector:
         issues = []
         for row in rows:
             try:
-                market = self._market(row)
+                market = self._market(row, observed_at=observed_at)
             except (TypeError, ValueError) as exc:
                 raw = dict(row) if isinstance(row, dict) else {"value": row}
                 issues.append(
@@ -69,7 +73,7 @@ class OkxConnector:
         snapshot.validate()
         return snapshot
 
-    def _market(self, row: object) -> MarketRecord | None:
+    def _market(self, row: object, *, observed_at: str) -> MarketRecord | None:
         if not isinstance(row, dict):
             raise ValueError(f"{self.source}: instrument is not an object")
         raw_symbol = required_text(
@@ -115,6 +119,49 @@ class OkxConnector:
             contract_type = "PERP" if self.inst_type == "SWAP" else "DATED"
             expires_at = self._expires_at(row.get("expTime"))
             expiry_cycle = self._expiry_cycle(row.get("alias"))
+        multiplier = (
+            str(row["ctVal"])
+            if self.market_type == "FUTURE" and row.get("ctVal") not in (None, "")
+            else None
+        )
+        direction = contract_direction(
+            market_type=self.market_type,
+            base_symbol=base_symbol,
+            quote_symbol=quote_symbol,
+            settle_symbol=settle_symbol,
+        )
+        canonical_base = canonical_base_symbol(
+            base_symbol,
+            venue=self.venue,
+            market_type=self.market_type,
+        )
+        multiplier_currency = str(row.get("ctValCcy") or "").strip().upper()
+        contract_metadata_reason = None
+        if multiplier is None:
+            multiplier_unit = None
+            contract_value_currency = None
+        elif multiplier_currency == base_symbol:
+            multiplier_unit = "VENUE_BASE"
+            contract_value_currency = canonical_base
+        elif multiplier_currency == canonical_base:
+            multiplier_unit = "CANONICAL_BASE"
+            contract_value_currency = canonical_base
+        elif multiplier_currency == quote_symbol or (
+            not multiplier_currency and direction == "INVERSE"
+        ):
+            multiplier_unit = "QUOTE"
+            contract_value_currency = quote_symbol
+        elif multiplier_currency == settle_symbol:
+            multiplier_unit = "SETTLEMENT"
+            contract_value_currency = settle_symbol
+        elif not multiplier_currency:
+            multiplier_unit = "VENUE_BASE"
+            contract_value_currency = canonical_base
+        else:
+            multiplier = None
+            multiplier_unit = None
+            contract_value_currency = None
+            contract_metadata_reason = "CONTRACT_MULTIPLIER_CURRENCY_CONFLICT"
         return MarketRecord(
             source=self.source,
             venue=self.venue,
@@ -127,7 +174,7 @@ class OkxConnector:
             contract_type=contract_type,
             status=normalize_status(venue_status),
             active=venue_status == "LIVE",
-            contract_multiplier=(str(row["ctVal"]) if row.get("ctVal") not in (None, "") else None),
+            contract_multiplier=multiplier,
             raw=dict(row),
             expires_at=expires_at,
             max_market_order_size=(
@@ -135,13 +182,27 @@ class OkxConnector:
             ),
             venue_product=self.inst_type,
             venue_status=venue_status,
-            contract_direction=contract_direction(
-                market_type=self.market_type,
-                base_symbol=base_symbol,
-                quote_symbol=quote_symbol,
-                settle_symbol=settle_symbol,
-            ),
+            contract_direction=direction,
             expiry_cycle=expiry_cycle,
+            contract_multiplier_unit=multiplier_unit,
+            contract_value_currency=contract_value_currency,
+            open_interest_unit=("CONTRACT" if multiplier is not None else None),
+            contract_metadata_reason=contract_metadata_reason,
+            contract_metadata_source=(
+                self.base_url
+                if multiplier is not None or contract_metadata_reason is not None
+                else None
+            ),
+            contract_metadata_observed_at=(
+                observed_at
+                if multiplier is not None or contract_metadata_reason is not None
+                else None
+            ),
+            contract_metadata_normalization_version=(
+                NORMALIZATION_VERSION
+                if multiplier is not None or contract_metadata_reason is not None
+                else None
+            ),
         )
 
     def _expires_at(self, value: object) -> str | None:

@@ -146,7 +146,7 @@ class BitfinexConnector:
                     # as contracts. Resolve per symbol only after both official
                     # catalogs identify the same instrument.
                     contract_multiplier = "1"
-                    contract_multiplier_unit = base_symbol
+                    contract_multiplier_unit = "VENUE_BASE"
                     contract_value_currency = base_symbol
                     open_interest_unit = "CONTRACT"
                 raw = with_contract_evidence(

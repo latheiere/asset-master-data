@@ -16,7 +16,11 @@ from mdv.connectors.base import (
     session_status,
     utc_now,
 )
-from mdv.contract_metadata import NORMALIZATION_VERSION, positive_decimal, with_contract_evidence
+from mdv.contract_metadata import (
+    NORMALIZATION_VERSION,
+    positive_decimal,
+    with_contract_evidence,
+)
 from mdv.matching import normalize_venue_asset_symbol
 from mdv.models import FinancingRecord, FinancingSnapshot, MarketRecord, MarketSnapshot, TradingSchedule
 from mdv.normalization import contract_direction, normalize_status
@@ -331,9 +335,7 @@ class CoinbasePerpetualConnector:
             ),
             trading_schedule=availability.trading_schedule,
             contract_multiplier_unit=(
-                str(instrument["base_asset_name"]).upper()
-                if multiplier is not None and instrument is not None
-                else (normalized_root.symbol if multiplier is not None else None)
+                "CANONICAL_BASE" if multiplier is not None else None
             ),
             contract_value_currency=(
                 str(instrument["base_asset_name"]).upper()
@@ -341,6 +343,7 @@ class CoinbasePerpetualConnector:
                 else (normalized_root.symbol if multiplier is not None else None)
             ),
             open_interest_unit=("CONTRACT" if multiplier is not None else None),
+            venue_base_multiplier=str(normalized_root.multiplier),
             contract_metadata_reason=contract_metadata_reason,
             contract_metadata_source=self.international_url,
             contract_metadata_observed_at=observed_at,
