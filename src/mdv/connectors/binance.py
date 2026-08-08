@@ -12,9 +12,20 @@ from mdv.connectors.base import (
     strict_epoch_timestamp,
     utc_now,
 )
-from mdv.contract_metadata import NORMALIZATION_VERSION, canonical_base_symbol
+from mdv.contract_metadata import (
+    NORMALIZATION_VERSION,
+    canonical_base_symbol,
+    positive_decimal,
+    with_contract_evidence,
+)
 from mdv.models import MarketRecord, MarketSnapshot, TradingSchedule
 from mdv.normalization import contract_direction, normalize_contract_type, normalize_product, normalize_status
+
+
+BINANCE_USDM_OPEN_INTEREST_SPEC_URL = (
+    "https://developers.binance.com/docs/derivatives/usds-margined-futures/"
+    "market-data/rest-api/Open-Interest-Statistics"
+)
 
 
 def binance_market_schedule(market: dict, raw: dict) -> TradingSchedule | None:
@@ -137,6 +148,60 @@ class BinanceConnector:
             ),
             None,
         )
+        direction = contract_direction(
+            market_type=self.market_type,
+            base_symbol=str(row["baseAsset"]),
+            quote_symbol=str(row["quoteAsset"]),
+            settle_symbol=settle_symbol,
+        )
+        multiplier = None
+        multiplier_unit = None
+        contract_value_currency = None
+        open_interest_unit = None
+        contract_metadata_reason = None
+        contract_metadata_source = None
+        if not is_spot and self.product == "USD-M" and direction == "LINEAR":
+            published_contract_size = positive_decimal(row.get("contractSize"))
+            if published_contract_size not in (None, "1"):
+                contract_metadata_reason = "BINANCE_USDM_CONTRACT_SIZE_CONFLICT"
+            else:
+                multiplier = "1"
+                multiplier_unit = "VENUE_BASE"
+                contract_value_currency = canonical_base_symbol(
+                    str(row["baseAsset"]),
+                    venue=self.venue,
+                    market_type=self.market_type,
+                )
+                open_interest_unit = "BASE_ASSET"
+            contract_metadata_source = BINANCE_USDM_OPEN_INTEREST_SPEC_URL
+        elif not is_spot and row.get("contractSize") is not None:
+            multiplier = str(row["contractSize"])
+            multiplier_unit = "QUOTE" if direction == "INVERSE" else "VENUE_BASE"
+            contract_value_currency = (
+                str(row["quoteAsset"]).upper()
+                if multiplier_unit == "QUOTE"
+                else canonical_base_symbol(
+                    str(row["baseAsset"]),
+                    venue=self.venue,
+                    market_type=self.market_type,
+                )
+            )
+            open_interest_unit = "CONTRACT"
+            contract_metadata_source = self.url
+        elif not is_spot:
+            contract_metadata_reason = "BINANCE_CONTRACT_UNIT_UNRESOLVED"
+            contract_metadata_source = self.url
+        if not is_spot:
+            raw = with_contract_evidence(
+                raw,
+                {
+                    "source": contract_metadata_source,
+                    "normalization_version": NORMALIZATION_VERSION,
+                    "open_interest_unit": open_interest_unit,
+                    "published_contract_size": row.get("contractSize"),
+                    "reason": contract_metadata_reason,
+                },
+            )
         raw_json = (
             json.dumps(
                 raw,
@@ -146,21 +211,6 @@ class BinanceConnector:
             )
             if compact_raw
             else None
-        )
-        multiplier = (
-            str(row.get("contractSize"))
-            if row.get("contractSize") is not None
-            else None
-        )
-        direction = contract_direction(
-            market_type=self.market_type,
-            base_symbol=str(row["baseAsset"]),
-            quote_symbol=str(row["quoteAsset"]),
-            settle_symbol=settle_symbol,
-        )
-        multiplier_unit = (
-            "QUOTE" if multiplier is not None and direction == "INVERSE"
-            else ("VENUE_BASE" if multiplier is not None else None)
         )
         return MarketRecord(
             source=self.source,
@@ -195,24 +245,13 @@ class BinanceConnector:
             }.get(raw_contract_type),
             trading_schedule=availability.trading_schedule,
             contract_multiplier_unit=multiplier_unit,
-            contract_value_currency=(
-                str(row["quoteAsset"]).upper()
-                if multiplier_unit == "QUOTE"
-                else (
-                    canonical_base_symbol(
-                        str(row["baseAsset"]),
-                        venue=self.venue,
-                        market_type=self.market_type,
-                    )
-                    if multiplier is not None
-                    else None
-                )
-            ),
-            open_interest_unit=("CONTRACT" if multiplier is not None else None),
-            contract_metadata_source=(self.url if multiplier is not None else None),
-            contract_metadata_observed_at=(observed_at if multiplier is not None else None),
+            contract_value_currency=contract_value_currency,
+            open_interest_unit=open_interest_unit,
+            contract_metadata_reason=contract_metadata_reason,
+            contract_metadata_source=contract_metadata_source,
+            contract_metadata_observed_at=(observed_at if not is_spot else None),
             contract_metadata_normalization_version=(
-                NORMALIZATION_VERSION if multiplier is not None else None
+                NORMALIZATION_VERSION if not is_spot else None
             ),
         )
 

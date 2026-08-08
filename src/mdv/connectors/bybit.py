@@ -12,11 +12,20 @@ from mdv.connectors.base import (
     strict_epoch_timestamp,
     utc_now,
 )
+from mdv.contract_metadata import (
+    NORMALIZATION_VERSION,
+    canonical_base_symbol,
+    positive_decimal,
+    with_contract_evidence,
+)
 from mdv.models import MarketRecord, MarketSnapshot, TradingSchedule
 from mdv.normalization import contract_direction, normalize_contract_type, normalize_product
 
 
 BYBIT_BASE_URL = "https://api.bytick.com"
+BYBIT_OPEN_INTEREST_SPEC_URL = (
+    "https://bybit-exchange.github.io/docs/v5/market/open-interest"
+)
 
 
 def bybit_market_schedule(market: dict, raw: dict) -> TradingSchedule | None:
@@ -118,6 +127,47 @@ class BybitConnector:
                     default_active=venue_status == "TRADING",
                     trading_schedule=schedule,
                 )
+                direction = contract_direction(
+                    market_type=self.market_type,
+                    base_symbol=base_symbol,
+                    quote_symbol=quote_symbol,
+                    settle_symbol=settle_symbol,
+                )
+                contract_multiplier = None
+                contract_multiplier_unit = None
+                contract_value_currency = None
+                open_interest_unit = None
+                raw = row
+                if self.market_type == "FUTURE":
+                    if direction == "INVERSE":
+                        contract_multiplier = "1"
+                        contract_multiplier_unit = "QUOTE"
+                        contract_value_currency = quote_symbol
+                        open_interest_unit = "QUOTE_ASSET"
+                    else:
+                        contract_multiplier = "1"
+                        contract_multiplier_unit = "VENUE_BASE"
+                        contract_value_currency = canonical_base_symbol(
+                            base_symbol,
+                            venue=self.venue,
+                            market_type=self.market_type,
+                        )
+                        open_interest_unit = "BASE_ASSET"
+                    lot_size = row.get("lotSizeFilter")
+                    raw = with_contract_evidence(
+                        row,
+                        {
+                            "source": BYBIT_OPEN_INTEREST_SPEC_URL,
+                            "normalization_version": NORMALIZATION_VERSION,
+                            "open_interest_unit": open_interest_unit,
+                            "quantity_increment": (
+                                positive_decimal(lot_size.get("qtyStep"))
+                                if isinstance(lot_size, dict)
+                                else None
+                            ),
+                            "quantity_increment_is_not_contract_multiplier": True,
+                        },
+                    )
                 markets.append(
                     MarketRecord(
                         source=self.source,
@@ -133,19 +183,30 @@ class BybitConnector:
                         contract_type=contract_type,
                         status=availability.status,
                         active=availability.active,
-                        contract_multiplier=None,
-                        raw=row,
+                        contract_multiplier=contract_multiplier,
+                        raw=raw,
                         expires_at=self._expires_at(row.get("deliveryTime")),
                         max_market_order_size=max_market_order_size,
                         venue_product=self.product,
                         venue_status=venue_status,
-                        contract_direction=contract_direction(
-                            market_type=self.market_type,
-                            base_symbol=base_symbol,
-                            quote_symbol=quote_symbol,
-                            settle_symbol=settle_symbol,
-                        ),
+                        contract_direction=direction,
                         trading_schedule=availability.trading_schedule,
+                        contract_multiplier_unit=contract_multiplier_unit,
+                        contract_value_currency=contract_value_currency,
+                        open_interest_unit=open_interest_unit,
+                        contract_metadata_source=(
+                            BYBIT_OPEN_INTEREST_SPEC_URL
+                            if self.market_type == "FUTURE"
+                            else None
+                        ),
+                        contract_metadata_observed_at=(
+                            observed_at if self.market_type == "FUTURE" else None
+                        ),
+                        contract_metadata_normalization_version=(
+                            NORMALIZATION_VERSION
+                            if self.market_type == "FUTURE"
+                            else None
+                        ),
                     )
                 )
         snapshot = MarketSnapshot(

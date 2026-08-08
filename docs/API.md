@@ -248,6 +248,10 @@ Current unit policies for the requested venues are:
 | Bitget Coin-M futures | `QUOTE_ASSET` | `QUOTE`; inverse price conversion is not applied |
 | WhiteBIT futures | `BASE_ASSET` | `VENUE_BASE`; linear price conversion required |
 | Coinbase INTX perpetuals | `CONTRACT` | `CANONICAL_BASE`; authoritative base multiplier cross-checked against the brokerage catalog |
+| Binance USD-margined futures | `BASE_ASSET` | `VENUE_BASE`; venue OI quantity is already expressed in the native base dimension |
+| Bybit linear futures | `BASE_ASSET` | `VENUE_BASE`; venue OI quantity is already expressed in the native base dimension |
+| Bybit inverse futures | `QUOTE_ASSET` | `QUOTE`; venue OI quantity is already expressed in the quote dimension |
+| Hyperliquid perpetuals | `BASE_ASSET` | `VENUE_BASE`; venue size and OI use the native base dimension |
 
 If Coinbase authoritative fields disagree, or a WhiteBIT/Bitfinex joined
 instrument is absent or conflicts with discovery symbols, numeric/unit fields

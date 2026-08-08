@@ -160,6 +160,23 @@ def test_hyperliquid_recorded_spot_and_all_perp_dex_fixtures():
     assert perps.markets[0].raw_symbol == "BTC"
     assert perps.markets[0].settle_symbol == "USDC"
     assert perps.markets[0].venue_product == "PERP"
+    assert perps.markets[0].contract_multiplier == "1"
+    assert perps.markets[0].contract_multiplier_unit == "VENUE_BASE"
+    assert perps.markets[0].contract_value_currency == "BTC"
+    assert perps.markets[0].open_interest_unit == "BASE_ASSET"
+    assert perps.markets[0].raw["_metadata"]["CONTRACT_METADATA"] == {
+        "source": (
+            "https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/"
+            "api/info-endpoint/perpetuals"
+        ),
+        "size_spec_source": (
+            "https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/"
+            "api/tick-and-lot-size"
+        ),
+        "normalization_version": "derivative-contract-metadata-v2",
+        "open_interest_unit": "BASE_ASSET",
+        "size_decimals": 5,
+    }
     assert perps.markets[1].raw_symbol == "flx:TSLA"
     assert perps.markets[1].base_symbol == "TSLA"
     assert perps.markets[1].settle_symbol == "USDT0"
