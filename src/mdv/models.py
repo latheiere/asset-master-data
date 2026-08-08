@@ -6,7 +6,12 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from mdv.contract_metadata import NORMALIZATION_VERSION
+from mdv.contract_metadata import (
+    CONTRACT_MULTIPLIER_UNITS,
+    NORMALIZATION_VERSION,
+    parsed_venue_base_multiplier,
+    positive_decimal,
+)
 
 
 def _validate_observed_at(value: str, *, source: str) -> None:
@@ -64,6 +69,7 @@ class MarketRecord:
     active: bool
     contract_multiplier: str | None
     raw: dict[str, Any]
+    venue_base_multiplier: str | None = None
     expires_at: str | None = None
     max_market_order_size: str | None = None
     venue_product: str | None = None
@@ -113,6 +119,9 @@ def _normalize_unsafe_contract_multiplier(
     return replace(
         market,
         contract_multiplier=None,
+        contract_multiplier_unit=None,
+        contract_value_currency=None,
+        open_interest_unit=None,
         contract_metadata_reason=market.contract_metadata_reason or reason,
         contract_metadata_source=market.contract_metadata_source or market.source,
         contract_metadata_observed_at=(
@@ -120,6 +129,26 @@ def _normalize_unsafe_contract_multiplier(
         ),
         contract_metadata_normalization_version=(
             market.contract_metadata_normalization_version or NORMALIZATION_VERSION
+        ),
+    )
+
+
+def _with_derivative_base_multiplier(market: MarketRecord) -> MarketRecord:
+    if market.market_type != "FUTURE":
+        return market
+    if market.venue_base_multiplier is not None:
+        normalized = positive_decimal(market.venue_base_multiplier)
+        return (
+            replace(market, venue_base_multiplier=normalized)
+            if normalized is not None
+            else market
+        )
+    return replace(
+        market,
+        venue_base_multiplier=parsed_venue_base_multiplier(
+            market.base_symbol,
+            venue=market.venue,
+            market_type=market.market_type,
         ),
     )
 
@@ -180,6 +209,25 @@ def _validate_market_record(
         multiplier = Decimal(market.contract_multiplier)
         if not multiplier.is_finite() or multiplier <= 0:
             raise ValueError(f"{source} returned an unsafe contract multiplier")
+    if market.venue_base_multiplier is not None:
+        try:
+            venue_base_multiplier = Decimal(market.venue_base_multiplier)
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{source} returned an unsafe venue base multiplier"
+            ) from exc
+        if not venue_base_multiplier.is_finite() or venue_base_multiplier <= 0:
+            raise ValueError(f"{source} returned an unsafe venue base multiplier")
+    if market.market_type == "FUTURE" and market.venue_base_multiplier is None:
+        raise ValueError(f"{source} returned a derivative without a venue base multiplier")
+    if market.market_type == "SPOT" and market.venue_base_multiplier is not None:
+        raise ValueError(f"{source} returned a spot market with a venue base multiplier")
+    if market.contract_multiplier_unit not in CONTRACT_MULTIPLIER_UNITS | {None}:
+        raise ValueError(f"{source} returned an invalid contract multiplier unit")
+    if market.contract_multiplier is not None and market.contract_multiplier_unit is None:
+        raise ValueError(f"{source} returned an ambiguous contract multiplier unit")
+    if market.contract_multiplier is None and market.contract_multiplier_unit is not None:
+        raise ValueError(f"{source} returned a unit without a contract multiplier")
     if market.open_interest_unit not in {
         None,
         "CONTRACT",
@@ -220,7 +268,7 @@ class MarketSnapshot:
         seen_ids: set[str] = set()
         for original in self.markets:
             market = _normalize_unsafe_contract_multiplier(
-                original,
+                _with_derivative_base_multiplier(original),
                 observed_at=self.observed_at,
             )
             try:

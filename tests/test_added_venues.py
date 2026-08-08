@@ -65,7 +65,7 @@ def test_bitfinex_recorded_spot_and_future_fixtures_normalize_dimensions():
     jasmy = futures.markets[2]
     assert jasmy.raw_symbol == "JASMYF0:USTF0"
     assert jasmy.contract_multiplier == "1"
-    assert jasmy.contract_multiplier_unit == "JASMY"
+    assert jasmy.contract_multiplier_unit == "VENUE_BASE"
     assert jasmy.contract_value_currency == "JASMY"
     assert jasmy.open_interest_unit == "CONTRACT"
     assert jasmy.contract_metadata_reason is None

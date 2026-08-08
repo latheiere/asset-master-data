@@ -193,24 +193,33 @@ contract-value fields:
 
 | Field | Meaning |
 | --- | --- |
-| `contract_multiplier` | Positive decimal conversion factor from one native OI unit to `contract_value_currency`; null when unresolved |
-| `contract_multiplier_unit` | Asset symbol carried by the multiplier, such as `BTC`, `WIF`, `USD`, or `USDC` |
-| `contract_value_currency` | Asset in which `OI × contract_multiplier` is expressed before a linear price conversion |
+| `venue_base_multiplier` | Positive decimal canonical-token quantity represented by one venue-native base unit; `1` for ordinary base units and null for spot markets |
+| `contract_multiplier` | Positive decimal amount per native OI unit; interpret only through `contract_multiplier_unit`; null when unresolved |
+| `contract_multiplier_unit` | Multiplier denomination: `VENUE_BASE`, `CANONICAL_BASE`, `QUOTE`, or `SETTLEMENT` |
+| `contract_value_currency` | Asset symbol produced after applying the denomination-specific conversion |
 | `open_interest_unit` | Venue-native OI quantity: `CONTRACT`, `BASE_ASSET`, or `QUOTE_ASSET` |
 | `contract_metadata_reason` | Stable reason when authoritative metadata is missing, invalid, or conflicting; otherwise null |
 | `contract_metadata_source` | Authoritative public specification URL used by normalization |
 | `contract_metadata_observed_at` | UTC time at which the joined specification was observed |
-| `contract_metadata_normalization_version` | Versioned policy, currently `derivative-contract-metadata-v1` |
+| `contract_metadata_normalization_version` | Versioned policy, currently `derivative-contract-metadata-v2` |
 
-For native venue OI quantity `oi` and a compatible mark price expressed as
-quote units per base unit, calculate quote/USD-equivalent notional as:
+For native venue OI quantity `oi`, contract multiplier `cm`, venue base
+multiplier `vbm`, and a compatible mark price expressed as quote units per
+canonical base token, use the denomination branch exactly once:
 
 ```text
-LINEAR:  oi * contract_multiplier * mark_price
-INVERSE: oi * contract_multiplier
+VENUE_BASE:    canonical_base_value = oi * cm * vbm
+CANONICAL_BASE: canonical_base_value = oi * cm
+QUOTE:         quote_value = oi * cm
+SETTLEMENT:    settlement_value = oi * cm
+
+linear quote notional = canonical_base_value * mark_price
 ```
 
-The formula is safe only when `contract_multiplier`, `contract_direction`,
+Never apply `venue_base_multiplier` to `CANONICAL_BASE`, `QUOTE`, or
+`SETTLEMENT`; doing so double-normalizes a multiplier that is already outside
+the venue-base denomination. The calculation is safe only when
+`venue_base_multiplier`, `contract_multiplier`, `contract_direction`,
 `quote_symbol`, `settle_symbol`, `contract_multiplier_unit`,
 `contract_value_currency`, and `open_interest_unit` are non-null and
 `contract_metadata_reason` is null. `CONTRACT` is a venue-published contract
@@ -224,15 +233,21 @@ specification evidence remain independently auditable. Bitget's
 `sizeMultiplier`/`quantityMultiplier` is retained only as a quantity increment
 and is never copied into `contract_multiplier`.
 
+`underlying_multiplier` remains in market rows for compatibility with the
+display-oriented `underlying_unit` projection. For derivatives it has the same
+numeric value as `venue_base_multiplier`; new notional consumers should use the
+latter because its canonical-token meaning and interaction with
+`contract_multiplier_unit` are explicit.
+
 Current unit policies for the requested venues are:
 
 | Venue/product | Native OI unit | Contract value |
 | --- | --- | --- |
-| Bitfinex derivatives | `CONTRACT` | Instrument-specific underlying units from the named product specification |
-| Bitget USDT/USDC futures | `BASE_ASSET` | Base asset; linear price conversion required |
-| Bitget Coin-M futures | `QUOTE_ASSET` | USD quote notional; inverse price conversion is not applied |
-| WhiteBIT futures | `BASE_ASSET` | Base/stock asset; linear price conversion required |
-| Coinbase INTX perpetuals | `CONTRACT` | `base_asset_multiplier` base units, cross-checked against the brokerage catalog |
+| Bitfinex derivatives | `CONTRACT` | `VENUE_BASE`; instrument-specific underlying units from the named product specification |
+| Bitget USDT/USDC futures | `BASE_ASSET` | `VENUE_BASE`; linear price conversion required |
+| Bitget Coin-M futures | `QUOTE_ASSET` | `QUOTE`; inverse price conversion is not applied |
+| WhiteBIT futures | `BASE_ASSET` | `VENUE_BASE`; linear price conversion required |
+| Coinbase INTX perpetuals | `CONTRACT` | `CANONICAL_BASE`; authoritative base multiplier cross-checked against the brokerage catalog |
 
 If Coinbase authoritative fields disagree, or a WhiteBIT/Bitfinex joined
 instrument is absent or conflicts with discovery symbols, numeric/unit fields
@@ -334,14 +349,15 @@ active markets. Pass `ACTIVE=false` only when inactive history is required.
       "base_symbol": "BTC",
       "quote_symbol": "USDT",
       "settle_symbol": "USDT",
+      "venue_base_multiplier": "1",
       "contract_multiplier": "1",
-      "contract_multiplier_unit": "BTC",
+      "contract_multiplier_unit": "CANONICAL_BASE",
       "contract_value_currency": "BTC",
       "open_interest_unit": "BASE_ASSET",
       "contract_metadata_reason": null,
       "contract_metadata_source": "https://example.exchange/public/contracts",
       "contract_metadata_observed_at": "2026-07-19T00:00:00+00:00",
-      "contract_metadata_normalization_version": "derivative-contract-metadata-v1",
+      "contract_metadata_normalization_version": "derivative-contract-metadata-v2",
       "status": "TRADING",
       "active": 1,
       "trading_schedule": null,

@@ -32,6 +32,9 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
         active=True,
         contract_multiplier="0.0001",
         raw={"symbol": "BTC_USDT", "state": 0},
+        contract_multiplier_unit="VENUE_BASE",
+        contract_value_currency="BTC",
+        open_interest_unit="CONTRACT",
         max_market_order_size="5000000",
         trading_schedule=TradingSchedule(
             session_status="OPEN", market_group="FOREX"
@@ -360,6 +363,8 @@ def test_mdv_future_view_filters_and_renders_markets(tmp_path, monkeypatch):
     assert "Loans" in coverage_page.text
     assert api_response.json()["count"] == 3
     assert api_response.json()["markets"][2]["max_market_order_size"] == "5000000"
+    assert api_response.json()["markets"][2]["venue_base_multiplier"] == "1"
+    assert api_response.json()["markets"][2]["contract_multiplier_unit"] == "VENUE_BASE"
     assert asset_response.json()["count"] == 3
     sol_asset = next(
         asset for asset in asset_response.json()["assets"]

@@ -1122,11 +1122,12 @@ class SQLiteStore:
                         contract_metadata_reason, contract_metadata_source,
                         contract_metadata_observed_at,
                         contract_metadata_normalization_version,
+                        venue_base_multiplier,
                         expires_at, max_market_order_size,
                         underlying_multiplier, venue_product, venue_status,
                         contract_direction, expiry_cycle, trading_schedule_json,
                         first_seen_at, last_seen_at, raw_json, content_hash
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(market_id) DO UPDATE SET
                         product=excluded.product,
                         base_symbol=excluded.base_symbol,
@@ -1143,6 +1144,7 @@ class SQLiteStore:
                         contract_metadata_source=excluded.contract_metadata_source,
                         contract_metadata_observed_at=excluded.contract_metadata_observed_at,
                         contract_metadata_normalization_version=excluded.contract_metadata_normalization_version,
+                        venue_base_multiplier=excluded.venue_base_multiplier,
                         expires_at=excluded.expires_at,
                         max_market_order_size=excluded.max_market_order_size,
                         underlying_multiplier=excluded.underlying_multiplier,
@@ -1176,6 +1178,7 @@ class SQLiteStore:
                         market.contract_metadata_source,
                         market.contract_metadata_observed_at,
                         market.contract_metadata_normalization_version,
+                        market.venue_base_multiplier,
                         market.expires_at,
                         market.max_market_order_size,
                         str(normalized.multiplier),
@@ -2213,6 +2216,7 @@ class SQLiteStore:
                     m.contract_metadata_reason, m.contract_metadata_source,
                     m.contract_metadata_observed_at,
                     m.contract_metadata_normalization_version,
+                    m.venue_base_multiplier,
                     m.expires_at, m.max_market_order_size,
                     m.underlying_multiplier, m.venue_product, m.venue_status,
                     m.contract_direction, m.expiry_cycle, m.trading_schedule_json,
@@ -2562,6 +2566,7 @@ class SQLiteStore:
                     m.contract_metadata_reason, m.contract_metadata_source,
                     m.contract_metadata_observed_at,
                     m.contract_metadata_normalization_version,
+                    m.venue_base_multiplier,
                     m.expires_at, m.max_market_order_size,
                     m.underlying_multiplier, m.venue_product, m.venue_status,
                     m.contract_direction, m.expiry_cycle, m.trading_schedule_json,

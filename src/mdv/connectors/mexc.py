@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from mdv.connectors.base import SingleEndpointConnector, market_availability, session_status
+from mdv.contract_metadata import NORMALIZATION_VERSION, canonical_base_symbol
 from mdv.models import MarketRecord, MarketSnapshot, TradingSchedule
 from mdv.normalization import contract_direction, normalize_status
 
@@ -87,6 +88,11 @@ class MexcFutureConnector(SingleEndpointConnector[MarketSnapshot]):
                 default_active=state == 0,
                 trading_schedule=schedule,
             )
+            multiplier = (
+                str(row.get("contractSize"))
+                if row.get("contractSize") is not None
+                else None
+            )
             markets.append(
                 MarketRecord(
                     source=self.source,
@@ -100,7 +106,7 @@ class MexcFutureConnector(SingleEndpointConnector[MarketSnapshot]):
                     contract_type="PERP",
                     status=availability.status,
                     active=availability.active,
-                    contract_multiplier=str(row.get("contractSize")) if row.get("contractSize") is not None else None,
+                    contract_multiplier=multiplier,
                     raw=row,
                     max_market_order_size=(
                         str(row["maxVol"]) if row.get("maxVol") is not None else None
@@ -114,6 +120,24 @@ class MexcFutureConnector(SingleEndpointConnector[MarketSnapshot]):
                         settle_symbol=settle_symbol,
                     ),
                     trading_schedule=availability.trading_schedule,
+                    contract_multiplier_unit=("VENUE_BASE" if multiplier is not None else None),
+                    contract_value_currency=(
+                        canonical_base_symbol(
+                            base_symbol,
+                            venue=self.venue,
+                            market_type=self.market_type,
+                        )
+                        if multiplier is not None
+                        else None
+                    ),
+                    open_interest_unit=("CONTRACT" if multiplier is not None else None),
+                    contract_metadata_source=(self.url if multiplier is not None else None),
+                    contract_metadata_observed_at=(
+                        observed_at if multiplier is not None else None
+                    ),
+                    contract_metadata_normalization_version=(
+                        NORMALIZATION_VERSION if multiplier is not None else None
+                    ),
                 )
             )
         snapshot = MarketSnapshot(self.source, self.venue, self.market_type, self.product, observed_at, tuple(markets))

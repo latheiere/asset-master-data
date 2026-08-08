@@ -16,6 +16,7 @@ from mdv.connectors.base import (
     strict_epoch_timestamp,
     utc_now,
 )
+from mdv.contract_metadata import NORMALIZATION_VERSION, canonical_base_symbol
 from mdv.models import FinancingRecord, FinancingSnapshot, MarketRecord, MarketSnapshot, TradingSchedule
 from mdv.normalization import contract_direction, normalize_contract_type, normalize_product
 
@@ -191,6 +192,11 @@ class XtFutureConnector(SingleEndpointConnector[MarketSnapshot]):
                 trading_schedule=schedule,
             )
             expires_at = self._expires_at(row.get("deliveryDate"), contract_type)
+            multiplier = (
+                str(row["contractSize"])
+                if row.get("contractSize") is not None
+                else None
+            )
             markets.append(
                 MarketRecord(
                     source=self.source,
@@ -206,11 +212,7 @@ class XtFutureConnector(SingleEndpointConnector[MarketSnapshot]):
                     contract_type=contract_type,
                     status=availability.status,
                     active=availability.active,
-                    contract_multiplier=(
-                        str(row["contractSize"])
-                        if row.get("contractSize") is not None
-                        else None
-                    ),
+                    contract_multiplier=multiplier,
                     raw=_asset_tags(row, "labels", source="XT_FUTURE_SYMBOL"),
                     expires_at=expires_at,
                     max_market_order_size=(
@@ -232,6 +234,24 @@ class XtFutureConnector(SingleEndpointConnector[MarketSnapshot]):
                         raw_contract_type
                     ),
                     trading_schedule=availability.trading_schedule,
+                    contract_multiplier_unit=("VENUE_BASE" if multiplier is not None else None),
+                    contract_value_currency=(
+                        canonical_base_symbol(
+                            base_symbol,
+                            venue=self.venue,
+                            market_type=self.market_type,
+                        )
+                        if multiplier is not None
+                        else None
+                    ),
+                    open_interest_unit=("CONTRACT" if multiplier is not None else None),
+                    contract_metadata_source=(self.url if multiplier is not None else None),
+                    contract_metadata_observed_at=(
+                        observed_at if multiplier is not None else None
+                    ),
+                    contract_metadata_normalization_version=(
+                        NORMALIZATION_VERSION if multiplier is not None else None
+                    ),
                 )
             )
         snapshot = MarketSnapshot(

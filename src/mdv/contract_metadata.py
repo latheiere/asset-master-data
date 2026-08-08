@@ -3,8 +3,13 @@ from __future__ import annotations
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from mdv.matching import normalize_venue_asset_symbol
 
-NORMALIZATION_VERSION = "derivative-contract-metadata-v1"
+
+NORMALIZATION_VERSION = "derivative-contract-metadata-v2"
+CONTRACT_MULTIPLIER_UNITS = frozenset(
+    {"VENUE_BASE", "CANONICAL_BASE", "QUOTE", "SETTLEMENT"}
+)
 
 
 def positive_decimal(value: object) -> str | None:
@@ -19,6 +24,35 @@ def positive_decimal(value: object) -> str | None:
         return None
     normalized = format(number.normalize(), "f")
     return normalized.rstrip("0").rstrip(".") if "." in normalized else normalized
+
+
+def parsed_venue_base_multiplier(
+    base_symbol: str,
+    *,
+    venue: str,
+    market_type: str,
+) -> str:
+    """Return canonical tokens represented by one parsed venue base unit."""
+    normalized = normalize_venue_asset_symbol(
+        base_symbol,
+        venue=venue,
+        market_type=market_type,
+    )
+    return str(normalized.multiplier)
+
+
+def canonical_base_symbol(
+    base_symbol: str,
+    *,
+    venue: str,
+    market_type: str,
+) -> str:
+    """Return the approved symbol-parsing canonical base candidate."""
+    return normalize_venue_asset_symbol(
+        base_symbol,
+        venue=venue,
+        market_type=market_type,
+    ).symbol
 
 
 def with_contract_evidence(raw: dict[str, Any], evidence: dict[str, Any]) -> dict[str, Any]:

@@ -11,6 +11,7 @@ from mdv.connectors.base import (
     strict_epoch_timestamp,
     utc_now,
 )
+from mdv.contract_metadata import NORMALIZATION_VERSION, canonical_base_symbol
 from mdv.models import MarketRecord, MarketSnapshot
 from mdv.normalization import contract_direction, normalize_status
 
@@ -147,6 +148,17 @@ class HtxFutureConnector:
             contract_type = "DATED" if self.dated else "PERP"
             if self.dated and raw_contract_type == "swap":
                 raise ValueError(f"{self.source}: dated contract has swap contract_type")
+            multiplier = (
+                str(row["contract_size"])
+                if row.get("contract_size") is not None
+                else None
+            )
+            direction = contract_direction(
+                market_type=self.market_type,
+                base_symbol=base_symbol,
+                quote_symbol=quote_symbol,
+                settle_symbol=settle_symbol,
+            )
             markets.append(
                 MarketRecord(
                     self.source,
@@ -162,21 +174,12 @@ class HtxFutureConnector:
                     contract_type,
                     status,
                     code == 1,
-                    (
-                        str(row["contract_size"])
-                        if row.get("contract_size") is not None
-                        else None
-                    ),
+                    multiplier,
                     dict(row),
                     expires_at=self._expires_at(row.get("delivery_time")),
                     venue_product=self.product,
                     venue_status=venue_status,
-                    contract_direction=contract_direction(
-                        market_type=self.market_type,
-                        base_symbol=base_symbol,
-                        quote_symbol=quote_symbol,
-                        settle_symbol=settle_symbol,
-                    ),
+                    contract_direction=direction,
                     expiry_cycle=(
                         {
                             "this_week": "W",
@@ -186,6 +189,31 @@ class HtxFutureConnector:
                         }.get(raw_contract_type)
                         if self.dated
                         else None
+                    ),
+                    contract_multiplier_unit=(
+                        "QUOTE" if multiplier is not None and direction == "INVERSE"
+                        else ("VENUE_BASE" if multiplier is not None else None)
+                    ),
+                    contract_value_currency=(
+                        quote_symbol
+                        if multiplier is not None and direction == "INVERSE"
+                        else (
+                            canonical_base_symbol(
+                                base_symbol,
+                                venue=self.venue,
+                                market_type=self.market_type,
+                            )
+                            if multiplier is not None
+                            else None
+                        )
+                    ),
+                    open_interest_unit=("CONTRACT" if multiplier is not None else None),
+                    contract_metadata_source=(self.url if multiplier is not None else None),
+                    contract_metadata_observed_at=(
+                        observed_at if multiplier is not None else None
+                    ),
+                    contract_metadata_normalization_version=(
+                        NORMALIZATION_VERSION if multiplier is not None else None
                     ),
                 )
             )
