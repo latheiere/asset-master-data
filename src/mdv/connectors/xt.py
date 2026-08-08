@@ -148,6 +148,33 @@ class XtFutureConnector(SingleEndpointConnector[MarketSnapshot]):
     product = "U_BASED"
     url = "https://fapi.xt.com/future/market/v3/public/symbol/list"
 
+    def normalize_bundle_market(
+        self,
+        row: dict,
+        *,
+        observed_at: str,
+    ) -> dict:
+        """Upgrade authoritative contract sizes from legacy collection bundles."""
+        if (
+            row.get("contract_multiplier") in (None, "")
+            or row.get("contract_multiplier_unit") is not None
+        ):
+            return row
+        normalized = dict(row)
+        normalized.update(
+            contract_multiplier_unit="VENUE_BASE",
+            contract_value_currency=canonical_base_symbol(
+                str(row.get("base_symbol") or ""),
+                venue=self.venue,
+                market_type=self.market_type,
+            ),
+            open_interest_unit="CONTRACT",
+            contract_metadata_source=self.url,
+            contract_metadata_observed_at=observed_at,
+            contract_metadata_normalization_version=NORMALIZATION_VERSION,
+        )
+        return normalized
+
     def parse(self, payload: object, *, observed_at: str) -> MarketSnapshot:
         result = _xt_result(payload, source=self.source)
         rows = result.get("symbols") if isinstance(result, dict) else None

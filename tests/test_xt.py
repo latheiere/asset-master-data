@@ -1,5 +1,6 @@
 import asyncio
 import json
+from dataclasses import asdict
 from pathlib import Path
 
 import httpx
@@ -40,6 +41,35 @@ def test_xt_recorded_market_fixtures_preserve_native_and_normalized_fields():
     assert future.markets[1].expiry_cycle == "Q"
     assert future.markets[1].expires_at == "2026-09-25T08:00:00+00:00"
     assert future.markets[2].venue_status == "DELIVERED"
+
+
+def test_recorded_legacy_bundle_contract_size_gains_explicit_denomination():
+    connector = XtFutureConnector()
+    market = connector.parse(
+        fixture("xt_future.json"), observed_at="2026-07-06T00:00:00+00:00"
+    ).markets[0]
+    legacy = asdict(market)
+    legacy.pop("venue_base_multiplier")
+    for field in (
+        "contract_multiplier_unit",
+        "contract_value_currency",
+        "open_interest_unit",
+        "contract_metadata_source",
+        "contract_metadata_observed_at",
+        "contract_metadata_normalization_version",
+    ):
+        legacy[field] = None
+
+    normalized = connector.normalize_bundle_market(
+        legacy, observed_at="2026-08-08T00:00:00+00:00"
+    )
+
+    assert normalized["contract_multiplier_unit"] == "VENUE_BASE"
+    assert normalized["contract_value_currency"] == market.base_symbol
+    assert normalized["open_interest_unit"] == "CONTRACT"
+    assert normalized["contract_metadata_normalization_version"] == (
+        "derivative-contract-metadata-v2"
+    )
 
 
 def test_xt_recorded_financing_fixtures_cover_margin_and_crypto_loans():
